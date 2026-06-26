@@ -1,0 +1,28 @@
+/* Τίποτα άλλο δεν χρειάζεται εδώ — όλο το styling είναι στο App.css */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* Κρίσιμο: html + body + #root πρέπει να έχουν EXACT height, όχι min-height */
+html {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  height: 100%;
+  overflow: hidden;
+  margin: 0;
+  background: #060810; /* matches default --bg-rgb; JS overrides once art loads */
+}
+
+#root {
+  width: 100%;
+  height: 100%;          /* ← αυτό είναι το κλειδί, ΟΧΙ min-height */
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}

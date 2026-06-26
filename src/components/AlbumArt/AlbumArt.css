@@ -1,0 +1,44 @@
+.album-art {
+  position: relative;
+  border-radius: var(--aurora-radius);
+  overflow: hidden;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--aurora-glass-border);
+  box-shadow:
+    0 8px 32px rgba(0,0,0,0.5),
+    0 0 0 1px rgba(255,255,255,0.06),
+    inset 0 1px 0 rgba(255,255,255,0.08);
+  aspect-ratio: 1;
+}
+
+.album-art--sm { width: 56px; height: 56px; border-radius: 10px; }
+.album-art--md { width: 100%; max-width: 220px; }
+.album-art--lg { width: 100%; }
+
+.album-art__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.album-art__placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--aurora-text-dim);
+}
+
+.album-art__shine {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    135deg,
+    rgba(255,255,255,0.08) 0%,
+    transparent 50%,
+    rgba(0,0,0,0.1) 100%
+  );
+  pointer-events: none;
+}
