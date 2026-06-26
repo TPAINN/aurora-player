@@ -1,0 +1,213 @@
+.sbar {
+  position: relative;
+  width: 100%;
+  max-width: 560px;
+}
+
+.sbar__row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.sbar__box {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--aurora-glass);
+  border: 1px solid var(--aurora-glass-border);
+  border-radius: 14px;
+  padding: 0 14px;
+  height: 48px;
+  backdrop-filter: var(--aurora-blur);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.sbar__box:focus-within {
+  border-color: rgba(var(--c1), 0.5);
+  box-shadow: 0 0 0 2px rgba(var(--c1), 0.12), 0 8px 24px rgba(0,0,0,0.3);
+}
+
+.sbar__icon {
+  color: var(--aurora-text-dim);
+  flex-shrink: 0;
+}
+
+.sbar__input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--aurora-text);
+  font-size: 15px;
+  font-family: inherit;
+  line-height: 1;
+}
+
+.sbar__input::placeholder {
+  color: var(--aurora-text-dim);
+}
+
+.sbar__clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: rgba(255,255,255,0.1);
+  border-radius: 50%;
+  color: var(--aurora-text-dim);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+.sbar__clear:hover {
+  background: rgba(255,255,255,0.18);
+  color: var(--aurora-text);
+}
+
+.sbar__spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255,255,255,0.2);
+  border-top-color: rgba(var(--c1),0.9);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  display: block;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.sbar__hist-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border: 1px solid var(--aurora-glass-border);
+  background: var(--aurora-glass);
+  border-radius: 14px;
+  color: var(--aurora-text-dim);
+  cursor: pointer;
+  backdrop-filter: var(--aurora-blur);
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
+  flex-shrink: 0;
+}
+.sbar__hist-btn:hover,
+.sbar__hist-btn.active {
+  border-color: rgba(var(--c1),0.4);
+  color: rgba(var(--c1),1);
+  background: rgba(var(--c1),0.08);
+}
+
+/* Dropdown */
+.sbar__drop {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  background: rgba(10,8,20,0.92);
+  border: 1px solid var(--aurora-glass-border);
+  border-radius: 16px;
+  backdrop-filter: blur(30px) saturate(200%);
+  box-shadow: 0 16px 48px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04);
+  overflow: hidden;
+  z-index: 100;
+  max-height: min(420px, 60vh);
+  overflow-y: auto;
+}
+.sbar__drop::-webkit-scrollbar { width: 4px; }
+.sbar__drop::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+
+.sbar__drop-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--aurora-text-dim);
+}
+
+.sbar__hist-clear {
+  background: none;
+  border: none;
+  color: rgba(var(--c1),0.7);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+.sbar__hist-clear:hover { background: rgba(var(--c1),0.1); }
+
+.sbar__drop-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 14px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s;
+}
+.sbar__drop-item:hover {
+  background: rgba(255,255,255,0.05);
+}
+
+.sbar__drop-art {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: rgba(255,255,255,0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--aurora-text-dim);
+}
+.sbar__drop-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.sbar__drop-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sbar__drop-track {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--aurora-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sbar__drop-meta {
+  font-size: 12px;
+  color: var(--aurora-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sbar__drop-dur {
+  font-size: 12px;
+  color: var(--aurora-text-dim);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}

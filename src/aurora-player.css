@@ -1,0 +1,414 @@
+/* ─── Aurora Player — Premium Design Layer ────────────────────────────────────
+   This file layers on top of App.css to elevate the visual quality of the
+   public Aurora Player deployment. Import AFTER index.css in main.jsx.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* ── Deeper, richer dark background ────────────────────────────────────────── */
+:root {
+  --bg-depth: #04060f;
+  --glass-bg: rgba(8, 12, 28, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.07);
+  --glass-shadow: 0 8px 40px rgba(0, 0, 0, 0.55), 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  --text-primary: rgba(255, 255, 255, 0.96);
+  --text-secondary: rgba(255, 255, 255, 0.52);
+  --text-tertiary: rgba(255, 255, 255, 0.28);
+  --accent-glow: rgba(167, 139, 250, 0.18);
+  --seek-height: 3px;
+  --control-radius: 14px;
+  --lyric-transition: 0.38s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+body {
+  background: var(--bg-depth);
+}
+
+/* ── Premium glassmorphism search box ───────────────────────────────────────── */
+.sbox {
+  background: var(--glass-bg) !important;
+  border: 1px solid var(--glass-border) !important;
+  box-shadow: var(--glass-shadow) !important;
+  backdrop-filter: blur(28px) saturate(1.6) !important;
+  -webkit-backdrop-filter: blur(28px) saturate(1.6) !important;
+  border-radius: 14px !important;
+  transition:
+    border-color 0.22s ease,
+    box-shadow 0.22s ease,
+    background 0.22s ease !important;
+}
+
+.sbox:focus-within {
+  border-color: rgba(167, 139, 250, 0.38) !important;
+  box-shadow:
+    var(--glass-shadow),
+    0 0 0 3px rgba(167, 139, 250, 0.12),
+    0 0 24px rgba(167, 139, 250, 0.10) !important;
+  background: rgba(12, 16, 36, 0.82) !important;
+}
+
+.sbox input {
+  color: var(--text-primary) !important;
+  letter-spacing: 0.01em;
+}
+
+.sbox input::placeholder {
+  color: var(--text-tertiary) !important;
+  letter-spacing: 0.03em;
+}
+
+/* ── Search dropdown — premium glass card ───────────────────────────────────── */
+.drop {
+  background: rgba(8, 10, 22, 0.88) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  backdrop-filter: blur(36px) saturate(1.8) !important;
+  -webkit-backdrop-filter: blur(36px) saturate(1.8) !important;
+  box-shadow:
+    0 24px 64px rgba(0, 0, 0, 0.65),
+    0 1px 0 rgba(255, 255, 255, 0.05) inset !important;
+  border-radius: 16px !important;
+}
+
+.drop-item {
+  border-radius: 10px !important;
+  transition:
+    background 0.18s ease,
+    transform 0.15s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+.drop-item:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+  transform: translateX(2px) !important;
+}
+
+.dtitle {
+  color: var(--text-primary) !important;
+  font-weight: 500 !important;
+  letter-spacing: -0.01em !important;
+}
+
+.dartist {
+  color: var(--text-secondary) !important;
+  font-size: 0.78rem !important;
+}
+
+/* ── Better typography for title / artist ───────────────────────────────────── */
+.lp-title {
+  font-size: clamp(1.15rem, 2.4vw, 1.55rem) !important;
+  font-weight: 650 !important;
+  letter-spacing: -0.025em !important;
+  line-height: 1.2 !important;
+  color: var(--text-primary) !important;
+}
+
+.lp-artist {
+  font-size: clamp(0.78rem, 1.4vw, 0.95rem) !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+  color: var(--text-secondary) !important;
+  margin-bottom: 4px !important;
+}
+
+.cover-reveal-title {
+  font-size: clamp(1.4rem, 4vw, 2.2rem) !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.03em !important;
+  line-height: 1.15 !important;
+}
+
+.cover-reveal-artist {
+  font-size: clamp(0.85rem, 2vw, 1.1rem) !important;
+  letter-spacing: 0.08em !important;
+  text-transform: uppercase !important;
+  opacity: 0.6 !important;
+  margin-top: 6px !important;
+}
+
+/* ── Smoother lyric transitions ─────────────────────────────────────────────── */
+.lyr {
+  transition:
+    opacity var(--lyric-transition),
+    transform var(--lyric-transition),
+    filter var(--lyric-transition),
+    color var(--lyric-transition) !important;
+  will-change: opacity, transform;
+}
+
+/* Active line — brighter, slight lift */
+.lyr.la {
+  transform: translateX(2px) !important;
+  text-shadow:
+    0 0 40px rgba(var(--c1-glow, 167, 139, 250), 0.35),
+    0 2px 12px rgba(0, 0, 0, 0.4) !important;
+}
+
+/* Upcoming line — subtle warm tint */
+.lyr.l-upcoming {
+  opacity: 0.62 !important;
+  transform: translateX(1px) !important;
+}
+
+/* Distance-based fade with smoother curve */
+.lyr.l1  { opacity: 0.68 !important; transform: translateX(0) !important; }
+.lyr.l2  { opacity: 0.42 !important; }
+.lyr.l3  { opacity: 0.24 !important; }
+.lyr.l4  { opacity: 0.14 !important; }
+.lyr.l5  { opacity: 0.08 !important; }
+
+/* ── Premium seek bar ───────────────────────────────────────────────────────── */
+.track {
+  height: var(--seek-height) !important;
+  background: rgba(255, 255, 255, 0.10) !important;
+  border-radius: 99px !important;
+  position: relative;
+  overflow: visible !important;
+  cursor: pointer;
+  transition: height 0.18s ease !important;
+}
+
+.track:hover,
+.track[data-active] {
+  height: 5px !important;
+}
+
+.tfill {
+  height: 100% !important;
+  border-radius: 99px !important;
+  background: linear-gradient(
+    90deg,
+    rgba(var(--c1-glow, 167, 139, 250), 0.95),
+    rgba(var(--c2-glow, 244, 114, 182), 0.80),
+    rgba(var(--c3-glow, 103, 232, 249), 0.65)
+  ) !important;
+  box-shadow:
+    0 0 12px rgba(var(--c1-glow, 167, 139, 250), 0.5),
+    0 0 4px rgba(var(--c2-glow, 244, 114, 182), 0.3) !important;
+  transition: width 0.08s linear !important;
+}
+
+.tthumb {
+  position: absolute !important;
+  top: 50% !important;
+  transform: translate(-50%, -50%) scale(0) !important;
+  width: 13px !important;
+  height: 13px !important;
+  border-radius: 50% !important;
+  background: #fff !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45) !important;
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  pointer-events: none;
+}
+
+.track:hover .tthumb,
+.track[data-active] .tthumb {
+  transform: translate(-50%, -50%) scale(1) !important;
+}
+
+/* ── Controls ───────────────────────────────────────────────────────────────── */
+.play-btn {
+  width: 54px !important;
+  height: 54px !important;
+  border-radius: 50% !important;
+  background: rgba(255, 255, 255, 0.96) !important;
+  color: #0a0c18 !important;
+  box-shadow:
+    0 4px 20px rgba(0, 0, 0, 0.4),
+    0 1px 0 rgba(255, 255, 255, 0.2) inset !important;
+  transition:
+    background 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.12s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+.play-btn:hover {
+  background: #fff !important;
+  box-shadow:
+    0 6px 28px rgba(0, 0, 0, 0.5),
+    0 0 20px rgba(167, 139, 250, 0.25),
+    0 1px 0 rgba(255, 255, 255, 0.3) inset !important;
+}
+
+.play-btn-chorus {
+  background: linear-gradient(135deg,
+    rgba(var(--c1-glow, 167, 139, 250), 0.96),
+    rgba(var(--c2-glow, 244, 114, 182), 0.88)
+  ) !important;
+  box-shadow:
+    0 4px 24px rgba(var(--c1-glow, 167, 139, 250), 0.5),
+    0 0 40px rgba(var(--c2-glow, 244, 114, 182), 0.25) !important;
+  color: #fff !important;
+}
+
+.ico-btn {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: var(--control-radius) !important;
+  color: var(--text-secondary) !important;
+  transition:
+    background 0.18s ease,
+    color 0.18s ease,
+    border-color 0.18s ease !important;
+}
+
+.ico-btn:hover {
+  background: rgba(255, 255, 255, 0.11) !important;
+  color: var(--text-primary) !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+}
+
+.ico-btn-active {
+  background: rgba(var(--c1-glow, 167, 139, 250), 0.18) !important;
+  border-color: rgba(var(--c1-glow, 167, 139, 250), 0.35) !important;
+  color: rgba(var(--c1-glow, 167, 139, 250), 1) !important;
+}
+
+/* ── Album art — richer shadow and border ───────────────────────────────────── */
+.lp-art {
+  border-radius: 14px !important;
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.65),
+    0 4px 16px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(255, 255, 255, 0.06) inset !important;
+}
+
+/* ── Left panel — premium glass card ────────────────────────────────────────── */
+.left-panel {
+  background: rgba(6, 8, 20, 0.52) !important;
+  border: 1px solid rgba(255, 255, 255, 0.055) !important;
+  backdrop-filter: blur(24px) !important;
+  -webkit-backdrop-filter: blur(24px) !important;
+  border-radius: 20px !important;
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.45),
+    0 1px 0 rgba(255, 255, 255, 0.04) inset !important;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────────── */
+.hdr {
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+}
+
+/* ── Offset controls ─────────────────────────────────────────────────────────── */
+.offset-btn {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid rgba(255, 255, 255, 0.07) !important;
+  border-radius: 8px !important;
+  color: var(--text-secondary) !important;
+  transition: background 0.15s ease, color 0.15s ease !important;
+}
+
+.offset-btn:hover {
+  background: rgba(255, 255, 255, 0.10) !important;
+  color: var(--text-primary) !important;
+}
+
+.offset-label {
+  font-variant-numeric: tabular-nums !important;
+  color: var(--text-secondary) !important;
+  letter-spacing: 0.05em !important;
+}
+
+/* ── Logo / brand ────────────────────────────────────────────────────────────── */
+.hero-logo, .logo {
+  letter-spacing: -0.04em !important;
+}
+
+.hero-sub {
+  letter-spacing: 0.18em !important;
+  font-size: 0.7rem !important;
+  font-weight: 500 !important;
+  opacity: 0.45 !important;
+}
+
+.hero-powered {
+  font-size: 0.65rem !important;
+  letter-spacing: 0.12em !important;
+  opacity: 0.28 !important;
+}
+
+/* ── Word-level sync highlights ──────────────────────────────────────────────── */
+.lyr-word {
+  transition:
+    color 0.12s ease,
+    opacity 0.15s ease,
+    text-shadow 0.18s ease !important;
+}
+
+/* ── Scrollbar — minimal and dark ────────────────────────────────────────────── */
+.lyric-scroll::-webkit-scrollbar {
+  width: 3px !important;
+}
+
+.lyric-scroll::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+
+.lyric-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.10) !important;
+  border-radius: 99px !important;
+}
+
+.lyric-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.20) !important;
+}
+
+/* ── Badges ──────────────────────────────────────────────────────────────────── */
+.rs-badge {
+  font-size: 0.6rem !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.08em !important;
+  background: rgba(var(--c1-glow, 167, 139, 250), 0.18) !important;
+  color: rgba(var(--c1-glow, 167, 139, 250), 0.9) !important;
+  border: 1px solid rgba(var(--c1-glow, 167, 139, 250), 0.3) !important;
+  border-radius: 5px !important;
+  padding: 2px 5px !important;
+}
+
+.yt-badge {
+  font-size: 0.6rem !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.06em !important;
+  background: rgba(255, 60, 60, 0.15) !important;
+  color: rgba(255, 100, 100, 0.9) !important;
+  border: 1px solid rgba(255, 60, 60, 0.28) !important;
+  border-radius: 5px !important;
+  padding: 2px 5px !important;
+}
+
+/* ── Recommendations overlay ─────────────────────────────────────────────────── */
+.recommend-panel {
+  background: rgba(8, 10, 22, 0.92) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  backdrop-filter: blur(40px) !important;
+  -webkit-backdrop-filter: blur(40px) !important;
+  border-radius: 20px !important;
+  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.7) !important;
+}
+
+.recommend-card {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border: 1px solid rgba(255, 255, 255, 0.06) !important;
+  border-radius: 12px !important;
+  transition:
+    background 0.18s ease,
+    transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 0.18s ease !important;
+}
+
+.recommend-card:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(var(--c1-glow, 167, 139, 250), 0.2) !important;
+  transform: translateY(-2px) !important;
+}
+
+/* ── Reduced motion overrides ────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .lyr {
+    transition: opacity 0.15s ease !important;
+    transform: none !important;
+  }
+  .lyr.la {
+    transform: none !important;
+  }
+}
