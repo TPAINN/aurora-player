@@ -284,10 +284,17 @@ app.use(express.json());
 app.get('/api/health', (req: Request, res: Response) => {
   res.json({
     status: 'Aurora Backend Operational',
-    version: '2.0.0',
+    version: '3.2.0',
     cache: { size: lyricsCache.size },
+    lrclib: 'primary',
+    rapidapi: !!process.env.RAPIDAPI_KEY,
     timestamp: new Date().toISOString(),
   });
+});
+
+// /api/status alias — used by prewarm() in the frontend
+app.get('/api/status', (_req: Request, res: Response) => {
+  res.json({ status: 'ok', app: 'Aurora Player' });
 });
 
 // ─── Search (Genius API → AJAX → LRCLib) with seamless fallbacks ─────────────
