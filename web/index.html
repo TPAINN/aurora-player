@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Aurora Player - Music That Comes Alive</title>
+<meta name="description" content="Aurora syncs every word, extracts live album palettes, and reacts to every beat - all through YouTube. Free, open source.">
+<meta property="og:title" content="Aurora Player - Music That Comes Alive">
+<meta property="og:description" content="Word-level synced lyrics. Beat-reactive visuals. YouTube audio.">
+<meta name="theme-color" content="#04060f">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=DM+Serif+Display:ital@0;1&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+:root{
+  --bg:#04060f;--s1:rgba(12,15,30,.60);--s2:rgba(16,20,44,.40);
+  --bd:rgba(255,255,255,.07);--bd2:rgba(255,255,255,.13);
+  --p:167,139,250;--pk:244,114,182;--cy:103,232,249;
+  --tx:rgba(255,255,255,.92);--mu:rgba(255,255,255,.44);--r:20px
+}
+body{
+  background:var(--bg);color:var(--tx);
+  font-family:'Space Grotesk',system-ui,sans-serif;
+  line-height:1.6;overflow-x:hidden;-webkit-font-smoothing:antialiased
+}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px;position:relative;z-index:1}
+
+/* NAV */
+header{
+  position:sticky;top:0;z-index:100;
+  backdrop-filter:blur(24px) saturate(1.5);
+  -webkit-backdrop-filter:blur(24px) saturate(1.5);
+  border-bottom:1px solid var(--bd);
+  background:rgba(4,6,15,.72)
+}
+nav{padding:20px 0;display:flex;align-items:center;justify-content:space-between}
+.nav-logo{display:flex;align-items:center;gap:10px;font-size:1.15rem;font-weight:700;letter-spacing:-.03em}
+.logo-icon{
+  width:34px;height:34px;border-radius:10px;
+  background:linear-gradient(135deg,rgb(var(--p)) 0%,rgb(var(--pk)) 55%,rgb(var(--cy)) 100%);
+  display:flex;align-items:center;justify-content:center;
+  font-size:15px;box-shadow:0 0 26px rgba(var(--p),.4)
+}
+.nav-links{display:flex;align-items:center;gap:10px}
+.nav-gh{
+  color:var(--mu);text-decoration:none;font-size:.88rem;
+  border:1px solid var(--bd);padding:8px 18px;border-radius:999px;
+  transition:color .2s,border-color .2s
+}
+.nav-gh:hover{color:var(--tx);border-color:var(--bd2)}
+.nav-cta{
+  text-decoration:none;font-size:.88rem;font-weight:600;
+  padding:9px 20px;border-radius:999px;
+  background:rgba(var(--p),.14);color:rgb(var(--p));
+  border:1px solid rgba(var(--p),.28);
+  transition:background .2s,box-shadow .2s
+}
+.nav-cta:hover{background:rgba(var(--p),.24);box-shadow:0 0 22px rgba(var(--p),.22)}
+
+/* HERO */
+.hero{
+  position:relative;overflow:hidden;
+  min-height:100svh;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  text-align:center;padding:100px 24px 60px
+}
+.aurora{position:absolute;inset:0;z-index:0;overflow:hidden}
+.ab{position:absolute;border-radius:50%;filter:blur(88px);will-change:transform;pointer-events:none}
+.ab1{
+  width:75vw;height:60vw;top:-20%;left:-12%;
+  background:radial-gradient(ellipse,rgba(var(--p),.30) 0%,transparent 68%);
+  animation:ab1m 15s ease-in-out infinite
+}
+.ab2{
+  width:62vw;height:52vw;top:8%;right:-18%;
+  background:radial-gradient(ellipse,rgba(var(--pk),.24) 0%,transparent 68%);
+  animation:ab2m 20s ease-in-out infinite
+}
+.ab3{
+  width:58vw;height:48vw;bottom:-12%;left:18%;
+  background:radial-gradient(ellipse,rgba(var(--cy),.20) 0%,transparent 68%);
+  animation:ab3m 24s ease-in-out infinite
+}
+.ab4{
+  width:42vw;height:42vw;top:28%;left:28%;
+  background:radial-gradient(ellipse,rgba(var(--p),.13) 0%,transparent 68%);
+  animation:ab4m 17s ease-in-out infinite
+}
+@keyframes ab1m{0%,100%{transform:translate(0,0) scale(1) rotate(0deg)}33%{transform:translate(9%,7%) scale(1.09) rotate(14deg)}66%{transform:translate(-5%,3%) scale(.95) rotate(-9deg)}}
+@keyframes ab2m{0%,100%{transform:translate(0,0) scale(1) rotate(0deg)}40%{transform:translate(-11%,-9%) scale(1.13) rotate(-16deg)}75%{transform:translate(6%,4%) scale(.93) rotate(11deg)}}
+@keyframes ab3m{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-9%,-6%) scale(1.11) rotate(22deg)}}
+@keyframes ab4m{0%,100%{transform:translate(0,0) scale(1) rotate(0deg)}45%{transform:translate(13%,-11%) scale(1.16) rotate(-28deg)}}
+.aurora::after{
+  content:'';position:absolute;inset:0;
+  background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);
+  background-size:64px 64px;
+  mask:radial-gradient(ellipse 80% 65% at 50% 50%,black 15%,transparent 75%)
+}
+.hero-inner{position:relative;z-index:1;max-width:840px}
+.badge{
+  display:inline-flex;align-items:center;gap:7px;
+  padding:6px 16px 6px 10px;border-radius:999px;
+  background:rgba(var(--p),.10);border:1px solid rgba(var(--p),.22);
+  font-size:.76rem;font-weight:600;letter-spacing:.05em;
+  color:rgb(var(--p));margin-bottom:34px;text-transform:uppercase
+}
+.badge-dot{width:6px;height:6px;border-radius:50%;background:rgb(var(--p));animation:blink 2.2s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+h1{
+  font-family:'DM Serif Display',serif;
+  font-size:clamp(2.8rem,8.5vw,6.8rem);
+  font-weight:400;line-height:1.04;letter-spacing:-.026em;margin-bottom:26px
+}
+.h1-em{
+  background:linear-gradient(135deg,rgb(var(--p)) 0%,rgb(var(--pk)) 48%,rgb(var(--cy)) 100%);
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;font-style:italic
+}
+.hero-sub{color:var(--mu);font-size:clamp(1rem,2.4vw,1.22rem);max-width:560px;margin:0 auto 40px;line-height:1.7}
+.pills{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin-bottom:40px}
+.pill{padding:5px 14px;border-radius:999px;background:var(--s1);border:1px solid var(--bd);font-size:.79rem;color:var(--mu);font-weight:500}
+.cta-row{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.btn-main{
+  display:inline-flex;align-items:center;gap:8px;text-decoration:none;
+  font-weight:600;font-size:1rem;padding:15px 34px;border-radius:999px;
+  background:linear-gradient(135deg,rgb(var(--p)),rgb(var(--pk)));
+  color:#fff;box-shadow:0 0 44px rgba(var(--p),.36);transition:transform .15s,box-shadow .2s
+}
+.btn-main:hover{transform:translateY(-2px);box-shadow:0 0 64px rgba(var(--p),.52)}
+.btn-ghost{
+  display:inline-flex;align-items:center;gap:8px;text-decoration:none;
+  font-weight:500;font-size:1rem;padding:15px 28px;border-radius:999px;
+  background:var(--s1);color:var(--tx);border:1px solid var(--bd2);
+  transition:background .2s,border-color .2s
+}
+.btn-ghost:hover{background:var(--s2);border-color:rgba(255,255,255,.18)}
+
+/* COVER WALL */
+.cover-wall{position:relative;z-index:1;padding:60px 0 0;perspective:1000px}
+.cover-grid{
+  display:grid;grid-template-columns:repeat(7,96px);grid-template-rows:repeat(2,96px);
+  gap:12px;justify-content:center;
+  transform:rotateX(24deg) scale(.88);opacity:.55;
+  mask:linear-gradient(to bottom,transparent 0%,black 20%,black 60%,transparent 100%)
+}
+.cov{border-radius:14px;position:relative;overflow:hidden;background:var(--s1);border:1px solid var(--bd);animation:cfloat var(--cd,4.2s) var(--co,0s) ease-in-out infinite}
+.cov::before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,var(--ca),var(--cb))}
+@keyframes cfloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+.cv1{--ca:rgba(167,139,250,.6);--cb:rgba(244,114,182,.3);--cd:3.9s;--co:0s}
+.cv2{--ca:rgba(244,114,182,.6);--cb:rgba(103,232,249,.3);--cd:4.3s;--co:.3s}
+.cv3{--ca:rgba(103,232,249,.6);--cb:rgba(167,139,250,.3);--cd:3.6s;--co:.6s}
+.cv4{--ca:rgba(167,139,250,.4);--cb:rgba(244,114,182,.6);--cd:4.8s;--co:.2s}
+.cv5{--ca:rgba(244,114,182,.4);--cb:rgba(167,139,250,.6);--cd:4.0s;--co:.5s}
+.cv6{--ca:rgba(103,232,249,.65);--cb:rgba(167,139,250,.3);--cd:4.5s;--co:.4s}
+.cv7{--ca:rgba(167,139,250,.3);--cb:rgba(103,232,249,.65);--cd:3.7s;--co:.7s}
+.cv8{--ca:rgba(244,114,182,.65);--cb:rgba(103,232,249,.25);--cd:4.2s;--co:.1s}
+.cv9{--ca:rgba(103,232,249,.3);--cb:rgba(244,114,182,.65);--cd:4.6s;--co:.8s}
+.cv10{--ca:rgba(167,139,250,.65);--cb:rgba(103,232,249,.2);--cd:3.8s;--co:.6s}
+.cv11{--ca:rgba(244,114,182,.3);--cb:rgba(167,139,250,.6);--cd:4.7s;--co:.35s}
+.cv12{--ca:rgba(103,232,249,.5);--cb:rgba(244,114,182,.5);--cd:4.1s;--co:.9s}
+.cv13{--ca:rgba(167,139,250,.5);--cb:rgba(244,114,182,.45);--cd:3.5s;--co:.25s}
+.cv14{--ca:rgba(244,114,182,.45);--cb:rgba(103,232,249,.55);--cd:4.4s;--co:.7s}
+
+/* SECTION SHARED */
+section{padding:96px 0}
+.s-label{font-size:.73rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:rgb(var(--p));margin-bottom:14px}
+.s-title{font-family:'DM Serif Display',serif;font-size:clamp(2rem,5vw,3.5rem);font-weight:400;letter-spacing:-.026em;line-height:1.1;margin-bottom:18px}
+.s-sub{color:var(--mu);font-size:1.08rem;max-width:520px;line-height:1.72}
+
+/* BENTO */
+.bento{display:grid;gap:14px;margin-top:56px}
+@media(min-width:720px){
+  .bento{grid-template-columns:repeat(12,1fr);grid-auto-rows:200px}
+  .b1{grid-column:span 7;grid-row:span 2}
+  .b2{grid-column:span 5}
+  .b3{grid-column:span 5}
+  .b4{grid-column:span 4}
+  .b5{grid-column:span 4}
+  .b6{grid-column:span 4}
+}
+.bc{
+  background:var(--s1);border:1px solid var(--bd);border-radius:var(--r);padding:26px;
+  overflow:hidden;position:relative;backdrop-filter:blur(20px) saturate(1.4);
+  transition:border-color .25s,box-shadow .25s,transform .22s
+}
+.bc:hover{border-color:var(--bd2);transform:translateY(-3px);box-shadow:0 24px 56px rgba(0,0,0,.55)}
+.bc::before{
+  content:'';position:absolute;top:-60%;left:-60%;
+  width:48%;height:200%;
+  background:linear-gradient(105deg,transparent 40%,rgba(255,255,255,.042) 50%,transparent 60%);
+  transform:skewX(-20deg);transition:left .6s ease
+}
+.bc:hover::before{left:165%}
+.bc-lbl{font-size:.7rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--mu);margin-bottom:9px}
+.bc-h{font-size:1.22rem;font-weight:700;letter-spacing:-.022em;margin-bottom:9px;line-height:1.22}
+.bc-p{color:var(--mu);font-size:.86rem;line-height:1.62;max-width:340px}
+
+.b1{border-color:rgba(var(--p),.18)}
+.b1::after{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgb(var(--p)),transparent)}
+.lyric-demo{margin-top:24px;display:flex;flex-direction:column;gap:11px}
+.ld{font-family:'DM Serif Display',serif;font-size:clamp(1.05rem,2.4vw,1.5rem);line-height:1.28;letter-spacing:-.01em;color:rgba(255,255,255,.14);transition:color .38s}
+.ld.active{color:rgba(255,255,255,.96);text-shadow:0 0 36px rgba(var(--p),.75)}
+.ld-w{display:inline;transition:all .14s}
+.ld-w.lit{background:linear-gradient(135deg,rgb(var(--p)),rgb(var(--pk)));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;text-shadow:none;filter:drop-shadow(0 0 10px rgba(var(--p),.65))}
+
+.b2{border-color:rgba(var(--pk),.18)}
+.wave-demo{position:absolute;bottom:20px;right:20px;left:20px;top:72px;display:flex;align-items:flex-end;justify-content:center;gap:5px}
+.wb{width:6px;border-radius:4px;background:linear-gradient(to top,rgb(var(--pk)),rgb(var(--p)));box-shadow:0 0 8px rgba(var(--pk),.45);animation:wba var(--wd,.76s) var(--wo,0s) ease-in-out infinite}
+@keyframes wba{0%,100%{height:var(--wn,12px);opacity:.5}50%{height:var(--wx,70px);opacity:1}}
+
+.b3{border-color:rgba(var(--cy),.18)}
+.q-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:6px;margin-top:14px;background:rgba(var(--cy),.10);border:1px solid rgba(var(--cy),.22);font-size:.78rem;font-weight:700;color:rgb(var(--cy));letter-spacing:.02em}
+.mini-wv{display:flex;align-items:center;gap:3px;margin-top:20px}
+.mw{width:3px;border-radius:2px;background:rgb(var(--cy));opacity:.55;animation:mwa var(--md,.7s) var(--mo,0s) ease-in-out infinite}
+@keyframes mwa{0%,100%{height:5px;opacity:.3}50%{height:var(--mh,20px);opacity:.85}}
+
+.b4{border-color:rgba(var(--p),.18);overflow:visible}
+.chorus-demo{position:absolute;bottom:-8px;right:-8px;width:120px;height:120px;display:flex;align-items:center;justify-content:center}
+.cr{position:absolute;border-radius:50%;border:2px solid;animation:cre 2.2s ease-out infinite;opacity:0;width:38px;height:38px}
+.cr:nth-child(1){border-color:rgba(var(--p),.9);animation-delay:0s}
+.cr:nth-child(2){border-color:rgba(var(--pk),.65);animation-delay:.42s}
+.cr:nth-child(3){border-color:rgba(var(--cy),.45);animation-delay:.84s}
+@keyframes cre{0%{transform:scale(.5);opacity:.85}100%{transform:scale(4);opacity:0}}
+
+.b5{border-color:rgba(var(--pk),.18)}
+.pal-demo{display:flex;gap:8px;margin-top:20px}
+.pal{flex:1;height:50px;border-radius:10px;animation:psh 6s ease-in-out infinite}
+.pal:nth-child(1){background:rgb(var(--p));animation-delay:0s}
+.pal:nth-child(2){background:rgb(var(--pk));animation-delay:.4s}
+.pal:nth-child(3){background:rgb(var(--cy));animation-delay:.8s}
+.pal:nth-child(4){background:rgb(60,100,200);animation-delay:1.2s}
+@keyframes psh{0%,100%{transform:scaleY(1)}50%{transform:scaleY(.78)}}
+
+.b6{border-color:rgba(var(--cy),.18)}
+.sec-meter{margin-top:18px;display:flex;flex-direction:column;gap:11px}
+.sm{display:flex;align-items:center;gap:10px}
+.sm-n{font-size:.73rem;font-weight:600;color:var(--mu);width:60px;flex-shrink:0}
+.sm-bg{flex:1;height:5px;border-radius:99px;background:rgba(255,255,255,.07);overflow:hidden}
+.sm-fill{height:100%;border-radius:99px}
+.s-chorus .sm-fill{width:92%;background:linear-gradient(90deg,rgb(var(--p)),rgb(var(--pk)))}
+.s-verse .sm-fill{width:54%;background:rgba(var(--cy),.7)}
+.s-bridge .sm-fill{width:35%;background:rgba(var(--pk),.7)}
+.s-intro .sm-fill{width:16%;background:rgba(var(--cy),.38)}
+
+/* HOW IT WORKS */
+.hiw-bg{background:linear-gradient(180deg,transparent,rgba(var(--p),.04),transparent)}
+.steps{display:grid;gap:1px;margin-top:56px;border-top:1px solid var(--bd)}
+@media(min-width:720px){.steps{grid-template-columns:repeat(3,1fr);border-top:none}}
+.step{padding:40px 30px;border-top:1px solid var(--bd);transition:background .22s}
+@media(min-width:720px){.step{border-top:none;border-left:1px solid var(--bd)}.step:first-child{border-left:none}}
+.step:hover{background:rgba(var(--p),.04)}
+.step-n{font-family:'DM Serif Display',serif;font-size:3.8rem;font-weight:400;line-height:1;margin-bottom:18px;background:linear-gradient(135deg,rgb(var(--p)) 0%,rgb(var(--pk)) 100%);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.step h3{font-size:1.18rem;font-weight:700;margin-bottom:10px;letter-spacing:-.02em}
+.step p{color:var(--mu);font-size:.9rem;line-height:1.68}
+
+/* MOCKUP */
+.mockup-outer{overflow:hidden}
+.mockup-wrap{margin-top:56px;display:flex;justify-content:center;perspective:1200px}
+.mockup{
+  width:min(700px,100%);border-radius:22px;overflow:hidden;
+  background:rgba(7,9,20,.95);border:1px solid rgba(var(--p),.18);
+  box-shadow:0 0 0 1px rgba(255,255,255,.04) inset,0 48px 120px rgba(0,0,0,.8),0 0 90px rgba(var(--p),.10);
+  transform:rotateX(5deg);transform-origin:top center
+}
+.m-chrome{height:44px;background:rgba(255,255,255,.03);border-bottom:1px solid var(--bd);display:flex;align-items:center;padding:0 16px;gap:7px}
+.md{width:10px;height:10px;border-radius:50%}
+.md1{background:#ff5f57}.md2{background:#febc2e}.md3{background:#28c840}
+.m-url{flex:1;margin:0 14px;height:22px;border-radius:6px;background:rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;font-size:.7rem;color:var(--mu)}
+.m-body{display:grid;grid-template-columns:250px 1fr;min-height:380px}
+@media(max-width:580px){.m-body{grid-template-columns:1fr}}
+.m-left{padding:26px;border-right:1px solid var(--bd);display:flex;flex-direction:column;gap:14px}
+.m-art{aspect-ratio:1;border-radius:14px;overflow:hidden;position:relative;background:linear-gradient(135deg,rgba(var(--p),.45),rgba(var(--pk),.3),rgba(var(--cy),.2))}
+.m-art::before{content:'&#9835;';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:2.8rem;opacity:.28}
+.m-art-sh{position:absolute;inset:0;background:linear-gradient(105deg,transparent 30%,rgba(255,255,255,.1) 48%,transparent 66%);animation:artsh 3s ease-in-out infinite}
+@keyframes artsh{0%{transform:translateX(-120%) skewX(-10deg)}100%{transform:translateX(220%) skewX(-10deg)}}
+.m-track{font-weight:700;font-size:.97rem;letter-spacing:-.02em}
+.m-artist{font-size:.82rem;color:var(--mu);margin-top:2px}
+.m-prog{height:3px;border-radius:2px;background:rgba(255,255,255,.1);overflow:hidden;margin-top:4px}
+.m-fill{height:100%;width:42%;border-radius:2px;background:linear-gradient(90deg,rgb(var(--p)),rgb(var(--pk)));box-shadow:0 0 12px rgba(var(--p),.55)}
+.m-ctrl{display:flex;align-items:center;justify-content:center;gap:18px;margin-top:4px}
+.m-btn{width:34px;height:34px;border-radius:50%;background:rgba(var(--p),.14);border:none;cursor:pointer;color:rgb(var(--p));display:flex;align-items:center;justify-content:center;font-size:.78rem}
+.m-play{width:48px;height:48px;font-size:1rem;background:linear-gradient(135deg,rgb(var(--p)),rgb(var(--pk)));color:#fff;box-shadow:0 0 22px rgba(var(--p),.38)}
+.m-right{padding:26px;overflow:hidden;position:relative}
+.m-right::before{content:'';position:absolute;top:0;left:0;right:0;height:52px;background:linear-gradient(to bottom,rgba(7,9,20,.95),transparent);z-index:1}
+.m-right::after{content:'';position:absolute;bottom:0;left:0;right:0;height:80px;background:linear-gradient(to top,rgba(7,9,20,.95),transparent);z-index:1}
+.ml{padding:7px 0;font-family:'DM Serif Display',serif;font-size:1.28rem;line-height:1.28;letter-spacing:-.01em;color:rgba(255,255,255,.13);transition:all .36s}
+.ml.mla{color:rgba(255,255,255,.96);font-size:1.48rem;text-shadow:0 0 40px rgba(var(--p),.7)}
+.ml.mlp{color:rgba(255,255,255,.30)}
+.ml.mln{color:rgba(255,255,255,.13)}
+
+/* FOOTER */
+footer{border-top:1px solid var(--bd);padding:52px 0;text-align:center;color:var(--mu);font-size:.9rem}
+footer a{color:rgb(var(--p));text-decoration:none;transition:opacity .2s}
+footer a:hover{opacity:.68}
+.foot-logo{display:flex;align-items:center;gap:8px;justify-content:center;margin-bottom:16px;font-weight:700;font-size:1.08rem;color:var(--tx)}
+.reveal{opacity:0;transform:translateY(30px);transition:opacity .72s ease,transform .72s ease}
+.reveal.in{opacity:1;transform:none}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}.cover-wall{display:none}}
+@media(max-width:720px){.nav-gh{display:none}.cover-grid{grid-template-columns:repeat(5,80px);grid-template-rows:repeat(2,80px)}.bc{padding:18px}}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <nav>
+      <div class="nav-logo">
+        <div class="logo-icon">&#9835;</div>
+        Aurora
+      </div>
+      <div class="nav-links">
+        <a class="nav-gh" href="https://github.com/TPAINN/aurora-player" target="_blank" rel="noopener">GitHub &#8599;</a>
+        <a class="nav-cta" href="https://aurora-player.vercel.app">Open Player &#8594;</a>
+      </div>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="aurora" aria-hidden="true">
+    <div class="ab ab1"></div><div class="ab ab2"></div>
+    <div class="ab ab3"></div><div class="ab ab4"></div>
+  </div>
+  <div class="hero-inner">
+    <div class="badge"><span class="badge-dot"></span>Free &nbsp;&middot;&nbsp; Open Source &nbsp;&middot;&nbsp; No Sign-up</div>
+    <h1>Music that<br><em class="h1-em">comes alive.</em></h1>
+    <p class="hero-sub">Aurora Player syncs every word, extracts your album&rsquo;s exact colors, and reacts to every beat &mdash; all through YouTube audio.</p>
+    <div class="pills">
+      <span class="pill">Word-level lyrics</span>
+      <span class="pill">Beat-reactive background</span>
+      <span class="pill">Chorus detection</span>
+      <span class="pill">YouTube audio</span>
+      <span class="pill">Album palette extraction</span>
+    </div>
+    <div class="cta-row">
+      <a class="btn-main" href="https://aurora-player.vercel.app">&#9654; Open Aurora</a>
+      <a class="btn-ghost" href="https://github.com/TPAINN/aurora-player" target="_blank" rel="noopener">View Source &#8599;</a>
+    </div>
+  </div>
+  <div class="cover-wall" aria-hidden="true">
+    <div class="cover-grid">
+      <div class="cov cv1"></div><div class="cov cv2"></div><div class="cov cv3"></div>
+      <div class="cov cv4"></div><div class="cov cv5"></div><div class="cov cv6"></div>
+      <div class="cov cv7"></div><div class="cov cv8"></div><div class="cov cv9"></div>
+      <div class="cov cv10"></div><div class="cov cv11"></div><div class="cov cv12"></div>
+      <div class="cov cv13"></div><div class="cov cv14"></div>
+    </div>
+  </div>
+</section>
+<section>
+  <div class="wrap">
+    <div class="reveal">
+      <p class="s-label">Features</p>
+      <h2 class="s-title">Every sense, activated.</h2>
+      <p class="s-sub">A music player built for the people who close their eyes and feel the whole song.</p>
+    </div>
+    <div class="bento reveal">
+      <div class="bc b1">
+        <p class="bc-lbl">Lyrics Engine</p>
+        <p class="bc-h">Word-by-word sync</p>
+        <p class="bc-p">LRC, Enhanced LRC, and Genius-backed rich sync. Each word highlights at exactly the right millisecond.</p>
+        <div class="lyric-demo" id="ldemo">
+          <p class="ld" id="ld0"><span class="ld-w">Cause</span> <span class="ld-w">darling</span> <span class="ld-w">you</span></p>
+          <p class="ld active" id="ld1"><span class="ld-w">are</span> <span class="ld-w">a</span> <span class="ld-w">fire</span> <span class="ld-w">work</span></p>
+          <p class="ld" id="ld2"><span class="ld-w">Come</span> <span class="ld-w">on</span> <span class="ld-w">let</span> <span class="ld-w">your</span></p>
+          <p class="ld" id="ld3"><span class="ld-w">colors</span> <span class="ld-w">burst</span></p>
+        </div>
+      </div>
+      <div class="bc b2">
+        <p class="bc-lbl">Audio Analysis</p>
+        <p class="bc-h">Beat-reactive visuals</p>
+        <div class="wave-demo">
+          <div class="wb" style="--wn:9px;--wx:72px;--wd:.72s;--wo:0s"></div>
+          <div class="wb" style="--wn:13px;--wx:88px;--wd:.67s;--wo:.08s"></div>
+          <div class="wb" style="--wn:7px;--wx:98px;--wd:.78s;--wo:.16s"></div>
+          <div class="wb" style="--wn:11px;--wx:74px;--wd:.63s;--wo:.06s"></div>
+          <div class="wb" style="--wn:15px;--wx:92px;--wd:.82s;--wo:.12s"></div>
+          <div class="wb" style="--wn:9px;--wx:80px;--wd:.70s;--wo:.04s"></div>
+          <div class="wb" style="--wn:11px;--wx:64px;--wd:.74s;--wo:.20s"></div>
+          <div class="wb" style="--wn:7px;--wx:94px;--wd:.68s;--wo:.14s"></div>
+          <div class="wb" style="--wn:13px;--wx:78px;--wd:.80s;--wo:.10s"></div>
+          <div class="wb" style="--wn:9px;--wx:86px;--wd:.73s;--wo:.18s"></div>
+        </div>
+      </div>
+      <div class="bc b3">
+        <p class="bc-lbl">Audio Source</p>
+        <p class="bc-h">YouTube at max quality</p>
+        <p class="bc-p">HD1080 video lock extracts the highest available audio bitrate &mdash; 192kbps+ AAC or Opus.</p>
+        <div class="q-badge">&#9654; HD 1080p &nbsp;&middot;&nbsp; AAC 192kbps+</div>
+        <div class="mini-wv">
+          <div class="mw" style="--mh:14px;--md:.62s;--mo:0s"></div>
+          <div class="mw" style="--mh:24px;--md:.72s;--mo:.08s"></div>
+          <div class="mw" style="--mh:18px;--md:.66s;--mo:.16s"></div>
+          <div class="mw" style="--mh:30px;--md:.74s;--mo:.04s"></div>
+          <div class="mw" style="--mh:16px;--md:.69s;--mo:.12s"></div>
+          <div class="mw" style="--mh:26px;--md:.76s;--mo:.20s"></div>
+          <div class="mw" style="--mh:22px;--md:.63s;--mo:.06s"></div>
+          <div class="mw" style="--mh:32px;--md:.79s;--mo:.14s"></div>
+          <div class="mw" style="--mh:12px;--md:.67s;--mo:.18s"></div>
+          <div class="mw" style="--mh:28px;--md:.71s;--mo:.10s"></div>
+        </div>
+      </div>
+      <div class="bc b4">
+        <p class="bc-lbl">Section Intelligence</p>
+        <p class="bc-h">Chorus burst</p>
+        <p class="bc-p">Visual intensity spikes on every chorus entry. The room feels it.</p>
+        <div class="chorus-demo"><div class="cr"></div><div class="cr"></div><div class="cr"></div></div>
+      </div>
+      <div class="bc b5">
+        <p class="bc-lbl">Visual System</p>
+        <p class="bc-h">Live album palette</p>
+        <p class="bc-p">Canvas color sampling extracts the soul of every album cover in real time.</p>
+        <div class="pal-demo"><div class="pal"></div><div class="pal"></div><div class="pal"></div><div class="pal"></div></div>
+      </div>
+      <div class="bc b6">
+        <p class="bc-lbl">Section Map</p>
+        <p class="bc-h">Verse &middot; Chorus &middot; Bridge</p>
+        <p class="bc-p">Each section triggers a distinct visual intensity level.</p>
+        <div class="sec-meter">
+          <div class="sm s-chorus"><span class="sm-n">Chorus</span><div class="sm-bg"><div class="sm-fill"></div></div></div>
+          <div class="sm s-verse"><span class="sm-n">Verse</span><div class="sm-bg"><div class="sm-fill"></div></div></div>
+          <div class="sm s-bridge"><span class="sm-n">Bridge</span><div class="sm-bg"><div class="sm-fill"></div></div></div>
+          <div class="sm s-intro"><span class="sm-n">Intro</span><div class="sm-bg"><div class="sm-fill"></div></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+<section class="hiw-bg">
+  <div class="wrap">
+    <div class="reveal" style="text-align:center">
+      <p class="s-label">How it works</p>
+      <h2 class="s-title">Three steps to the full experience.</h2>
+    </div>
+    <div class="steps reveal">
+      <div class="step">
+        <div class="step-n">01</div>
+        <h3>Search any song</h3>
+        <p>Type artist and track. Aurora searches iTunes, Genius, and YouTube simultaneously to find the best match in under a second.</p>
+      </div>
+      <div class="step">
+        <div class="step-n">02</div>
+        <h3>Aurora analyzes</h3>
+        <p>Album art colors are extracted live. Synced lyrics load from LrcLib or Genius. BPM is computed in real-time from the audio stream.</p>
+      </div>
+      <div class="step">
+        <div class="step-n">03</div>
+        <h3>Feel the song</h3>
+        <p>Every word lights up on cue. The background breathes with the beat. Chorus entries burst with expanding energy rings.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="mockup-outer">
+  <div class="wrap">
+    <div class="reveal" style="text-align:center">
+      <p class="s-label">The Player</p>
+      <h2 class="s-title">Built for full immersion.</h2>
+      <p class="s-sub" style="margin:0 auto">Every pixel designed to disappear. Nothing between you and the music.</p>
+    </div>
+    <div class="mockup-wrap reveal">
+      <div class="mockup">
+        <div class="m-chrome">
+          <div class="md md1"></div><div class="md md2"></div><div class="md md3"></div>
+          <div class="m-url">aurora-player.vercel.app</div>
+        </div>
+        <div class="m-body">
+          <div class="m-left">
+            <div class="m-art"><div class="m-art-sh"></div></div>
+            <div><div class="m-track">Blinding Lights</div><div class="m-artist">The Weeknd</div></div>
+            <div class="m-prog"><div class="m-fill"></div></div>
+            <div class="m-ctrl">
+              <button class="m-btn">&#9198;</button>
+              <button class="m-btn m-play">&#9654;</button>
+              <button class="m-btn">&#9197;</button>
+            </div>
+          </div>
+          <div class="m-right" id="mlyrics">
+            <p class="ml mlp">I said, ooh, I'm blinded by the lights</p>
+            <p class="ml mlp">No, I can't sleep until I feel your touch</p>
+            <p class="ml mla">I'm running out of time</p>
+            <p class="ml mln">'Cause I can see the sun light up the sky</p>
+            <p class="ml">'Cause it's a new dawn, it's a new day</p>
+            <p class="ml">So I hit the road at dawn</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-logo"><div class="logo-icon">&#9835;</div>Aurora Player</div>
+    <p>Built with React, Framer Motion &amp; YouTube IFrame API &nbsp;&middot;&nbsp; <a href="https://github.com/TPAINN/aurora-player" target="_blank" rel="noopener">GitHub &#8599;</a></p>
+    <p style="margin-top:8px;font-size:.8rem;opacity:.45">Free. Open source. No account required.</p>
+  </div>
+</footer>
+
+<script>
+const io2=new IntersectionObserver(e=>e.forEach(x=>{if(x.isIntersecting){x.target.classList.add('in');io2.unobserve(x.target)}}),{threshold:.08});
+document.querySelectorAll('.reveal').forEach(el=>io2.observe(el));
+const ldl=document.querySelectorAll('#ldemo .ld');
+let ll=1,lw=0;
+function nw(){ldl.forEach(l=>{l.classList.remove('active');l.querySelectorAll('.ld-w').forEach(w=>w.classList.remove('lit'))});const ln=ldl[ll];if(!ln)return;ln.classList.add('active');const ws=ln.querySelectorAll('.ld-w');if(ws[lw])ws[lw].classList.add('lit');lw++;if(lw>=ws.length){lw=0;ll=(ll+1)%ldl.length;setTimeout(nw,880)}else setTimeout(nw,330)}
+setTimeout(nw,1400);
+const mls=document.querySelectorAll('#mlyrics .ml');let mi=2;
+setInterval(()=>{mls.forEach((l,i)=>{l.classList.remove('mla','mlp','mln');const d=i-mi;if(d<0)l.classList.add('mlp');else if(d===0)l.classList.add('mla');else if(d===1)l.classList.add('mln')});mi=(mi+1)%mls.length},2400);
+</script>
+</body>
+</html>
