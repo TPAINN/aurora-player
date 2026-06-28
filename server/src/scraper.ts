@@ -972,19 +972,17 @@ export class ScraperCoordinator {
     let source: StructuredLyrics['source'] = 'genius-cheerio';
     let syncedLrc: string | undefined;
 
-    // ─── Layer 0: LRCLib — always first (free, no quota, best synced LRC) ───────────
-    // Serves thousands of users with zero tokens. 95%+ hit rate on popular songs.
-    // If RAPIDAPI_KEY is absent, return immediately — no paid layers needed.
+    // ─── Layer 0: LRCLib — always first (free, no quota, best synced LRC) ─────────
+    // Serves thousands of users with zero cost. 95%+ hit rate on popular songs.
+    // Synced lyrics found → return immediately. Plain only → continue for sections.
     console.log(`[SCRAPER] Layer 0: LRCLib fast-path for "${artist} - ${title}"`);
     const lrcEarly = await searchLRCLib(artist, title);
     if (lrcEarly && lrcEarly.rawText.length > 20) {
-      console.log(`[SCRAPER] Layer 0 → LRCLib: ${lrcEarly.rawText.length} chars${lrcEarly.syncedLrc ? ' (synced!)' : ''}`);
-      if (!RAPIDAPI_KEY()) {
-        return { lyrics: lrcEarly };
-      }
-      // With RAPIDAPI_KEY: use LRCLib synced data but try Genius for richer sections
+      const hasSynced = !!(lrcEarly.syncedLrc || lrcEarly.richSyncJson);
+      console.log(`[SCRAPER] Layer 0 → LRCLib: ${lrcEarly.rawText.length} chars${hasSynced ? ' (synced! ✓)' : ' (plain only)'}`);
+      if (hasSynced) return { lyrics: lrcEarly };
+      // Plain lyrics only: store as fallback, try Genius for section/chorus data
       rawText = lrcEarly.rawText;
-      syncedLrc = lrcEarly.syncedLrc;
       source = 'lrclib';
     }
 
