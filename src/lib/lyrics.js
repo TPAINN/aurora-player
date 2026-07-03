@@ -342,6 +342,44 @@ export function fuseChorusRanges(...rangeLists) {
   return mergeRanges(kept).filter((range) => range.end - range.start >= 5);
 }
 
+/**
+ * Intensity proxy from synced-lyric timing. True instrumental energy is not
+ * reachable (playback is a cross-origin YouTube iframe — no Web Audio taps),
+ * but choruses sing denser: more words per second than verses. Ranges whose
+ * vocal density falls clearly below the song median are demoted — they are
+ * usually repeated ad-lib/outro lines, not the refrain.
+ */
+export function weightChorusRangesByIntensity(lyrics, ranges) {
+  if (!ranges.length || !lyrics?.length) return ranges;
+
+  const densityAt = (start, end) => {
+    let words = 0;
+    let span = 0;
+    for (let i = 0; i < lyrics.length; i++) {
+      const line = lyrics[i];
+      if (line.isGap || !line.text) continue;
+      const t = line.time;
+      if (t < start || t > end) continue;
+      const lineEnd = Math.min(getLineEndTime(line, lyrics[i + 1]), end);
+      words += (line.words?.length || line.text.split(/\s+/).filter(Boolean).length);
+      span += Math.max(lineEnd - t, 0.4);
+    }
+    return span > 0 ? words / span : 0;
+  };
+
+  const songStart = lyrics[0].time;
+  const songEnd = getLineEndTime(lyrics[lyrics.length - 1]);
+  const songDensity = densityAt(songStart, songEnd) || 1;
+
+  return ranges.filter((range) => {
+    const density = densityAt(range.start, range.end);
+    const isLong = range.end - range.start >= 10;
+    // long ranges always survive; short ones must sing at least ~70% as
+    // densely as the song average to count as a refrain
+    return isLong || density >= songDensity * 0.7;
+  });
+}
+
 export function detectChorusFromGeniusLyrics(lyrics, geniusLyrics) {
   if (!geniusLyrics || !lyrics?.length) return [];
 

@@ -12,6 +12,7 @@ import {
   detectChorusFromGeniusLyrics as detectChorusFromGenius,
   detectChorusRanges as detectChorus,
   fuseChorusRanges,
+  weightChorusRangesByIntensity,
   findActiveLyricIndex as findActiveIdx,
   getLineEndTime,
   mapSectionsToLyricLinesDetailed,
@@ -429,7 +430,27 @@ const buildSuggestionQueries = (query) => {
   return [...new Set(queries.filter(Boolean))].slice(0, 3);
 };
 
+// ── Tiny localStorage cache (7-day TTL) — repeat plays skip the network ──
+const CACHE_TTL = 7 * 24 * 3600 * 1000;
+const cacheKey = (ns, artist, track) => `aurora:${ns}:${(artist || '').toLowerCase()}|${(track || '').toLowerCase()}`;
+const cacheGet = (ns, artist, track) => {
+  try {
+    const raw = localStorage.getItem(cacheKey(ns, artist, track));
+    if (!raw) return null;
+    const entry = JSON.parse(raw);
+    if (Date.now() - entry.ts > CACHE_TTL) return null;
+    return entry.v;
+  } catch { return null; }
+};
+const cacheSet = (ns, artist, track, v) => {
+  try { localStorage.setItem(cacheKey(ns, artist, track), JSON.stringify({ v, ts: Date.now() })); } catch { /* quota */ }
+};
+
 const fetchVideoId = async (artist, track, excludeIds = [], duration = 0) => {
+  if (!excludeIds.length) {
+    const cached = cacheGet('vid', artist, track);
+    if (cached) return cached;
+  }
   try {
     // iTunes artist strings bundle every featured artist ("Daft Punk, Pharrell
     // Williams & Nile Rodgers") which skews YouTube matching toward the
@@ -443,7 +464,9 @@ const fetchVideoId = async (artist, track, excludeIds = [], duration = 0) => {
     }), { signal: AbortSignal.timeout(12000) });
     if (!res.ok) return null;
     const data = await res.json();
-    return data?.videoId || null;
+    const videoId = data?.videoId || null;
+    if (videoId && !excludeIds.length) cacheSet('vid', artist, track, videoId);
+    return videoId;
   } catch (error) {
     ignoreError(error);
     return null;
@@ -1252,6 +1275,12 @@ export default function App() {
   useEffect(() => { ytVideoIdRef.current = ytVideoId; }, [ytVideoId]);
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
 
+  // Prewarm the fly.io backend on mount — the machine auto-stops when idle,
+  // so waking it while the user is still typing hides the 2-9s cold start
+  useEffect(() => {
+    fetch(buildApiUrl('/api/health', {})).catch(ignoreError);
+  }, []);
+
   const loadVideoBackground = useCallback(async (track, excludeIds = []) => {
     if (!track?.artistName || !track?.trackName) return null;
     setIsVideoLoading(true);
@@ -2000,10 +2029,16 @@ export default function App() {
       workingTrack = { ...workingTrack, ...canonicalTrack };
     }
 
-    let lrc = null;
+    let lrc = cacheGet('lrc', workingTrack.artistName, workingTrack.trackName);
+
+    // Kick off the YouTube video search in parallel with the lyrics chain —
+    // it used to run after every lyrics fetch and was the longest pole in
+    // time-to-audio
+    const videoStartedEarly = (workingTrack.duration || 0) > 0;
+    if (videoStartedEarly) loadVideoBackground(workingTrack).catch(ignoreError);
 
     // Step 1: Try LRCLib exact match for synced lyrics + duration
-    try {
+    if (!lrc) try {
       const lrct = await fetch(`https://lrclib.net/api/get?artist_name=${encodeURIComponent(workingTrack.artistName)}&track_name=${encodeURIComponent(workingTrack.trackName)}`);
       const lrdata = await lrct.json();
       if (lrdata && lrdata.syncedLyrics) {
@@ -2116,6 +2151,7 @@ export default function App() {
     setIsLoading(false);
     if (!lrc) return;
 
+    cacheSet('lrc', workingTrack.artistName, workingTrack.trackName, lrc);
     setSong(workingTrack);
     setHistory(prev => {
       const filtered = prev.filter(t => t.id !== workingTrack.id && t.trackName !== workingTrack.trackName);
@@ -2138,7 +2174,10 @@ export default function App() {
       ? buildChorusRangesFromSections(lrcLyrics, initialStructuredSections)
       : [];
     const statisticalRanges = detectChorus(lrcLyrics);
-    const chorusRanges = fuseChorusRanges(geniusRanges, sectionRanges, statisticalRanges);
+    const chorusRanges = weightChorusRangesByIntensity(
+      lrcLyrics,
+      fuseChorusRanges(geniusRanges, sectionRanges, statisticalRanges),
+    );
     chorusRangesRef.current = chorusRanges;
     isChorusRef.current = false; setIsChorus(false);
 
@@ -2287,7 +2326,7 @@ export default function App() {
         .catch(ignoreError);
     }
     fetchRecommendations(workingTrack).catch(ignoreError);
-    loadVideoBackground(workingTrack).catch(ignoreError);
+    if (!videoStartedEarly) loadVideoBackground(workingTrack).catch(ignoreError);
   }, [fetchRecommendations, loadVideoBackground, stopAll]);
 
   const activeLyricTime = useMemo(
