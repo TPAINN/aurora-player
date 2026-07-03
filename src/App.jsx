@@ -34,7 +34,11 @@ const detectPerf = () => {
   return tier;
 };
 const PERF = detectPerf();
-const ignoreError = () => undefined;
+const ignoreError = (error) => {
+  if (import.meta.env.DEV && error && error.name !== 'AbortError' && error.name !== 'TimeoutError') {
+    console.warn('[aurora] swallowed error:', error);
+  }
+};
 
 // ─── Initialize Motion System Tokens ───────────────────────────────────────────
 injectMotionTokens();
@@ -426,8 +430,12 @@ const buildSuggestionQueries = (query) => {
 
 const fetchVideoId = async (artist, track, excludeIds = [], duration = 0) => {
   try {
+    // iTunes artist strings bundle every featured artist ("Daft Punk, Pharrell
+    // Williams & Nile Rodgers") which skews YouTube matching toward the
+    // featured artist's own hits — search with the primary artist only.
+    const primaryArtist = artist.split(/,|&|\bfeat\.?\b|\bft\.?\b|\bwith\b/i)[0].trim() || artist;
     const res = await fetch(buildApiUrl('/api/video/search', {
-      artist,
+      artist: primaryArtist,
       title: track,
       duration: duration > 0 ? duration.toFixed(2) : undefined,
       exclude: excludeIds.join(','),
@@ -1814,29 +1822,25 @@ export default function App() {
     debRef.current = setTimeout(async () => {
       try {
         const suggestionQueries = buildSuggestionQueries(q);
+        // Each source parses its own body and fails independently — previously a
+        // single slow response hit AbortSignal.timeout mid-body-read, json()
+        // threw, and the outer catch hid ALL suggestions including valid ones.
         const itunesRequests = suggestionQueries.map((term) => (
           fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(term)}&media=music&entity=song&limit=8`, {
             signal: AbortSignal.timeout(5000),
           })
+            .then((r) => r.json())
+            .then((d) => (Array.isArray(d.results) ? d.results : []))
+            .catch(() => [])
         ));
-        const [geniusRes, ...itunesResList] = await Promise.allSettled([
-          fetch(buildApiUrl('/api/genius/search', { q })),
-          ...itunesRequests,
-        ]);
+        const geniusRequest = fetch(buildApiUrl('/api/genius/search', { q }), {
+          signal: AbortSignal.timeout(8000),
+        })
+          .then((r) => r.json())
+          .then((d) => (!d.error && Array.isArray(d) ? d : []))
+          .catch(() => []);
 
-        let geniusData = [];
-        if (geniusRes.status === 'fulfilled') {
-          const data = await geniusRes.value.json();
-          if (!data.error && Array.isArray(data)) geniusData = data;
-        }
-
-        const itunesPools = await Promise.all(
-          itunesResList.map(async (result) => {
-            if (result.status !== 'fulfilled') return [];
-            const data = await result.value.json();
-            return Array.isArray(data.results) ? data.results : [];
-          })
-        );
+        const [geniusData, ...itunesPools] = await Promise.all([geniusRequest, ...itunesRequests]);
         const itunesData = dedupeTracks(itunesPools.flat().map(mapItunesTrack));
 
         const merged = [

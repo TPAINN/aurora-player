@@ -1,20 +1,17 @@
 {
-  "buildCommand": "npm run build",
-  "outputDirectory": "dist",
-  "installCommand": "npm install",
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
-  "headers": [
+  "services": {
+    "aurora-player-api": {
+      "root": ".",
+      "framework": "vite"
+    }
+  },
+  "rewrites": [
     {
-      "source": "/assets/(.*)",
-      "headers": [
-        { "key": "Cache-Control", "value": "public, immutable, max-age=31536000" }
-      ]
-    },
-    {
-      "source": "/sw.js",
-      "headers": [
-        { "key": "Cache-Control", "value": "no-cache" }
-      ]
+      "source": "/(.*)",
+      "destination": {
+        "type": "service",
+        "service": "aurora-player-api"
+      }
     }
   ]
 }
