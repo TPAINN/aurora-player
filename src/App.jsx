@@ -1236,6 +1236,7 @@ export default function App() {
   const wordTimingsRef = useRef([]);
   const fromIntroRef = useRef(true);
   const chorusRangesRef = useRef([]);
+  const wrongVideoRetriedRef = useRef(new Set());
   const isChorusRef = useRef(false);
   const lineStartRef = useRef(0);
   const lineDurRef = useRef(4);
@@ -1407,7 +1408,28 @@ export default function App() {
           if ((e.data === window.YT.PlayerState.CUED || e.data === window.YT.PlayerState.PLAYING) && typeof player.getDuration === 'function') {
             try {
               const ytDur = player.getDuration();
-              if (ytDur && ytDur > 1) playbackDurationRef.current = Math.max(songDurationRef.current, ytDur);
+              if (ytDur && ytDur > 1) {
+                playbackDurationRef.current = Math.max(songDurationRef.current, ytDur);
+                // Wrong-video guard: if YouTube's duration disagrees with the
+                // track's known duration by more than 15s it matched a remix,
+                // live take or an entirely different song — re-search once,
+                // excluding this videoId
+                const known = songDurationRef.current;
+                const badId = ytVideoIdRef.current;
+                if (
+                  known > 60 &&
+                  Math.abs(ytDur - known) > 15 &&
+                  badId &&
+                  !wrongVideoRetriedRef.current.has(badId)
+                ) {
+                  wrongVideoRetriedRef.current.add(badId);
+                  const currentSong = songRef.current;
+                  if (currentSong && !isVideoLoadingRef.current) {
+                    try { localStorage.removeItem(cacheKey('vid', currentSong.artistName, currentSong.trackName)); } catch { /* ignore */ }
+                    loadVideoBackground(currentSong, [badId]).catch(ignoreError);
+                  }
+                }
+              }
             } catch (error) {
               ignoreError(error);
             }
@@ -2756,7 +2778,9 @@ export default function App() {
 
       <AnimatePresence mode="wait">
 
-        {!hasPlayer && !showIntro && (
+        {/* Hero mounts immediately UNDER the intro veil, so when the veil
+            fades there is no pop — its entrance settles before the reveal */}
+        {!hasPlayer && (
           <motion.div key="hero" className="hero"
             initial={{ opacity: fromIntroRef.current ? 1 : 0 }} animate={{ opacity: 1 }}
             exit={{ opacity: 0, scale: 0.97, filter: 'blur(6px)' }}
