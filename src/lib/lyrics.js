@@ -10,7 +10,9 @@ export function normalizeLyricText(value) {
     .toLowerCase()
     .replace(/&/g, ' and ')
     .replace(/\([^)]*\)|\[[^\]]*\]/g, ' ')
-    .replace(/[^a-z0-9\s]/g, ' ')
+    // keep ALL letters/numbers (Greek, Cyrillic, CJK…) — the old [^a-z0-9]
+    // filter wiped non-Latin lyrics to '' and killed chorus detection
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -248,14 +250,14 @@ export function detectChorusRanges(lyrics) {
 
       let chainLength = 1;
       while (
-        chainLength < 4 &&
+        chainLength < 7 &&
         left + chainLength < filtered.length &&
         right + chainLength < filtered.length
       ) {
         const leftLine = filtered[left + chainLength];
         const rightLine = filtered[right + chainLength];
         const chainScore = compareLyricLines(leftLine.text, rightLine.text);
-        if (chainScore < 0.67) break;
+        if (chainScore < 0.64) break;
         chainLength++;
       }
 
@@ -295,6 +297,49 @@ export function detectChorusRanges(lyrics) {
   });
 
   return mergeRanges(ranges).filter((range) => range.end - range.start >= 8);
+}
+
+/**
+ * Fuse chorus ranges from independent detectors (Genius headers, structured
+ * sections, statistical self-similarity). Ranges confirmed by 2+ sources are
+ * always kept; single-source ranges survive only if no other source overlaps
+ * and they are long enough to be a plausible refrain. Beats the old
+ * first-hit-wins cascade, which missed later choruses whenever the first
+ * detector returned a partial result.
+ */
+export function fuseChorusRanges(...rangeLists) {
+  const lists = rangeLists.filter((list) => Array.isArray(list) && list.length);
+  if (!lists.length) return [];
+  if (lists.length === 1) return mergeRanges(lists[0]);
+
+  const overlaps = (a, b) =>
+    Math.min(a.end, b.end) - Math.max(a.start, b.start) >
+    0.35 * Math.min(a.end - a.start, b.end - b.start);
+
+  const confirmed = [];
+  const solo = [];
+
+  lists.forEach((list, listIndex) => {
+    for (const range of list) {
+      const corroborated = lists.some(
+        (other, otherIndex) => otherIndex !== listIndex && other.some((candidate) => overlaps(range, candidate))
+      );
+      (corroborated ? confirmed : solo).push({ ...range });
+    }
+  });
+
+  const kept = confirmed.length ? confirmed : solo;
+  // Add long uncorroborated ranges too — a detector may be the only one that
+  // caught the final chorus (e.g. outro repeat Genius labels as 'outro').
+  if (confirmed.length) {
+    for (const range of solo) {
+      if (range.end - range.start >= 10 && !confirmed.some((c) => overlaps(range, c))) {
+        kept.push(range);
+      }
+    }
+  }
+
+  return mergeRanges(kept).filter((range) => range.end - range.start >= 5);
 }
 
 export function detectChorusFromGeniusLyrics(lyrics, geniusLyrics) {

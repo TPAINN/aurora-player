@@ -11,6 +11,7 @@ import {
   buildChorusRangesFromSections,
   detectChorusFromGeniusLyrics as detectChorusFromGenius,
   detectChorusRanges as detectChorus,
+  fuseChorusRanges,
   findActiveLyricIndex as findActiveIdx,
   getLineEndTime,
   mapSectionsToLyricLinesDetailed,
@@ -2130,17 +2131,14 @@ export default function App() {
     setLyrics(lrcLyrics);
     lyricsDataRef.current = lrcLyrics;
 
-    // Chorus detection: use Genius if already available (unsynced path), otherwise statistical
-    let chorusRanges = [];
-    if (workingTrack._geniusChorusFn) {
-      chorusRanges = workingTrack._geniusChorusFn(lrcLyrics);
-    }
-    if (chorusRanges.length === 0 && initialStructuredSections.length > 0) {
-      chorusRanges = buildChorusRangesFromSections(lrcLyrics, initialStructuredSections);
-    }
-    if (chorusRanges.length === 0) {
-      chorusRanges = detectChorus(lrcLyrics);
-    }
+    // Chorus detection: run all detectors and fuse — corroborated ranges win,
+    // and no single partial result can hide later choruses anymore
+    const geniusRanges = workingTrack._geniusChorusFn ? workingTrack._geniusChorusFn(lrcLyrics) : [];
+    const sectionRanges = initialStructuredSections.length > 0
+      ? buildChorusRangesFromSections(lrcLyrics, initialStructuredSections)
+      : [];
+    const statisticalRanges = detectChorus(lrcLyrics);
+    const chorusRanges = fuseChorusRanges(geniusRanges, sectionRanges, statisticalRanges);
     chorusRangesRef.current = chorusRanges;
     isChorusRef.current = false; setIsChorus(false);
 
