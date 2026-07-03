@@ -170,15 +170,22 @@ const BeatReactiveBackground = ({
     rafRef.current = requestAnimationFrame(render);
   }, [isPlaying, beatInterval, palette, energy, beatIntensity]);
 
-  // Start/stop animation
+  // Start/stop animation — also pauses while the tab is hidden
   useEffect(() => {
-    if (isPlaying) {
-      rafRef.current = requestAnimationFrame(render);
-    } else {
+    const stop = () => {
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
+    };
+    const start = () => {
+      if (!rafRef.current) rafRef.current = requestAnimationFrame(render);
+    };
+
+    if (isPlaying) {
+      start();
+    } else {
+      stop();
       // Fade out the canvas
       const canvas = canvasRef.current;
       if (canvas) {
@@ -188,10 +195,15 @@ const BeatReactiveBackground = ({
       }
     }
 
+    const handleVisibility = () => {
+      if (document.hidden) stop();
+      else if (isPlaying) start();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
     return () => {
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-      }
+      document.removeEventListener('visibilitychange', handleVisibility);
+      stop();
     };
   }, [isPlaying, render]);
 
