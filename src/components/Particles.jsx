@@ -213,8 +213,22 @@ const Particles = ({
 
     animationFrameId = requestAnimationFrame(update);
 
+    // Pause the WebGL loop while the tab is hidden — saves battery/CPU and
+    // avoids a huge delta jump on return
+    const handleVisibility = () => {
+      if (document.hidden) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = 0;
+      } else if (!animationFrameId) {
+        lastTime = performance.now();
+        animationFrameId = requestAnimationFrame(update);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
     return () => {
       window.removeEventListener('resize', resize);
+      document.removeEventListener('visibilitychange', handleVisibility);
       if (moveParticlesOnHover) {
         container.removeEventListener('mousemove', handleMouseMove);
       }
