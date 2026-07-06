@@ -2,11 +2,11 @@
 
 Music player: word-synced lyrics + beat-reactive visuals. React 19 + Vite (root) · Express/tsx server (`server/`) · static landing (`web/index.html`, single minified line).
 
-## Deploys
+## Deploys (both Vercel projects are git-connected to THIS repo — push = deploy both)
 | Surface | Where | Notes |
 |---|---|---|
-| App | https://aurora-player-seven.vercel.app (Vercel project `aurora-player`) | `npx vercel deploy --prod --yes` from repo root; `.vercelignore` excludes server/web/docs |
-| Landing | https://web-eight-mocha-75.vercel.app (project `aurora-player-site`) | ⚠️ Deploy from an ISOLATED dir (copy web/index.html + minimal vercel.json) — deploying from web/ inside the repo uploads the app shell instead |
+| App | https://aurora-player-seven.vercel.app (Vercel project `aurora-player`, Root Directory = repo root) | auto-deploys on push to main |
+| Landing | https://aurora-player-site.vercel.app (project `aurora-player-site`, **Root Directory = `web`**, framework Other, no build) | auto-deploys on push to main; legacy alias web-eight-mocha-75.vercel.app still attached |
 | API | https://aurora-player-api.fly.dev (`flyctl deploy` from server/) | Dockerfile bundles standalone yt-dlp; puppeteer is optional lazy fallback (PUPPETEER_SKIP_DOWNLOAD) |
 | Dead | aurora-player-api.onrender.com (404 all routes), aurora-player.vercel.app (NOT ours — 402) |
 
