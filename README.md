@@ -2,7 +2,7 @@
 
 > Music you can feel — word-level karaoke, beat-reactive visuals, YouTube integration.
 
-[![Live](https://img.shields.io/badge/live-demo-blueviolet?style=flat-square)](https://web-eight-mocha-75.vercel.app/)
+[![Live](https://img.shields.io/badge/live-demo-blueviolet?style=flat-square)](https://aurora-player-tpainn.vercel.app/)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react)](https://react.dev)
 
