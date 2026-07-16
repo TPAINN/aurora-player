@@ -25,9 +25,11 @@ const detectPerf = () => {
   if (window.__auroraPerfTier !== undefined) return window.__auroraPerfTier;
   const cores   = navigator.hardwareConcurrency || 2;
   const ram     = navigator.deviceMemory || 2;
-  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // Perf tier is decided by HARDWARE only. We deliberately ignore the OS
+  // "reduce motion" / animation-scaling preference so the app's own animations
+  // always run as designed, regardless of the device's system-wide settings.
   let tier;
-  if (reduced || cores <= 2 || ram <= 2)     tier = 'low';
+  if (cores <= 2 || ram <= 2)                tier = 'low';
   else if (cores <= 4 || ram <= 4)           tier = 'mid';
   else                                        tier = 'high';
   window.__auroraPerfTier = tier;

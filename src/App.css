@@ -1818,21 +1818,9 @@ img.dico.dart { object-fit: cover; width: 30px; height: 30px; border-radius: 7px
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════
-   FORCE ANIMATIONS — bypass OS "reduce motion"
+   Animations always run — the app ignores the OS "reduce motion" /
+   animation-scaling preference by design, so no reduced-motion overrides exist.
 ═══════════════════════════════════════════════════════════════════════════════ */
-@media (prefers-reduced-motion: reduce) {
-  .lyr {
-    transition:
-      opacity var(--dur) var(--spring),
-      filter calc(var(--dur) * 1.4) var(--spring) !important;
-  }
-  .la {
-    animation: lyric-pop 0.60s var(--spring) both !important;
-  }
-  .art-bg { animation: art-drift 34s ease-in-out infinite !important; }
-  .orb { animation-play-state: running !important; }
-  .intro-logo, .intro-sub, .intro-line { transition: all 0.001ms !important; }
-}
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    PERFORMANCE: ALWAYS-ON OPTIMIZATIONS (both tiers)
