@@ -1134,8 +1134,9 @@ img.dico.dart { object-fit: cover; width: 30px; height: 30px; border-radius: 7px
 
 /* ── Active line entrance — soft fade-rise, no bounce ─────────────────────── */
 @keyframes lyric-pop {
-  0%   { transform: translateY(2px) scale(0.992); opacity: 0.68; }
-  100% { transform: translateY(0) scale(1); opacity: 1; }
+  0%   { transform: translateY(7px) scale(0.975); opacity: 0; filter: blur(2px); }
+  60%  { opacity: 1; }
+  100% { transform: translateY(0) scale(1); opacity: 1; filter: blur(0); }
 }
 @keyframes glow-breathe {
   0%,100% {
@@ -1517,13 +1518,13 @@ img.dico.dart { object-fit: cover; width: 30px; height: 30px; border-radius: 7px
   background: none; border: none; color: rgba(255,255,255,0.26); cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   padding: 6px; border-radius: 50%;
-  transition: color 0.2s, background 0.2s, box-shadow 0.2s;
+  transition: color 0.2s, background 0.2s, transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .ico-btn:hover { color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.07); }
+.ico-btn:active { transform: scale(0.9); }
 .ico-btn-active {
   color: rgba(var(--c1-glow), 1);
   background: rgba(var(--c1-glow), 0.15);
-  box-shadow: 0 0 15px rgba(var(--c1-glow), 0.35);
 }
 .ico-btn-active:hover {
   color: rgba(var(--c1-glow), 1);
@@ -1538,17 +1539,19 @@ img.dico.dart { object-fit: cover; width: 30px; height: 30px; border-radius: 7px
   display: flex; align-items: center; justify-content: center;
   cursor: pointer;
   box-shadow:
-    0 0 20px rgba(var(--c1-glow), 0.60),
-    0 0 50px rgba(var(--c1-glow), 0.26),
-    inset 0 1px 0 rgba(255,255,255,0.22);
-  transition: background 2.5s ease, box-shadow 0.3s ease;
+    0 6px 18px rgba(var(--c1-glow), 0.32),
+    inset 0 1px 0 rgba(255,255,255,0.25);
+  transition: background 2.5s ease,
+              transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.2s ease;
 }
 .play-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
   box-shadow:
-    0 0 28px rgba(var(--c1-glow), 0.76),
-    0 0 65px rgba(var(--c1-glow), 0.38),
-    inset 0 1px 0 rgba(255,255,255,0.28);
+    0 10px 26px rgba(var(--c1-glow), 0.42),
+    inset 0 1px 0 rgba(255,255,255,0.3);
 }
+.play-btn:active:not(:disabled) { transform: scale(0.93); }
 .play-btn:disabled { opacity: 0.25; cursor: default; box-shadow: none; }
 .badge {
   font-family: var(--mono); font-size: 0.57rem;
@@ -1706,8 +1709,9 @@ img.dico.dart { object-fit: cover; width: 30px; height: 30px; border-radius: 7px
 
 /* ── Active line: gradient text with breathing glow ──────────────────────── */
 @keyframes lyric-pop {
-  0%   { transform: translateY(2px) scale(0.992); opacity: 0.68; }
-  100% { transform: translateY(0) scale(1); opacity: 1; }
+  0%   { transform: translateY(7px) scale(0.975); opacity: 0; filter: blur(2px); }
+  60%  { opacity: 1; }
+  100% { transform: translateY(0) scale(1); opacity: 1; filter: blur(0); }
 }
 
 @keyframes glow-breathe {
@@ -2327,26 +2331,12 @@ img.dico.dart { object-fit: cover; width: 30px; height: 30px; border-radius: 7px
 }
 
 /* ── Play button chorus glow pulse ──────────────────────────────────────────*/
+/* Chorus state: a slightly richer static shadow — NO pulsing/glow effect.
+   (Player buttons are kept clean: interaction animations only.) */
 .play-btn-chorus {
   box-shadow:
-    0 0 0 0 rgba(var(--c1-glow), 0.55),
-    0 0 28px rgba(var(--c1-glow), 0.28),
-    0 0 60px rgba(var(--c2-glow), 0.14) !important;
-  animation: play-chorus-pulse 1.6s ease-in-out infinite;
-}
-@keyframes play-chorus-pulse {
-  0%, 100% {
-    box-shadow:
-      0 0 0 0   rgba(var(--c1-glow), 0.55),
-      0 0 28px  rgba(var(--c1-glow), 0.28),
-      0 0 60px  rgba(var(--c2-glow), 0.14);
-  }
-  50% {
-    box-shadow:
-      0 0 0 10px rgba(var(--c1-glow), 0),
-      0 0 44px  rgba(var(--c1-glow), 0.44),
-      0 0 90px  rgba(var(--c2-glow), 0.22);
-  }
+    0 8px 22px rgba(var(--c1-glow), 0.40),
+    inset 0 1px 0 rgba(255,255,255,0.3) !important;
 }
 
 /* ── Logo shimmer (ShinyBadge effect applied via .logo-shiny) ────────────────

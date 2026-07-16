@@ -117,13 +117,16 @@ const BeatReactiveBackground = ({
       ctx.fillRect(0, 0, W, H);
     }
 
-    // 2. Rhythmic ambient radial pulses synced to BPM
+    // 2. Slow ambient radial swells — a calm wash, NOT a beat pulse. Real beat
+    // sync is impossible (cross-origin audio), so a slow ~7s drift always reads
+    // as intentional rather than out-of-sync.
     if (currentEnergy > 0.04) {
-      const pulsePhase = (timeRef.current * 1000 / beatInterval) % 1;
+      const AMBIENT_PERIOD = 7000; // ms per swell cycle (calm, not rhythmic)
+      const pulsePhase = (timeRef.current * 1000 / AMBIENT_PERIOD) % 1;
       const rippleCount = 2; // Keep it lightweight during video playback
-      
+
       for (let r = 0; r < rippleCount; r++) {
-        const ripplePhase = (pulsePhase + r * 0.2) % 1;
+        const ripplePhase = (pulsePhase + r * 0.5) % 1;
         // Ease out quad for ripple expansion
         const rippleEased = 1 - Math.pow(1 - ripplePhase, 2); 
         const rippleScale = 0.2 + rippleEased * 0.8 + currentBeat * 0.2;
