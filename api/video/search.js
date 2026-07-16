@@ -33,10 +33,14 @@ const videoQueriesFor = (artist, title) => {
   ];
 };
 
+// Unicode-aware: keep letters/numbers of ANY script (Greek, Cyrillic, …) and
+// strip diacritics so accented/unaccented variants match. A latin-only
+// [^a-z0-9] filter erased Greek titles entirely → wrong-song / no matches.
 const cleanMatchText = (value) => value
   .toLowerCase()
+  .normalize('NFD').replace(/[̀-ͯ]/g, '')
   .replace(/&/g, ' and ')
-  .replace(/[^a-z0-9 ]/g, ' ')
+  .replace(/[^\p{L}\p{N} ]/gu, ' ')
   .replace(/\s+/g, ' ')
   .trim();
 
