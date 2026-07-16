@@ -203,6 +203,74 @@ async function fetchYouTubeHtml(query, timeoutMs = 4500) {
   }
 }
 
+// ─── InnerTube (YouTube's internal JSON API) ──────────────────────────────────
+// The plain results-page HTML scrape gets served a consent/challenge page from
+// datacenter IPs (e.g. Vercel), returning zero videos. InnerTube is the official
+// internal API the site itself uses — far more reliable server-side — so it is
+// the primary source, with the HTML scrape kept as a fallback.
+const INNERTUBE_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8'; // public WEB client key
+const INNERTUBE_CTX = { client: { clientName: 'WEB', clientVersion: '2.20240101.00.00', hl: 'en', gl: 'US' } };
+
+async function innertubeSearch(query, timeoutMs = 4500) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(`https://www.youtube.com/youtubei/v1/search?key=${INNERTUBE_KEY}`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Origin': 'https://www.youtube.com',
+      },
+      body: JSON.stringify({ context: INNERTUBE_CTX, query }),
+    });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    const out = [];
+    const sections = data?.contents?.twoColumnSearchResultsRenderer?.primaryContents
+      ?.sectionListRenderer?.contents || [];
+    for (const s of sections) {
+      const items = s?.itemSectionRenderer?.contents || [];
+      for (const it of items) {
+        const v = it.videoRenderer;
+        if (!v?.videoId) continue;
+        const vTitle = (v.title?.runs || []).map((r) => r.text).join('');
+        const vChannel = v.ownerText?.runs?.[0]?.text || v.longBylineText?.runs?.[0]?.text || '';
+        const vDur = parseDurationText(v.lengthText?.simpleText || '') || Number(v.lengthSeconds || 0) || 0;
+        out.push({ videoId: v.videoId, title: vTitle, channel: vChannel, duration: vDur });
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function candidatesFromHtml(html) {
+  const ids = extractVideoIds(html);
+  if (!ids.length) return [];
+  const titleMap = extractTitleMap(html);
+  const durationMap = extractDurationMap(html);
+  const channelMap = extractChannelMap(html);
+  return ids.map((id) => ({
+    videoId: id,
+    title: titleMap.get(id) || '',
+    channel: channelMap.get(id) || '',
+    duration: durationMap.get(id) || 0,
+  }));
+}
+
+async function collectCandidates(query) {
+  const viaApi = await innertubeSearch(query);
+  if (viaApi.length) return viaApi;
+  const html = await fetchYouTubeHtml(query);
+  return html ? candidatesFromHtml(html) : [];
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -232,24 +300,18 @@ export default async function handler(req, res) {
       if (qi >= 3 && bestConfidenceSoFar >= 0.82) break;
       if (qi >= 6 && bestConfidenceSoFar >= 0.65) break;
 
-      const html = await fetchYouTubeHtml(queries[qi]);
-      if (!html) continue;
+      const candidates = await collectCandidates(queries[qi]);
+      if (!candidates.length) continue;
 
-      const ids = extractVideoIds(html);
-      if (ids.length === 0) continue;
-      const titleMap = extractTitleMap(html);
-      const durationMap = extractDurationMap(html);
-      const channelMap = extractChannelMap(html);
-
-      const ranked = ids
-        .filter((id) => !seen.has(id))
-        .map((id) => {
-          const vTitle = titleMap.get(id) || queries[qi];
-          const vChannel = channelMap.get(id) || '';
-          const vDur = durationMap.get(id) || 0;
+      const ranked = candidates
+        .filter((c) => c.videoId && !seen.has(c.videoId))
+        .map((c) => {
+          const vTitle = c.title || queries[qi];
+          const vChannel = c.channel || '';
+          const vDur = c.duration || 0;
           const sc = scoreVideoCandidate(vTitle, vChannel, vDur, desiredDuration, artist, title);
           const conf = sc === HARD_REJECT ? 0 : toVideoConfidence(sc, vTitle, vChannel, artist, title, vDur, desiredDuration);
-          return { videoId: id, title: vTitle, channel: vChannel, duration: vDur, score: sc, confidence: conf, query: queries[qi] };
+          return { videoId: c.videoId, title: vTitle, channel: vChannel, duration: vDur, score: sc, confidence: conf, query: queries[qi] };
         })
         .filter((c) => c.score !== HARD_REJECT && c.confidence >= 0.18)
         .sort((a, b) => b.score - a.score)
