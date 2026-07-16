@@ -421,13 +421,6 @@ body {
   transform: translateY(-2px) !important;
 }
 
-/* ── Reduced motion overrides ────────────────────────────────────────────────── */
-@media (prefers-reduced-motion: reduce) {
-  .lyr {
-    transition: opacity 0.15s ease !important;
-    transform: none !important;
-  }
-  .lyr.la {
-    transform: none !important;
-  }
-}
+/* Intentionally NO "prefers-reduced-motion" overrides: the app always runs its
+   own animations regardless of the device's system-wide animation-scaling /
+   reduce-motion setting. */

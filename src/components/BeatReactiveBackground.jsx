@@ -26,6 +26,14 @@ const BeatReactiveBackground = ({
   const smoothEnergyRef = useRef(0);
   const smoothBeatRef = useRef(0);
 
+  // Live prop mirrors — read inside the rAF loop via refs so that frequent
+  // energy/beatIntensity updates do NOT recreate `render` and tear down/rebuild
+  // the animation frame on every change.
+  const energyRef = useRef(energy);
+  const beatRef = useRef(beatIntensity);
+  useEffect(() => { energyRef.current = energy; }, [energy]);
+  useEffect(() => { beatRef.current = beatIntensity; }, [beatIntensity]);
+
   // Generate initial particles
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -71,8 +79,8 @@ const BeatReactiveBackground = ({
     ctx.fillRect(0, 0, W, H);
 
     // Smooth the beat intensity and energy (Organic interpolation)
-    smoothBeatRef.current = smoothBeatRef.current * 0.88 + beatIntensity * 0.12;
-    smoothEnergyRef.current = smoothEnergyRef.current * 0.94 + energy * 0.06;
+    smoothBeatRef.current = smoothBeatRef.current * 0.88 + beatRef.current * 0.12;
+    smoothEnergyRef.current = smoothEnergyRef.current * 0.94 + energyRef.current * 0.06;
 
     const currentBeat = smoothBeatRef.current;
     const currentEnergy = smoothEnergyRef.current;
@@ -168,7 +176,7 @@ const BeatReactiveBackground = ({
     }
 
     rafRef.current = requestAnimationFrame(render);
-  }, [isPlaying, beatInterval, palette, energy, beatIntensity]);
+  }, [isPlaying, beatInterval, palette]);
 
   // Start/stop animation — also pauses while the tab is hidden
   useEffect(() => {
