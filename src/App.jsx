@@ -1649,29 +1649,30 @@ export default function App() {
         lastFillIdxRef.current = idx;
       }
 
-      // ── Beat pulse on line transition ──────────────────────────────
-      if (idx >= 0 && idx !== activeIdxRef.current) {
-        beatDecayRef.current = 1.0;
-      }
-      // Exponential decay: falls to ~1% in ~12 frames (0.2s at 60fps)
-      beatDecayRef.current = Math.max(0, beatDecayRef.current * 0.84);
+      // ── Ambient breathing glow ─────────────────────────────────────
+      // Previously this popped to full on every lyric-line change, which
+      // looked random and out-of-sync (line changes are irregular and are NOT
+      // the musical beat — and real beat sync is impossible with a cross-origin
+      // YouTube audio source). Now it's a smooth, slow swell so it always reads
+      // as intentional and calm.
+      const breath = 0.5 + 0.5 * Math.sin(t * 0.9); // ~7s period, 0..1
+      beatDecayRef.current = breath;
       const beatRingEl = beatRingRef.current;
       if (beatRingEl) {
-        const bd = beatDecayRef.current;
         const chorus = isChorusRef.current;
-        const opacMax = chorus ? 0.95 : 0.62;
-        const scaleMax = chorus ? 0.14 : 0.06;
-        if (Math.abs(bd - (beatRingEl.__bd || 0)) > 0.005) {
-          beatRingEl.__bd = bd;
-          beatRingEl.style.opacity = (bd * opacMax).toFixed(3);
-          beatRingEl.style.transform = `scale(${(1 + bd * scaleMax).toFixed(4)})`;
+        const opacMax = chorus ? 0.55 : 0.36;
+        const scaleMax = chorus ? 0.06 : 0.03;
+        if (Math.abs(breath - (beatRingEl.__bd || 0)) > 0.004) {
+          beatRingEl.__bd = breath;
+          beatRingEl.style.opacity = (0.1 + breath * opacMax).toFixed(3);
+          beatRingEl.style.transform = `scale(${(1 + breath * scaleMax).toFixed(4)})`;
         }
       }
       const root = document.documentElement;
       const sectionVisual = SECTION_VISUAL_INTENSITY[activeSectionRef.current] || SECTION_VISUAL_INTENSITY.none;
       const sectionLift = sectionVisual.lift + (isChorusRef.current ? 0.14 : 0);
       const sectionBloom = sectionVisual.bloom + (isChorusRef.current ? 0.08 : 0);
-      root.style.setProperty('--beat-pulse', (beatDecayRef.current * (isChorusRef.current ? 1.0 : 0.72)).toFixed(3));
+      root.style.setProperty('--beat-pulse', (breath * (isChorusRef.current ? 0.6 : 0.4)).toFixed(3));
       root.style.setProperty('--section-lift', sectionLift.toFixed(3));
       root.style.setProperty('--section-bloom', sectionBloom.toFixed(3));
 
