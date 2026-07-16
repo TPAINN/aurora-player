@@ -40,11 +40,16 @@ export function useAudioAnalyzer() {
     const loop = (now) => {
       if (now - lastUpdateRef.current >= UPDATE_MS) {
         lastUpdateRef.current = now;
-        const period = 60000 / (bpmRef.current || 120); // ms per beat
-        const phase = (now % period) / period;           // 0..1 within a beat
-        // Sharp attack on the beat, smooth decay — a musical pulse envelope.
-        const pulse = Math.pow(1 - phase, 2.4);
-        setBeatIntensity(pulse);
+        const t = now / 1000;
+        // Calm, organic "breathing" — layered slow sines, NOT a per-beat pulse.
+        // Real beat sync is impossible here (the audio is a cross-origin YouTube
+        // iframe with no Web Audio tap), and a fixed-tempo fake pulse reads as
+        // out-of-sync/buggy. A smooth ambient swell always looks intentional.
+        const breathe = 0.5 + 0.16 * Math.sin(t * 0.55) + 0.06 * Math.sin(t * 1.3 + 1.1);
+        const glow    = 0.12 + 0.05 * (0.5 + 0.5 * Math.sin(t * 0.9 + 0.5));
+        energyRef.current = breathe;
+        setEnergy(breathe);
+        setBeatIntensity(glow);
       }
       rafRef.current = requestAnimationFrame(loop);
     };
