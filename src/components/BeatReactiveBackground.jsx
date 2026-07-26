@@ -46,7 +46,7 @@ const BeatReactiveBackground = ({
 
     // Create ambient particles
     const count = Math.min(12, Math.floor(W * H / 80000));
-    particlesRef.current = Array.from({ length: count }, (_, i) => ({
+    particlesRef.current = Array.from({ length: count }, () => ({
       x: Math.random() * W,
       y: Math.random() * H,
       baseX: Math.random() * W,
