@@ -1119,11 +1119,9 @@ export default function App() {
     bpm,
     energy,
     beatIntensity,
-    isAnalyzing,
     connectToYouTube,
     startAnalysis,
     stopAnalysis,
-    setBPMFromMetadata,
   } = useAudioAnalyzer();
 
   // ─── ClickSpark canvas ───────────────────────────────────────────────────────
@@ -1172,9 +1170,6 @@ export default function App() {
   const [activeSection, setActiveSection] = useState('none'); // verse, pre-chorus, chorus, bridge, intro, outro, hook, none
   // Beat-reactive palette — extracted from album art colors
   const [beatPalette, setBeatPalette] = useState(['167,139,250', '244,114,182', '103,232,249']);
-  // Ref to the YouTube player element for audio analysis
-  const ytPlayerElRef = useRef(null);
-
   const introCovers = useMemo(() => {
     const arts = [
       albumArt,
