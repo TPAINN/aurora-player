@@ -628,34 +628,56 @@ animation-delay: -3s;
   overflow: hidden;
 }
 
-/* ── Left Panel: Album art + meta + seek + controls ──────────────────────── */
+/* ── Left Panel: cover bleeds from the top, glass falloff into controls ───── */
 .left-panel {
+  position: relative;
   flex: 0 0 clamp(320px, 38vw, 480px);
   display: flex; flex-direction: column;
-  align-items: center; justify-content: center;
+  align-items: center; justify-content: flex-end;
   padding: clamp(20px, 3vh, 40px) clamp(24px, 3vw, 48px);
-  gap: clamp(16px, 2.2vh, 28px);
+  gap: clamp(14px, 2vh, 24px);
   transition: all 1.2s var(--spring);
+  overflow: hidden;
 }
-.left-panel.zen-hide { 
+.left-panel.zen-hide {
   opacity: 0; pointer-events: none; transform: translateX(-20px);
   flex: 0 0 0px; padding: 0; margin: 0; min-width: 0; overflow: hidden;
 }
 
-/* Album art — large, rounded, with shadow */
+/* Album art bleeds from the top of the panel; the deep-blurred .art-bg
+   already behind it (section/chorus-reactive) is what it fades into --
+   no separate blur layer needed, just the mask falloff. */
 .lp-art {
-  width: clamp(200px, 28vw, 340px);
-  height: clamp(200px, 28vw, 340px);
-  border-radius: clamp(12px, 2vw, 20px);
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  width: 100%;
+  height: 64%;
   object-fit: cover;
-  box-shadow:
-    0 20px 60px rgba(0,0,0,0.5),
-    0 0 0 1px rgba(255,255,255,0.06);
-  flex-shrink: 0;
+  object-position: center 32%;
+  border-radius: 0;
+  mask-image: linear-gradient(to bottom, #000 52%, transparent 90%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 52%, transparent 90%);
+  box-shadow: none;
+  z-index: 0;
+}
+
+/* Tint veil: gives the glass its colour (album-derived, via --bg-rgb) and
+   guarantees text contrast for the meta/controls sitting on top of it. */
+.lp-veil {
+  position: absolute; inset: 0;
+  background: linear-gradient(
+    to bottom,
+    transparent 38%,
+    rgba(var(--bg-rgb), 0.72) 72%,
+    rgba(var(--bg-rgb), 0.94) 100%
+  );
+  pointer-events: none;
+  z-index: 1;
 }
 
 /* Song metadata */
 .lp-meta {
+  position: relative; z-index: 2;
   text-align: center;
   width: 100%;
   max-width: clamp(200px, 28vw, 340px);
@@ -674,9 +696,13 @@ animation-delay: -3s;
   font-weight: 750;
   letter-spacing: -0.02em;
   color: #fff;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: normal;
+  line-height: 1.25;
 }
 .lp-badges {
   display: flex; gap: 6px; justify-content: center; margin-top: 8px;
@@ -684,6 +710,7 @@ animation-delay: -3s;
 
 /* Seek bar */
 .lp-seek {
+  position: relative; z-index: 2;
   width: 100%;
   max-width: clamp(200px, 28vw, 340px);
 }
@@ -694,12 +721,14 @@ animation-delay: -3s;
 
 /* Controls row */
 .lp-controls {
+  position: relative; z-index: 2;
   display: flex; align-items: center; justify-content: center;
   gap: clamp(20px, 3.5vw, 36px);
 }
 
 /* Lyrics offset adjustment */
 .lp-offset {
+  position: relative; z-index: 2;
   display: flex; align-items: center; justify-content: center;
   gap: 8px;
   opacity: 0.4;

@@ -2503,6 +2503,21 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [hasPlayer]);
 
+  // F toggles immersive (zen) mode while a track is loaded. Ignored while
+  // typing in the search box so it does not fight normal text entry.
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.key.toLowerCase() !== 'f' || e.metaKey || e.ctrlKey || e.altKey) return;
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (!hasPlayer) return;
+      e.preventDefault();
+      setZenMode((v) => !v);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [hasPlayer]);
+
   // Font sizing is now handled via data-len attribute + CSS — avoids inline style flash
 
   const sboxRef = useRef(null);
@@ -2943,8 +2958,8 @@ export default function App() {
                 whileHover={{ scale: 1.12, rotate: zenMode ? -8 : 8 }}
                 whileTap={{ scale: 0.88 }}
                 transition={{ type: 'spring', stiffness: 280, damping: 20 }}
-                aria-label={zenMode ? 'Show full player' : 'Hide player panel'}
-                title={zenMode ? 'Show full player' : 'Hide player panel'}
+                aria-label={zenMode ? 'Exit immersive mode (F)' : 'Immersive mode (F)'}
+                title={zenMode ? 'Exit immersive mode (F)' : 'Immersive mode (F)'}
               >
                 {zenMode ? <Eye size={16} strokeWidth={2} /> : <EyeOff size={16} strokeWidth={2} />}
                 <span className="strigger-ring" />
@@ -3038,13 +3053,14 @@ export default function App() {
                     />
                   )}
                 </AnimatePresence>
+                {albumArt && <div className="lp-veil" aria-hidden="true" />}
                 {song && (
                   <div className="lp-meta">
                     <div className="lp-artist">{song.artistName}</div>
-                    <div className="lp-title"><GlitchText text={song.trackName} /></div>
+                    <div className="lp-title" title={song.trackName}><GlitchText text={song.trackName} /></div>
                     <div className="lp-badges">
                       {hasRichSync && <span className="rs-badge" title="Word-level sync">W</span>}
-                      {ytVideoId && ytReady && <span className="yt-badge">YT</span>}
+                      {ytVideoId && ytReady && <span className="yt-badge">YOUTUBE · 192kbps</span>}
                     </div>
                   </div>
                 )}
@@ -3066,7 +3082,7 @@ export default function App() {
 
                 {/* Controls */}
                 <div className="lp-controls">
-                  <button className="ico-btn" onClick={handleReset}><RotateCcw size={18} /></button>
+                  <button className="ico-btn" onClick={handleReset} aria-label="Restart" title="Restart"><RotateCcw size={18} /></button>
                   <MagneticBtn strength={0.32}>
                   <motion.button className={`play-btn${isChorus ? ' play-btn-chorus' : ''}`}
                     onClick={() => {
@@ -3076,6 +3092,7 @@ export default function App() {
                     }}
                     disabled={!song || revealPhase !== 'playing'}
                     whileHover={{ scale: 1.08 }} whileTap={{ scale: 0.92 }}
+                    aria-label={isPlaying ? 'Pause' : 'Play'}
                   >
                     <AnimatePresence mode="wait">
                       {isPlaying
