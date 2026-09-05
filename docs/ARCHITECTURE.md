@@ -11,12 +11,40 @@ One repo, two Vercel deployments:
 | Surface | Root Directory | Framework | Notes |
 |---|---|---|---|
 | App | `/` (repo root) | Vite | `aurora-player-seven.vercel.app`. Ships `/api` serverless functions alongside the SPA. |
-| Landing | `web/` | Other (no build) | `aurora-player-tpainn.vercel.app`. Currently a static, minified, single-line `index.html` — no React, no build step. This is changing per the redesign plan (`web/` becomes a real Vite+React project importing from `shared/`). |
+| Landing | `web/` | Vite | `aurora-player-tpainn.vercel.app` (same Vercel project as `aurora-player-site.vercel.app`, just an extra domain alias). As of 2026-09, `web/` is a real Vite+React project (was a static prebuilt `index.html` before) — see "shared/" below. Its `App.jsx` is currently a placeholder proving the `@shared` alias resolves; the actual landing page content is a separate pass. **Needs a manual Vercel dashboard change to deploy correctly** — see "shared/" below. |
 
-Stack: **React 19 + Vite**, mostly `.jsx`, with `.ts` used for newer `lib/`/`hooks/`
-files (`colors.ts`, `usePlayer.ts`, `useSearch.ts`). No Next.js anywhere — when
-any external spec mentions `app/` App Router paths, the equivalent here is `src/`.
-No TypeScript type-checking on the client build (only `server/` is typechecked).
+Stack: **React 19 + Vite**, mostly `.jsx`, with `.ts` used for newer `lib/`/`shared/`
+files. No Next.js anywhere — when any external spec mentions `app/` App Router
+paths, the equivalent here is `src/`. No TypeScript type-checking on the
+client build (only `server/` is typechecked).
+
+## `shared/` (repo root, aliased as `@shared` in both `vite.config.js` files)
+
+Code meant to be imported by both the app and the landing page:
+`tokens.ts`, `palette.ts` (extractColors/buildPalette/applyPalette), `Wordmark.tsx`,
+`useTrackSearch.ts` + `SearchInput.tsx` (a deliberately simple, iTunes-only
+search for the landing page — NOT the app's full scored/deduped pipeline,
+see "Dead code" below for why that one stays app-only for now).
+
+**`shared/palette.ts` is extracted from App.jsx's live inline
+`extractColors`/`applyColors` (~line 492), NOT from the old `src/lib/colors.ts`**
+(deleted — see below). Earlier in this doc's history `colors.ts` was
+(incorrectly) described as the app's real palette pipeline; it wasn't — it
+was an unused earlier draft with slightly different constants. If you're
+ever unsure which palette logic is "real," it's whatever's inline in
+`App.jsx`, never a `lib/` file — that pattern held for every duplicate found
+in this codebase so far (search, player, and color extraction all have this
+shape: a clean `lib/`/`hooks/` version that nothing imports, and the real,
+evolved logic inline in `App.jsx`).
+
+**Vercel setup needed for `web/` to actually deploy (not done yet, no
+tool access to do it):** the `aurora-player-site` Vercel project (Root
+Directory = `web/`) needs "Include source files outside of the Root
+Directory" enabled under Project Settings → General, so its build can see
+`../shared/`. Without it, a real Vercel build of `web/` will fail to resolve
+`@shared` even though `npm run build` succeeds locally (local builds read the
+whole repo checkout regardless of configured root directory — that's why
+this gap doesn't show up until an actual Vercel deploy).
 
 Dependencies actually in use: `framer-motion`, `lucide-react`, `ogl` (lightweight
 WebGL, used by `components/Particles.jsx`), `realtime-bpm-analyzer`. Nothing else —
@@ -109,9 +137,21 @@ playback (Now Playing UI, sync offset, zen mode, lyrics) is unreliable until
 this is fixed** — use the production tab as the reference for anything past
 "does search find and select a track."
 
-### Dead code: `src/hooks/useSearch.ts` and `src/hooks/usePlayer.ts`
+### Deleted: `src/hooks/useSearch.ts`, `usePlayer.ts`, `src/lib/colors.ts`
 
-Both are complete, well-written hooks — NOT imported anywhere in `App.jsx`
+**Resolution (2026-09):** deleted, not migrated onto. Rewriting them to
+faithfully match today's `App.jsx` is real, scoped work with no second
+consumer to verify parity against yet — folded into Step 4 (Now Playing
+rework) instead, where that code gets touched and tested anyway. `palette.ts`
+was salvaged into `shared/` first, extracted from the correct (live, inline)
+source — see the `shared/` section above.
+
+Kept below for context on WHY they weren't just wired in as-is, in case the
+same pattern shows up elsewhere in this codebase (it might — this was the
+second time an unused, cleaner-looking `lib/` file turned out to be a stale
+draft rather than the real implementation).
+
+Both were complete, well-written hooks — NOT imported anywhere in `App.jsx`
 (grep confirms only `useAudioAnalyzer.js` is used). They also don't compile
 against current reality: they import `searchGenius`, `searchItunes`,
 `fetchLrcLib`, `searchLrcLib`, `fetchStructuredLyrics`, `fetchVideoId` from
