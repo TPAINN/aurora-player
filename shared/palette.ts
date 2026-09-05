@@ -1,25 +1,33 @@
-// ─── Aurora Color Extraction — Material You Adaptive Palette ─────────────────
+﻿// ─── Aurora palette extraction ─────────────────────────────────────────────
+// Faithful extraction of the app's REAL, live palette pipeline (App.jsx's
+// inline extractColors/applyColors, ~line 492). src/lib/colors.ts is an
+// earlier, similar-but-not-identical draft that nothing in the app actually
+// imports -- do not use it as the reference; this file supersedes it.
+//
+// Algorithm: sample a 100x100 canvas of the cover, weight pixels by
+// saturation + mid-lightness (skip near-black/near-white/near-grey), bucket
+// hues in 12deg steps, pick up to 3 buckets at least 45deg apart. Falls back
+// to a desaturated neutral triad when the cover itself is near-grayscale.
 
-export interface BeatPalette {
-  c: string[];
-  glow: string[];
-  dim: string;
-  bg: string;
+export type RGBTriplet = string; // "r,g,b"
+
+export interface Palette {
+  c: [RGBTriplet, RGBTriplet, RGBTriplet];
+  glow: [RGBTriplet, RGBTriplet, RGBTriplet];
+  dim: RGBTriplet;
+  bg: RGBTriplet;
 }
 
-export const DEFAULT_PALETTE: BeatPalette = {
+export const DEFAULT_PALETTE: Palette = {
   c: ['167,139,250', '244,114,182', '103,232,249'],
   glow: ['185,155,255', '255,125,195', '115,242,255'],
   dim: '55,42,90',
   bg: '6,7,14',
 };
 
-// ─── HSL helpers ─────────────────────────────────────────────────────────────
-
 function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
   r /= 255; g /= 255; b /= 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
   const l = (max + min) / 2;
   if (max === min) return [0, 0, l];
   const d = max - min;
@@ -32,40 +40,26 @@ function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
 }
 
 function hslToRgb(h: number, s: number, l: number): [number, number, number] {
-  if (s === 0) {
-    const v = Math.round(l * 255);
-    return [v, v, v];
-  }
+  if (s === 0) { const v = Math.round(l * 255); return [v, v, v]; }
   const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
   const p = 2 * l - q;
   const ch = (t: number) => {
-    if (t < 0) t += 1;
-    if (t > 1) t -= 1;
+    if (t < 0) t += 1; if (t > 1) t -= 1;
     if (t < 1 / 6) return p + (q - p) * 6 * t;
     if (t < 1 / 2) return q;
     if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
     return p;
   };
-  return [
-    Math.round(ch(h + 1 / 3) * 255),
-    Math.round(ch(h) * 255),
-    Math.round(ch(h - 1 / 3) * 255),
-  ];
+  return [Math.round(ch(h + 1 / 3) * 255), Math.round(ch(h) * 255), Math.round(ch(h - 1 / 3) * 255)];
 }
 
-// ─── Color Extraction ─────────────────────────────────────────────────────────
-
-export function extractColors(url: string): Promise<string[] | null> {
+/** Extracts up to 3 dominant colors from an image URL as "r,g,b" strings, or null on failure. */
+export function extractColors(url: string): Promise<RGBTriplet[] | null> {
   return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
     const bail = setTimeout(() => resolve(null), 5000);
-
-    img.onerror = () => {
-      clearTimeout(bail);
-      resolve(null);
-    };
-
+    img.onerror = () => { clearTimeout(bail); resolve(null); };
     img.onload = () => {
       clearTimeout(bail);
       try {
@@ -75,13 +69,8 @@ export function extractColors(url: string): Promise<string[] | null> {
         const ctx = cv.getContext('2d')!;
         ctx.drawImage(img, 0, 0, S, S);
         const { data } = ctx.getImageData(0, 0, S, S);
-
         const buckets: Record<number, { w: number; r: number; g: number; b: number }> = {};
-        let totalWeight = 0;
-        let satWeight = 0;
-        let avgR = 0;
-        let avgG = 0;
-        let avgB = 0;
+        let totalWeight = 0, satWeight = 0, avgR = 0, avgG = 0, avgB = 0;
 
         for (let i = 0; i < data.length; i += 4) {
           const r = data[i], g = data[i + 1], b = data[i + 2];
@@ -92,11 +81,8 @@ export function extractColors(url: string): Promise<string[] | null> {
           const s = max === 0 ? 0 : d / (255 * (1 - Math.abs(2 * l - 1)));
           const midness = 1 - Math.abs(2 * l - 1);
           const baseW = Math.max(0.08, Math.pow(Math.max(s, 0.02), 1.2)) * Math.max(midness, 0.18);
-          totalWeight += baseW;
-          satWeight += s * baseW;
-          avgR += r * baseW;
-          avgG += g * baseW;
-          avgB += b * baseW;
+          totalWeight += baseW; satWeight += s * baseW;
+          avgR += r * baseW; avgG += g * baseW; avgB += b * baseW;
           if (s < 0.12) continue;
           let h: number;
           if (max === r) h = ((g - b) / d + 6) % 6;
@@ -112,19 +98,18 @@ export function extractColors(url: string): Promise<string[] | null> {
         }
 
         const avgSat = totalWeight > 0 ? satWeight / totalWeight : 0;
-        const neutralBase: [number, number, number] | null =
-          totalWeight > 0
-            ? [Math.round(avgR / totalWeight), Math.round(avgG / totalWeight), Math.round(avgB / totalWeight)]
-            : null;
+        const neutralBase: [number, number, number] | null = totalWeight > 0
+          ? [Math.round(avgR / totalWeight), Math.round(avgG / totalWeight), Math.round(avgB / totalWeight)]
+          : null;
 
         if (avgSat < 0.16 && neutralBase) {
-          const [h, s, lv] = rgbToHsl(...neutralBase);
+          const [h, s, l] = rgbToHsl(...neutralBase);
           const mkNeutral = (lightness: number, satBoost = 0.05) =>
             hslToRgb(h, Math.min(0.12, s + satBoost), lightness).join(',');
           resolve([
-            mkNeutral(Math.min(0.38, Math.max(0.16, lv * 0.8))),
-            mkNeutral(Math.min(0.48, Math.max(0.22, lv * 0.96)), 0.03),
-            mkNeutral(Math.min(0.62, Math.max(0.28, lv * 1.12)), 0.02),
+            mkNeutral(Math.min(0.38, Math.max(0.16, l * 0.80))),
+            mkNeutral(Math.min(0.48, Math.max(0.22, l * 0.96)), 0.03),
+            mkNeutral(Math.min(0.62, Math.max(0.28, l * 1.12)), 0.02),
           ]);
           return;
         }
@@ -153,51 +138,42 @@ export function extractColors(url: string): Promise<string[] | null> {
         resolve(null);
       }
     };
-
     img.src = url;
   });
 }
 
-// ─── Apply extracted colors as CSS custom properties ─────────────────────────
-
-let _colorRaf: number | null = null;
-
-export function buildPalette(colors: string[] | null): BeatPalette {
+/** Derives the full Palette (glow/dim/bg variants) from 1-3 extracted "r,g,b" strings, or the default. */
+export function buildPalette(colors: RGBTriplet[] | null): Palette {
   if (!colors) return DEFAULT_PALETTE;
 
   const parse = (str: string) => str.split(',').map(Number) as [number, number, number];
-  const slots = [colors[0], colors[1] ?? colors[0], colors[2] ?? colors[0]];
+  const slots: [RGBTriplet, RGBTriplet, RGBTriplet] = [colors[0], colors[1] ?? colors[0], colors[2] ?? colors[0]];
   const hsls = slots.map((s) => rgbToHsl(...parse(s)));
 
   const vivid = ([h, s, l]: [number, number, number]) => {
     const guardedL = Math.max(0.38, Math.min(0.62, l * 0.92 + 0.06));
-    const guardedS = Math.min(0.9, Math.max(s * 1.15, 0.55));
-    return hslToRgb(h, guardedS, guardedL).join(',');
+    return hslToRgb(h, Math.min(Math.max(s * 1.05 + 0.04, 0.42), 0.82), guardedL);
   };
+  const dim = ([h, s, l]: [number, number, number]) => hslToRgb(h, s * 0.55, Math.max(l * 0.30, 0.07));
 
-  const dimRgb = hslToRgb(hsls[0][0], Math.min(hsls[0][1] * 0.6, 0.3), Math.max(hsls[0][2] * 0.35, 0.06));
-  const bgRgb = hslToRgb(hsls[0][0], Math.min(hsls[0][1] * 0.25, 0.12), Math.max(hsls[0][2] * 0.07, 0.02));
+  const glow = hsls.map((hsl) => vivid(hsl).join(',')) as [RGBTriplet, RGBTriplet, RGBTriplet];
+  const dimStr = dim(hsls[0]).join(',');
 
-  return {
-    c: colors,
-    glow: hsls.map(vivid),
-    dim: dimRgb.join(','),
-    bg: bgRgb.join(','),
-  };
+  const [h0, s0] = hsls[0];
+  const [sr, sg, sb] = hslToRgb(h0, Math.min(s0 * 0.18, 0.10), 0.046);
+
+  return { c: slots, glow, dim: dimStr, bg: `${sr},${sg},${sb}` };
 }
 
-export function applyPalette(palette: BeatPalette): void {
-  if (_colorRaf) cancelAnimationFrame(_colorRaf);
-  _colorRaf = requestAnimationFrame(() => {
-    _colorRaf = null;
-    const root = document.documentElement;
-    root.style.setProperty('--c1', palette.c[0]);
-    root.style.setProperty('--c2', palette.c[1]);
-    root.style.setProperty('--c3', palette.c[2]);
-    root.style.setProperty('--c1-glow', palette.glow[0]);
-    root.style.setProperty('--c2-glow', palette.glow[1]);
-    root.style.setProperty('--c3-glow', palette.glow[2]);
-    root.style.setProperty('--c1-dim', palette.dim);
-    root.style.setProperty('--bg-rgb', palette.bg);
-  });
+/** Writes a Palette's values onto document.documentElement as the app's --c1/--c2/... CSS custom properties. */
+export function applyPalette(palette: Palette): void {
+  const root = document.documentElement;
+  root.style.setProperty('--c1', palette.c[0]);
+  root.style.setProperty('--c2', palette.c[1]);
+  root.style.setProperty('--c3', palette.c[2]);
+  root.style.setProperty('--c1-glow', palette.glow[0]);
+  root.style.setProperty('--c2-glow', palette.glow[1]);
+  root.style.setProperty('--c3-glow', palette.glow[2]);
+  root.style.setProperty('--c1-dim', palette.dim);
+  root.style.setProperty('--bg-rgb', palette.bg);
 }
