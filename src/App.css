@@ -484,54 +484,12 @@ animation-delay: -3s;
 .intro-line {
   width: clamp(68px, 11vw, 112px);
 }
-.intro-panel {
-  width: 100%;
-  padding: clamp(18px, 3vw, 26px);
-  border-radius: 28px;
-  border: 1px solid rgba(255,255,255,0.08);
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.09), rgba(255,255,255,0.04)),
-    rgba(10, 12, 24, 0.56);
-  box-shadow:
-    0 28px 90px rgba(0,0,0,0.35),
-    inset 0 1px 0 rgba(255,255,255,0.08);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-}
-.intro-panel-title {
-  font-size: clamp(1.15rem, 2.8vw, 1.62rem);
-  font-weight: 720;
-  letter-spacing: -0.03em;
-  color: rgba(255,255,255,0.95);
-}
-.intro-panel-copy {
-  margin: 10px 0 0;
-  font-size: clamp(0.83rem, 1.5vw, 0.96rem);
-  line-height: 1.68;
-  color: rgba(255,255,255,0.54);
-}
-.intro-chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  margin-top: 18px;
-}
-.intro-chip-row span {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 32px;
-  padding: 0 14px;
-  border-radius: 999px;
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.07);
-  color: rgba(255,255,255,0.46);
+.intro-skip-hint {
   font-family: var(--mono);
-  font-size: 0.56rem;
-  letter-spacing: 0.15em;
+  font-size: 0.6rem;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
+  color: rgba(255,255,255,0.3);
 }
 
 @media (max-width: 900px) {
@@ -552,13 +510,6 @@ animation-delay: -3s;
   .intro-veil {
     backdrop-filter: blur(14px);
     -webkit-backdrop-filter: blur(14px);
-  }
-  .intro-panel {
-    border-radius: 22px;
-    padding: 18px 16px;
-  }
-  .intro-chip-row {
-    gap: 8px;
   }
 }
 
@@ -935,6 +886,24 @@ img.dico.dart { object-fit: cover; width: 30px; height: 30px; border-radius: 7px
 .dtitle  { font-size: 0.86rem; font-weight: 650; color: rgba(255,255,255,0.92); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dartist { font-family: var(--mono); font-size: 0.62rem; color: rgba(255,255,255,0.34); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ddur    { font-family: var(--mono); font-size: 0.62rem; color: rgba(255,255,255,0.2); flex-shrink: 0; }
+
+/* Keyboard-selected row mirrors the existing :hover treatment */
+.drop-item.highlighted { background: rgba(255,255,255,0.045); }
+.drop-item.highlighted::before { opacity: 1; }
+.drop-item.highlighted .dico { background: rgba(255,255,255,0.13); color: rgba(255,255,255,0.7); }
+
+.dtitle strong, .dartist strong { font-weight: 800; color: #fff; }
+
+.drop-skeleton-row { display: flex; align-items: flex-start; gap: 12px; width: 100%; padding: 9px 15px; }
+.drop-skeleton-thumb { width: 30px; height: 30px; border-radius: 7px; background: rgba(255,255,255,0.06); flex-shrink: 0; }
+.drop-skeleton-lines { display: flex; flex-direction: column; gap: 6px; flex: 1; padding-top: 3px; }
+.drop-skeleton-line { height: 8px; border-radius: 4px; background: rgba(255,255,255,0.06); }
+.drop-skeleton-line.short { width: 55%; }
+.drop-skeleton-thumb, .drop-skeleton-line { animation: dropSkeletonPulse 1.4s ease-in-out infinite; }
+@keyframes dropSkeletonPulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+
+.drop-status { padding: 18px 15px; font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.02em; color: rgba(255,255,255,0.4); text-align: center; line-height: 1.6; }
+.drop-status button { margin-left: 6px; color: rgba(var(--c1-glow), 0.95); background: none; border: none; font-family: var(--mono); font-size: 0.68rem; text-decoration: underline; cursor: pointer; padding: 0; }
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    LYRICS AREA + SCROLL
@@ -1881,8 +1850,7 @@ img.dico.dart { object-fit: cover; width: 30px; height: 30px; border-radius: 7px
 .perf-low .search-overlay { background: rgba(3, 4, 12, 0.94) !important; }
 .perf-low .cover-reveal { background: rgba(4, 5, 14, 0.88) !important; }
 .perf-low .intro-cover-wall { opacity: 0.34 !important; transform: none !important; }
-.perf-low .intro-veil,
-.perf-low .intro-panel { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+.perf-low .intro-veil { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
 
 /* Orbs: smaller blur */
 .perf-low .orb { filter: blur(60px) !important; }
