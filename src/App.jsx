@@ -326,6 +326,20 @@ const upgradeArtworkUrl = (url, size = 'full') => {
   return url;
 };
 
+const highlightMatch = (text, q) => {
+  const query = (q || '').trim();
+  if (!text || !query) return text;
+  const idx = text.toLowerCase().indexOf(query.toLowerCase());
+  if (idx === -1) return text;
+  return (
+    <>
+      {text.slice(0, idx)}
+      <strong>{text.slice(idx, idx + query.length)}</strong>
+      {text.slice(idx + query.length)}
+    </>
+  );
+};
+
 const mapItunesTrack = (hit) => ({
   id: hit.trackId || hit.collectionId || `${hit.artistName}-${hit.trackName}`,
   trackName: hit.trackName,
@@ -1127,8 +1141,20 @@ export default function App() {
   // ─── ClickSpark canvas ───────────────────────────────────────────────────────
   const { canvasRef: sparkCanvasRef, fire: fireSpark } = useClickSpark();
 
-  const [introPhase, setIntroPhase] = useState('visible');
-  useEffect(() => { const t = setTimeout(() => setIntroPhase('gone'), 2600); return () => clearTimeout(t); }, []);
+  const [introPhase, setIntroPhase] = useState(() => {
+    try { return sessionStorage.getItem('aurora-intro-seen') ? 'gone' : 'visible'; } catch { return 'visible'; }
+  });
+  // Splash plays once per session (900ms cap), and never captures pointer events --
+  // .intro-overlay is pointer-events:none, so a click always reaches the real
+  // search box mounted underneath. Keydown is a fast-path for keyboard users.
+  useEffect(() => {
+    if (introPhase !== 'visible') return;
+    const markSeen = () => { try { sessionStorage.setItem('aurora-intro-seen', '1'); } catch (error) { ignoreError(error); } };
+    const t = setTimeout(() => { markSeen(); setIntroPhase('gone'); }, 900);
+    const skip = () => { markSeen(); setIntroPhase('gone'); };
+    window.addEventListener('keydown', skip, { once: true });
+    return () => { clearTimeout(t); window.removeEventListener('keydown', skip); };
+  }, [introPhase]);
   const showIntro = introPhase === 'visible';
 
   const [query, setQuery] = useState('');
@@ -1170,6 +1196,14 @@ export default function App() {
   const [activeSection, setActiveSection] = useState('none'); // verse, pre-chorus, chorus, bridge, intro, outro, hook, none
   // Beat-reactive palette — extracted from album art colors
   const [beatPalette, setBeatPalette] = useState(['167,139,250', '244,114,182', '103,232,249']);
+
+  // Anti-flash: only show the results skeleton if a search is still in flight
+  // 120ms after it started (fast responses never show it at all).
+  useEffect(() => {
+    if (!isSuggesting) { setShowSkeleton(false); return; }
+    const t = setTimeout(() => setShowSkeleton(true), 120);
+    return () => clearTimeout(t);
+  }, [isSuggesting]);
   const introCovers = useMemo(() => {
     const arts = [
       albumArt,
@@ -1225,6 +1259,11 @@ export default function App() {
   const seekThumbRef = useRef(null);
   const curTimeDisplayRef = useRef(null);
   const searchReqRef = useRef(0);
+  const searchAbortRef = useRef(null);
+  const [highlightedIndex, setHighlightedIndex] = useState(-1);
+  const [showSkeleton, setShowSkeleton] = useState(false);
+  const [searchError, setSearchError] = useState(null);
+  const [retryToken, setRetryToken] = useState(0);
   const activeIdxRef = useRef(-1);
   const songDurationRef = useRef(1);
   const playbackDurationRef = useRef(1);
@@ -1870,6 +1909,10 @@ export default function App() {
     const reqId = ++searchReqRef.current;
     clearTimeout(debRef.current);
     debRef.current = setTimeout(async () => {
+      searchAbortRef.current?.abort();
+      const abortController = new AbortController();
+      searchAbortRef.current = abortController;
+      setSearchError(null);
       try {
         const suggestionQueries = buildSuggestionQueries(q);
         // Each source parses its own body and fails independently — previously a
@@ -1877,14 +1920,14 @@ export default function App() {
         // threw, and the outer catch hid ALL suggestions including valid ones.
         const itunesRequests = suggestionQueries.map((term) => (
           fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(term)}&media=music&entity=song&limit=8`, {
-            signal: AbortSignal.timeout(5000),
+            signal: AbortSignal.any([abortController.signal, AbortSignal.timeout(5000)]),
           })
             .then((r) => r.json())
             .then((d) => (Array.isArray(d.results) ? d.results : []))
             .catch(() => [])
         ));
         const geniusRequest = fetch(buildApiUrl('/api/genius/search', { q }), {
-          signal: AbortSignal.timeout(8000),
+          signal: AbortSignal.any([abortController.signal, AbortSignal.timeout(8000)]),
         })
           .then((r) => r.json())
           .then((d) => (!d.error && Array.isArray(d) ? d : []))
@@ -1964,13 +2007,14 @@ export default function App() {
         if (reqId !== searchReqRef.current) return;
         setSuggestions([]);
         setShowDrop(false);
+        if (error?.name !== 'AbortError' && error?.name !== 'TimeoutError') setSearchError(q);
       }
       finally {
         if (reqId === searchReqRef.current) setIsSuggesting(false);
       }
     }, 180);
     return () => clearTimeout(debRef.current);
-  }, [query]);
+  }, [query, retryToken]);
 
   // Scroll motion blur removed — applying filter:blur on every scroll frame
   // forces the compositor to re-rasterize the entire lyrics container,
@@ -2422,6 +2466,43 @@ export default function App() {
   const duration = song?.duration || 1;
   const hasPlayer = !!(song || isLoading);
 
+  // Deep link: /?q=<query> preloads the search box and runs the search on mount.
+  // /t/<id> (iTunes trackId) loads that track directly.
+  useEffect(() => {
+    const path = window.location.pathname;
+    if (path.indexOf('/t/') === 0) {
+      let trackId = path.slice(3);
+      const nextSlash = trackId.indexOf('/');
+      if (nextSlash !== -1) trackId = trackId.slice(0, nextSlash);
+      const isNumeric = trackId.length > 0 && Array.from(trackId).every((c) => c >= '0' && c <= '9');
+      if (isNumeric) {
+        fetch('https://itunes.apple.com/lookup?id=' + trackId)
+          .then((r) => r.json())
+          .then((d) => {
+            const hit = Array.isArray(d.results) ? d.results.find((r) => r.wrapperType === 'track') : null;
+            if (hit) loadTrack(mapItunesTrack(hit));
+          })
+          .catch((error) => ignoreError(error));
+        return;
+      }
+    }
+    const q = new URLSearchParams(window.location.search).get('q');
+    if (q) setQuery(q);
+  }, []);
+
+  // Cmd/Ctrl+K focuses search from anywhere in the app.
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        if (hasPlayer) setShowSearch(true);
+        setTimeout(() => inputRef.current?.focus(), hasPlayer ? 80 : 0);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [hasPlayer]);
+
   // Font sizing is now handled via data-len attribute + CSS — avoids inline style flash
 
   const sboxRef = useRef(null);
@@ -2443,6 +2524,14 @@ export default function App() {
     ));
   }, []);
 
+  const trimmedQuery = query.trim();
+  const suggestListVisible = showDrop && suggestions.length > 0;
+  const suggestSkeletonVisible = !suggestListVisible && trimmedQuery.length >= 2 && showSkeleton && !searchError;
+  const suggestErrorVisible = !suggestListVisible && trimmedQuery.length >= 2 && !!searchError;
+  const suggestEmptyVisible = !suggestListVisible && trimmedQuery.length >= 2 && !isSuggesting && !showSkeleton && !searchError;
+  const suggestPanelVisible = suggestListVisible || suggestSkeletonVisible || suggestErrorVisible || suggestEmptyVisible;
+  const activeKeyboardList = suggestListVisible ? suggestions : (showHistory && !showDrop && history.length > 0 ? history : null);
+
   const SearchBox = (
     <div className="search-area" ref={sboxRef} style={{ display: 'flex', justifyContent: 'center', position: 'relative' }}>
       <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
@@ -2450,10 +2539,22 @@ export default function App() {
           {isSuggesting ? <Loader size={14} className="spin sico" /> : <Search size={14} className="sico" />}
           <input
             ref={inputRef} type="text" placeholder="Search artist or song…" value={query}
-            onChange={e => setQuery(e.target.value)}
-            onFocus={() => { setShowHistory(false); if (suggestions.length > 0) setShowDrop(true); }}
+            onChange={e => { const v = e.target.value; setQuery(v); setHighlightedIndex(-1); if (v.trim()) setShowHistory(false); }}
+            onFocus={() => { setHighlightedIndex(-1); if (suggestions.length > 0) { setShowHistory(false); setShowDrop(true); } else if (!query && history.length > 0) { setShowHistory(true); } }}
             onBlur={() => setTimeout(() => setShowDrop(false), 160)}
-            onKeyDown={e => { if (e.key === 'Escape') { setShowDrop(false); inputRef.current?.blur(); } }}
+            onKeyDown={e => {
+              if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && activeKeyboardList) {
+                e.preventDefault();
+                const len = activeKeyboardList.length;
+                setHighlightedIndex(i => (e.key === 'ArrowDown' ? (i + 1) % len : (i <= 0 ? len - 1 : i - 1)));
+              } else if (e.key === 'Enter' && activeKeyboardList && highlightedIndex >= 0) {
+                e.preventDefault();
+                setShowHistory(false);
+                loadTrack(activeKeyboardList[highlightedIndex]);
+              } else if (e.key === 'Escape') {
+                setShowDrop(false); setShowHistory(false); setHighlightedIndex(-1); inputRef.current?.blur();
+              }
+            }}
             autoComplete="off"
           />
           <AnimatePresence>
@@ -2461,7 +2562,7 @@ export default function App() {
               <motion.button className="clr-btn"
                 initial={{ scale: 0, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0, opacity: 0 }}
                 transition={{ duration: 0.14, type: 'spring', stiffness: 400, damping: 22 }}
-                onMouseDown={() => { setQuery(''); setSuggestions([]); setSuggestionArts({}); setShowDrop(false); inputRef.current?.focus(); }}
+                onMouseDown={() => { setQuery(''); setSuggestions([]); setSuggestionArts({}); setShowDrop(false); setHighlightedIndex(-1); inputRef.current?.focus(); }}
               ><X size={12} /></motion.button>
             )}
           </AnimatePresence>
@@ -2470,11 +2571,11 @@ export default function App() {
           <History size={17} />
         </button>
       </div>
-      
+
       {/* Local Files Hint (More Details & All Local logic hint) */}
       <AnimatePresence>
         {!query && !showDrop && !showHistory && (
-           <motion.div className="local-hint" 
+           <motion.div className="local-hint"
              initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
              style={{ position: 'absolute', top: '100%', left: 0, right: 0, textAlign: 'center', marginTop: 12, fontSize: '0.7rem', color: 'rgba(255,255,255,0.3)', fontFamily: 'var(--mono)' }}
            >
@@ -2483,7 +2584,7 @@ export default function App() {
       </AnimatePresence>
 
       <AnimatePresence>
-        {showDrop && suggestions.length > 0 && (
+        {suggestPanelVisible && (
           <motion.div
             className="drop"
             style={{
@@ -2502,25 +2603,44 @@ export default function App() {
             exit={{ opacity: 0, y: -6, scaleY: 0.94 }}
             transition={{ type: 'spring', stiffness: 300, damping: 28 }}
           >
-            <div className="drop-lbl">Best Matches</div>
-            {suggestions.map((track, i) => {
+            {(suggestListVisible || suggestSkeletonVisible) && <div className="drop-lbl">Best Matches</div>}
+            {suggestListVisible && suggestions.map((track, i) => {
               const key = `${track.artistName}|${track.trackName}`.toLowerCase();
               const art = brokenSuggestionArts[key] ? null : suggestionArts[key];
               return (
-                <motion.button key={track.id ?? i} className="drop-item"
+                <motion.button key={track.id ?? i} className={`drop-item${highlightedIndex === i ? ' highlighted' : ''}`}
                   onMouseDown={() => { setShowHistory(false); loadTrack(track); }}
+                  onMouseEnter={() => setHighlightedIndex(i)}
                   initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: i * 0.025, duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
                 >
                   {art ? <img src={art} alt="" className="dico dart" /> : <span className="dico">♪</span>}
                   <span className="dtxt">
-                    <span className="dtitle">{track.trackName}</span>
-                    <span className="dartist">{track.artistName}{track.albumName ? ` · ${track.albumName}` : ''}</span>
+                    <span className="dtitle">{highlightMatch(track.trackName, trimmedQuery)}</span>
+                    <span className="dartist">{highlightMatch(track.artistName, trimmedQuery)}{track.albumName ? ` · ${track.albumName}` : ''}</span>
                   </span>
                   <span className="ddur">{fmt(track.duration ?? 0)}</span>
                 </motion.button>
               );
             })}
+            {suggestSkeletonVisible && [0, 1, 2].map((i) => (
+              <div className="drop-skeleton-row" key={`sk-${i}`}>
+                <div className="drop-skeleton-thumb" />
+                <div className="drop-skeleton-lines">
+                  <div className="drop-skeleton-line" />
+                  <div className="drop-skeleton-line short" />
+                </div>
+              </div>
+            ))}
+            {suggestErrorVisible && (
+              <div className="drop-status">
+                Search failed.
+                <button onMouseDown={() => setRetryToken(t => t + 1)}>Retry</button>
+              </div>
+            )}
+            {suggestEmptyVisible && (
+              <div className="drop-status">No matches for "{trimmedQuery}" — try artist + title.</div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
@@ -2548,8 +2668,9 @@ export default function App() {
               <button className="clr-btn" style={{ position: 'relative', width: 'auto', height: 'auto', padding: '2px 8px', borderRadius: '4px', background: 'rgba(255,255,255,0.1)' }} onMouseDown={() => { setHistory([]); window.localStorage.removeItem('aurora-history'); setShowHistory(false); }}>Clear</button>
             </div>
             {history.map((track, i) => (
-              <motion.button key={track.id ?? i} className="drop-item"
+              <motion.button key={track.id ?? i} className={`drop-item${activeKeyboardList === history && highlightedIndex === i ? ' highlighted' : ''}`}
                 onMouseDown={() => { setShowHistory(false); loadTrack(track); }}
+                onMouseEnter={() => setHighlightedIndex(i)}
                 initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: i * 0.025, duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
               >
@@ -2640,19 +2761,10 @@ export default function App() {
                 animate={{ scaleX: 1, opacity: 1 }}
                 transition={{ duration: 0.9, ease: [0.16, 1, 0.3, 1], delay: 0.36 }}
               />
-              <motion.div className="intro-panel"
-                initial={{ opacity: 0, y: 26, scale: 0.96, filter: 'blur(12px)' }}
-                animate={{ opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' }}
-                transition={{ duration: 0.95, ease: [0.16, 1, 0.3, 1], delay: 0.4 }}
-              >
-                <div className="intro-panel-title">Find the track. Let the room shift with it.</div>
-                <p className="intro-panel-copy">High-quality covers, section-aware visuals, smoother synced lyrics, and a cleaner path into the songs you actually meant to play.</p>
-                <div className="intro-chip-row">
-                  <span>accurate matching</span>
-                  <span>live sync</span>
-                  <span>cinematic playback</span>
-                </div>
-              </motion.div>
+              <motion.div className="intro-skip-hint"
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                transition={{ duration: 0.7, delay: 0.9 }}
+              >tap anywhere, or start typing, to search</motion.div>
             </div>
           </motion.div>
         )}
