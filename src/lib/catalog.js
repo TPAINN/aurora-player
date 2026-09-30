@@ -118,6 +118,19 @@ export async function getSimilarTracks(track, signal, { lang } = {}) {
   return rankForTaste((Array.isArray(data.tracks) ? data.tracks : []).filter(item => item.id && item.title && item.artist).map(item => ({ ...normalizeTrack(item), lyricsAvailable: item.lyricsAvailable })));
 }
 
+const moodCache = new Map();
+// Songs for a home mood chip, in the listener's language when known, ranked by taste.
+export async function getMoodTracks(mood, signal, { lang } = {}) {
+  const key = `${mood}:${lang || ''}`;
+  if (!moodCache.has(key)) {
+    const response = await fetch(`/api/mood?${new URLSearchParams(lang ? { mood, lang } : { mood })}`, { signal });
+    if (!response.ok) throw new Error('This mood is unavailable right now.');
+    const data = await response.json();
+    remember(moodCache, key, (Array.isArray(data.tracks) ? data.tracks : []).filter(item => item?.id && item.title && item.artist).map(normalizeTrack));
+  }
+  return rankForTaste(moodCache.get(key));
+}
+
 // Catalogue tempo for online DJ blends; null when the catalogue does not know it.
 export async function getTrackTempo(track, signal) {
   const query = new URLSearchParams({ artist: track.artist, title: track.title });

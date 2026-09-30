@@ -20,12 +20,26 @@ const writeCache = (key, value, ttlMs = 1000 * 60 * 30) => {
   videoSearchCache.set(key, { value, expiresAt: Date.now() + ttlMs });
 };
 
-const videoQueriesFor = (artist, title) => {
+// Catalogue titles often carry descriptors that uploads leave out: "(Original Mix)",
+// "- Radio Edit", "(2011 Remaster)", "(feat. X)". They are neutral for matching;
+// a named remix, live or altered version is not, and stays in the title.
+const NEUTRAL_DESCRIPTOR = /^(?:(?:\d{4}\s+)?(?:digital(?:ly)?\s+)?remaster(?:ed)?(?:\s+\d{4})?(?:\s+version)?|(?:original|extended|radio|club|album|single|main)\s+(?:mix|edit|version|cut)|radio edit|explicit|clean|(?:feat\.?|ft\.?|featuring|with)\s+.+)$/i;
+export const coreTitle = (title) => String(title || '')
+  .replace(/\s*[([]([^)\]]*)[)\]]/g, (group, inner) => (NEUTRAL_DESCRIPTOR.test(inner.trim()) ? '' : group))
+  .replace(/\s+-\s+([^-]+)$/, (group, suffix) => (NEUTRAL_DESCRIPTOR.test(suffix.trim()) ? '' : group))
+  .replace(/\s+/g, ' ')
+  .trim() || String(title || '').trim();
+
+export const videoQueriesFor = (artist, title) => {
   const base = `${artist} ${title}`.replace(/\s+/g, ' ').trim();
   const dash = `${artist} - ${title}`.replace(/\s+/g, ' ').trim();
+  const core = coreTitle(title);
+  const plain = core !== title.trim() ? `${artist} ${core}`.replace(/\s+/g, ' ').trim() : null;
   return [
     `${base} topic`,
+    ...(plain ? [`${plain} topic`] : []),
     `${base} official audio`,
+    ...(plain ? [`${plain} official audio`] : []),
     `${dash} topic`,
     `${artist} - topic ${title}`,
     `${dash} official audio`,
@@ -34,6 +48,7 @@ const videoQueriesFor = (artist, title) => {
     `${base} official video`,
     base,
     dash,
+    ...(plain ? [plain] : []),
   ];
 };
 
@@ -76,7 +91,7 @@ const HARD_REJECT = -99999;
 export const scoreVideoCandidate = (candidateTitle, candidateChannel, duration = 0, desiredDuration = 0, artist = '', track = '', variant = '') => {
   const t = cleanMatchText(candidateTitle);
   const ch = cleanMatchText(candidateChannel);
-  const trackTokens = tokenize(track);
+  const trackTokens = tokenize(coreTitle(track));
 
   const significantTrackToks = trackTokens.filter((tok) => tok.length > 2);
   if (significantTrackToks.length > 0) {
@@ -107,7 +122,7 @@ export const scoreVideoCandidate = (candidateTitle, candidateChannel, duration =
   const trackCov = tokenCoverage(track, candidateTitle);
   score += artistCov * 45;
   score += trackCov * 80;
-  if (t.includes(cleanMatchText(track))) score += 35;
+  if (t.includes(cleanMatchText(track)) || t.includes(cleanMatchText(coreTitle(track)))) score += 35;
   if (t.includes(cleanMatchText(artist))) score += 20;
   if (/\btopic\b/.test(ch)) score += 100;
   if (/\bofficial audio\b/.test(t)) score += 75;
@@ -157,6 +172,37 @@ const toVideoConfidence = (score, candidateTitle, candidateChannel, artist, trac
   if (/vevo$/.test(ch)) confidence += 0.08;
   return clamp(confidence, 0, 1);
 };
+
+// The best candidate by the strict rules, or — only when nothing passes them — a
+// relaxed pass: the core title's words present, the artist named, and a length
+// within 12 % (uploads often add an intro or outro of a few seconds).
+export function pickCandidate(candidates, { artist, title, duration = 0, variant = '' }, { relaxed = false } = {}) {
+  let best = null;
+  for (const c of candidates) {
+    if (!c?.videoId) continue;
+    let score, confidence;
+    if (!relaxed) {
+      score = scoreVideoCandidate(c.title, c.channel, c.duration, duration, artist, title, variant);
+      if (score === HARD_REJECT) continue;
+      confidence = toVideoConfidence(score, c.title, c.channel, artist, title, c.duration, duration);
+      if (confidence < 0.18) continue;
+    } else {
+      const text = cleanMatchText(c.title);
+      if (/\bkaraoke\b|\bnightcore\b|\breaction\b|\bpitch shift\b/.test(text)) continue;
+      if (VARIANTS.some(([name, pattern]) => pattern.test(text) && name !== variant && !pattern.test(cleanMatchText(title)))) continue;
+      const words = tokenize(coreTitle(title)).filter((token) => token.length > 2);
+      const present = new Set(tokenize(c.title));
+      const coverage = words.length ? words.filter((token) => present.has(token)).length / words.length : 0;
+      const artistNamed = tokenCoverage(artist, `${c.title} ${c.channel}`) > 0;
+      const off = duration > 0 && c.duration > 0 ? Math.abs(c.duration - duration) / duration : 0;
+      if (coverage < 0.7 || !artistNamed || off > 0.12) continue;
+      score = coverage * 100 + (/\btopic\b/.test(cleanMatchText(c.channel)) ? 30 : 0) - off * 200;
+      confidence = 0.35;
+    }
+    if (!best || score > best.score) best = { ...c, score, confidence };
+  }
+  return best;
+}
 
 const extractTitleMap = (html) => {
   const map = new Map();
@@ -311,6 +357,7 @@ export default async function handler(req, res) {
   const seen = new Set(exclude);
   const queries = variant ? [`${artist} ${title} ${variant}`, ...videoQueriesFor(artist, title)] : videoQueriesFor(artist, title);
   const allCandidates = [];
+  const rawPool = [];
   let bestConfidenceSoFar = 0;
   const deadline = Date.now() + 9000; // stay under the default serverless timeout
 
@@ -322,6 +369,7 @@ export default async function handler(req, res) {
 
       const candidates = await collectCandidates(queries[qi]);
       if (!candidates.length) continue;
+      rawPool.push(...candidates.filter((c) => c.videoId && !seen.has(c.videoId)).map((c) => ({ ...c, query: queries[qi] })));
 
       const ranked = candidates
         .filter((c) => c.videoId && !seen.has(c.videoId))
@@ -357,6 +405,11 @@ export default async function handler(req, res) {
       .sort((a, b) => b.score - a.score)
       .slice(0, 8);
 
+    // Nothing passed the strict rules: accept a close upload rather than nothing.
+    if (!deduped.length) {
+      const relaxed = pickCandidate(rawPool, { artist, title, duration: desiredDuration, variant }, { relaxed: true });
+      if (relaxed) deduped.push(relaxed);
+    }
     const best = deduped[0];
     if (best?.videoId) {
       const payload = {
