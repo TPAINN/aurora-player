@@ -676,6 +676,14 @@ if (!only || only === 'I') {
   await context.close();
 }
 if (!only || only === 'I') {
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 }, prefs: { refused: JSON.stringify(['VVVVVVVVVV1']) } });
+  await page.goto(BASE); await wait(500); await goSearch(page); await wait(400); await searchFor(page, 'band');
+  await page.route('**/api/video/search?*', route => route.fulfill({ status: 502, json: { error: 'down' } }));
+  await check('I', 'a failed search for another upload stays retryable instead of skipping', async () => { await page.click('.search-tabs [role=tab]:has-text("Videos")'); await wait(900); await page.click('.video-card >> nth=0'); await wait(2500); const rows = await events(page); ok(!rows.some(row => row[1] === 'load' && row[2] === 'VVVVVVVVVV2'), JSON.stringify(rows.filter(row => ['load', 'refused'].includes(row[1])).slice(-4))); ok((await title(page)).includes('Night Drive'), await title(page)); ok(await page.locator('.track-row.is-unavailable').count() === 0); ok(/connect|retry/i.test(await page.textContent('.toast').catch(() => '')), await page.textContent('.toast').catch(() => 'no toast')); });
+  await check('I', 'no runtime errors when the upload search fails', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'I') {
   const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 }, prefs: { 'aurora-dj': 'true' }, unplayable: ['Morning Light'] });
   await page.goto(BASE); await wait(500); await startQueue(page, ['Morning Light', 'Slow Tide']); await wait(7500);
   await check('I', 'the DJ prepares the next playable song when one can\'t play', async () => { const load = (await events(page)).find(row => row[1] === 'load' && row[2] === 'CCCCCCCCCCC' && row[3] === true); ok(load, 'standby never loaded Slow Tide'); });
