@@ -77,11 +77,24 @@ export async function getFeaturedTracks(signal) {
   return SEED_TRACKS;
 }
 
-export async function getSimilarTracks(track, signal) {
+export async function getSimilarTracks(track, signal, { lang } = {}) {
   if (!track?.artist || !track?.title || track.localUrl) return [];
   const query = new URLSearchParams({ artist: track.artist, title: track.title });
+  if (track.album) query.set('album', track.album);
+  if (track.genre) query.set('genre', String(track.genre).slice(0, 60));
+  if (track.duration > 0) query.set('duration', String(Math.round(track.duration)));
+  if (lang) query.set('lang', lang);
   const response = await fetch(`/api/recommendations?${query}`, { signal });
   if (!response.ok) throw new Error('Similar songs are temporarily unavailable.');
   const data = await response.json();
   return rankForTaste((Array.isArray(data.tracks) ? data.tracks : []).filter(item => item.id && item.title && item.artist).map(item => ({ ...normalizeTrack(item), lyricsAvailable: item.lyricsAvailable })));
+}
+
+// Catalogue tempo for online DJ blends; null when the catalogue does not know it.
+export async function getTrackTempo(track, signal) {
+  const query = new URLSearchParams({ artist: track.artist, title: track.title });
+  const response = await fetch(`/api/tempo?${query}`, { signal });
+  if (!response.ok) throw new Error('Tempo metadata is unavailable.');
+  const { bpm } = await response.json();
+  return Number.isFinite(bpm) && bpm > 0 ? bpm : null;
 }
