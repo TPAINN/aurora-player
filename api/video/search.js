@@ -22,8 +22,12 @@ const writeCache = (key, value, ttlMs = 1000 * 60 * 30) => {
 
 // Catalogue titles often carry descriptors that uploads leave out: "(Original Mix)",
 // "- Radio Edit", "(2011 Remaster)", "(feat. X)". They are neutral for matching;
-// a named remix, live or altered version is not, and stays in the title.
-const NEUTRAL_DESCRIPTOR = /^(?:(?:\d{4}\s+)?(?:digital(?:ly)?\s+)?remaster(?:ed)?(?:\s+\d{4})?(?:\s+version)?|(?:original|extended|radio|club|album|single|main)\s+(?:mix|edit|version|cut)|radio edit|explicit|clean|(?:feat\.?|ft\.?|featuring|with)\s+.+)$/i;
+// a named remix, extended or club mix, live or altered version is not, and stays in the title.
+const NEUTRAL_DESCRIPTOR = /^(?:(?:\d{4}\s+)?(?:digital(?:ly)?\s+)?remaster(?:ed)?(?:\s+\d{4})?(?:\s+version)?|(?:original|radio|album|single|main)\s+(?:mix|edit|version|cut)|radio edit|explicit|clean|(?:feat\.?|ft\.?|featuring|with)\s+.+)$/i;
+// Extended, club and dub mixes are separate recordings with their own intros and outros.
+const ALTERNATE_MIX = /\b(?:extended|club|dub)\s+(?:mix|edit|version|cut)\b/;
+const unaskedMix = (candidateText, requested) => ALTERNATE_MIX.test(candidateText) && !ALTERNATE_MIX.test(cleanMatchText(requested));
+
 export const coreTitle = (title) => String(title || '')
   .replace(/\s*[([]([^)\]]*)[)\]]/g, (group, inner) => (NEUTRAL_DESCRIPTOR.test(inner.trim()) ? '' : group))
   .replace(/\s+-\s+([^-]+)$/, (group, suffix) => (NEUTRAL_DESCRIPTOR.test(suffix.trim()) ? '' : group))
@@ -133,6 +137,7 @@ export const scoreVideoCandidate = (candidateTitle, candidateChannel, duration =
   if (/\b(?:music|official) video\b/.test(t)) score -= 75;
   if (/\blive\b|\bcover\b/.test(t) && !/\blive\b|\bcover\b/.test(requestedTrack)) score -= 50;
   if (/\btranslat/.test(t) || /\bremix\b/.test(t)) score -= 20;
+  if (unaskedMix(t, track)) score -= 60;
 
   if (desiredDuration > 0 && duration > 0) {
     const diff = Math.abs(duration - desiredDuration);
@@ -190,6 +195,7 @@ export function pickCandidate(candidates, { artist, title, duration = 0, variant
       const text = cleanMatchText(c.title);
       if (/\bkaraoke\b|\bnightcore\b|\breaction\b|\bpitch shift\b/.test(text)) continue;
       if (VARIANTS.some(([name, pattern]) => pattern.test(text) && name !== variant && !pattern.test(cleanMatchText(title)))) continue;
+      if (unaskedMix(text, title)) continue;
       const words = tokenize(coreTitle(title)).filter((token) => token.length > 2);
       const present = new Set(tokenize(c.title));
       const coverage = words.length ? words.filter((token) => present.has(token)).length / words.length : 0;

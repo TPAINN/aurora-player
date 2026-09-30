@@ -35,6 +35,8 @@ test('neutral catalogue descriptors do not block a match', async () => {
   assert.equal(coreTitle('Heroes (2017 Remaster)'), 'Heroes');
   assert.equal(coreTitle('Levels - Avicii By Avicii'), 'Levels - Avicii By Avicii', 'unknown suffixes stay');
   assert.equal(coreTitle('Titanium (David Guetta Remix)'), 'Titanium (David Guetta Remix)', 'a named remix is a different recording');
+  assert.equal(coreTitle('Blue (Extended Mix)'), 'Blue (Extended Mix)', 'an extended mix is a different recording');
+  assert.equal(coreTitle('Blue - Club Mix'), 'Blue - Club Mix', 'so is a club mix');
   const score = (title, track, seconds = 369) => scoreVideoCandidate(title, 'Chronical Deep - Topic', seconds, 369, 'Chronical Deep', track);
   assert.ok(score('Strings Of My Guitar', 'Strings Of My Guitar (Original Mix)') > 0, 'upload without "(Original Mix)"');
   assert.ok(scoreVideoCandidate('Turned To Stone', 'Samantha Loveridge - Topic', 250, 250, 'Samantha Loveridge', 'Turned To Stone (feat. Kali Mija)') > 0, 'upload without the featured artist');
@@ -55,6 +57,15 @@ test('a relaxed pass accepts a close upload when nothing passes the strict rules
   ];
   assert.equal(pickCandidate(candidates, { artist: 'Chronical Deep', title: 'Strings Of My Guitar (Original Mix)', duration: 369 }, { relaxed: false }), null);
   assert.equal(pickCandidate(candidates, { artist: 'Chronical Deep', title: 'Strings Of My Guitar (Original Mix)', duration: 369 }, { relaxed: true })?.videoId, 'AAAAAAAAAAA');
+});
+
+test('an extended or club mix never stands in for the ordinary song', async () => {
+  const { pickCandidate } = await import('../video/search.js');
+  const score = title => scoreVideoCandidate(title, 'Band - Topic', 240, 240, 'Band', 'Blue');
+  assert.ok(score('Blue (Extended Mix)') < score('Blue'), 'the plain upload wins');
+  const extended = [{ videoId: 'AAAAAAAAAAA', title: 'Band - Blue (Extended Mix)', channel: 'Band Uploads', duration: 262 }];
+  assert.equal(pickCandidate(extended, { artist: 'Band', title: 'Blue', duration: 240 }, { relaxed: true }), null);
+  assert.equal(pickCandidate(extended, { artist: 'Band', title: 'Blue (Extended Mix)', duration: 262 }, { relaxed: true })?.videoId, 'AAAAAAAAAAA', 'unless it was asked for');
 });
 
 test('instrumental and a cappella uploads never stand in for the original song', () => {
