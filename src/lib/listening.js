@@ -55,7 +55,26 @@ export function tasteFilter(tracks) {
 }
 
 // Distinct artists the listener enjoys most (recency-weighted), newest song of each.
-export function homeSeeds(count = 2) {
+// Liked and recently played songs fill in when history has no usable songs yet.
+export function homeSeeds(count = 2, fallback = []) {
+  const seeds = historySeeds(count);
+  const artists = new Set(seeds.map(track => track.artist?.toLowerCase()));
+  for (const track of fallback) {
+    if (seeds.length >= count) break;
+    if (!track?.title || !track.artist || track.localUrl || artists.has(track.artist.toLowerCase())) continue;
+    artists.add(track.artist.toLowerCase());
+    seeds.push(track);
+  }
+  return seeds;
+}
+
+// Artist names by listening weight, for taste-shaped searches.
+export function topArtists(count = 2, fallback = []) {
+  const names = homeSeeds(count, fallback).map(track => track.artist);
+  return [...new Set(names)].slice(0, count);
+}
+
+function historySeeds(count) {
   const now = Date.now();
   const artists = new Map();
   for (const item of readHistory()) {

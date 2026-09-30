@@ -135,3 +135,24 @@ test('blend length preference scales the bar-quantised overlap', () => {
   assert.equal(planTransition(null, null, 8).seconds, 8);
   assert.equal(planOnlineCue(200, [], 8).seconds, 8);
 });
+
+test('entry into song B matches the energy song A is leaving with, on a phrase boundary', async () => {
+  const { chooseEntry } = await import('./dj.js');
+  // 0.5 s levels: a quiet ambient intro for 16 s, then the full beat.
+  const levels = Array.from({ length: 70 }, (_, i) => (i < 32 ? .05 : .4));
+  const grid = { origin: 0, period: .5 };
+  assert.equal(chooseEntry({ levels, introStart: 0, grid, targetLevel: .4 }), 16, 'a driving outro meets the first full section');
+  assert.equal(chooseEntry({ levels, introStart: 0, grid, targetLevel: .05 }), 0, 'a quiet fade meets the soft intro');
+  assert.equal(chooseEntry({ levels, introStart: 1.2, grid, targetLevel: null }), 1.2, 'unknown energy keeps the natural start');
+  const steady = Array.from({ length: 70 }, () => .3);
+  assert.equal(chooseEntry({ levels: steady, introStart: 0, grid, targetLevel: .3 }), 0, 'equal candidates prefer the earliest');
+  assert.ok(chooseEntry({ levels, introStart: 0, grid: null, targetLevel: .4 }) <= 30, 'never skips more than 30 seconds');
+});
+
+test('online entry lets a long instrumental intro run out just as the blend completes', async () => {
+  const { planOnlineEntry } = await import('./dj.js');
+  assert.equal(planOnlineEntry([{ time: 38 }, { time: 42 }], 5), 29);
+  assert.equal(planOnlineEntry([{ time: 7 }], 5), 0, 'short intros play from the top');
+  assert.equal(planOnlineEntry([], 5), 0);
+  assert.equal(planOnlineEntry([{ time: 120 }], 5), 45, 'bounded skip');
+});
