@@ -1,6 +1,6 @@
 # Live interaction tests
 
-`scripts/live-tests.mjs` drives the real app in Chromium. The catalogue, lyrics and tempo APIs are stubbed (some deliberately slow or failing), and a simulated YouTube player records loads, plays, pauses, seeks, volumes and playback rates. Group G decodes real generated WAV audio. 238 checks in nine groups:
+`scripts/live-tests.mjs` drives the real app in Chromium. The catalogue, lyrics and tempo APIs are stubbed (some deliberately slow or failing), and a simulated YouTube player records loads, plays, pauses, seeks, volumes and playback rates. Group G decodes real generated WAV audio. 240 checks in nine groups:
 
 | Group | Covers | Checks |
 | --- | --- | --- |
@@ -12,9 +12,9 @@
 | F | Search categories, collections, Back gestures, adaptive radio and home (spotlight, Made for you, Daily rotation), quality chip and audio sheet, blend length, motion backdrop, opening, favicons, local file format | 39 |
 | G | Local DJ transition with real decoded WAV audio (120 → 126 BPM): glide, bound, shared tempo, entry at B's first full section, hand-over, easing back, completion | 10 |
 | H | Scroll lock behind sheets (desktop and phone, stacked sheets), name greeting, On repeat, Your artists, More like…, refrain marks and Best part, scroll reveal, word-by-word headline, spotlight, heart pop, play/pause morph, 5–10 s blend options | 17 |
-| I | Resilience and new interactions: skipping unplayable songs (with notice and queue marking), refused uploads falling back, DJ preparing past an unplayable song, DJ with shuffle, swipe gestures, arrow keys on the timeline, mood chips (desktop and phone) | 22 |
+| I | Resilience and new interactions: skipping unplayable songs (with notice and queue marking), refused uploads falling back (including a refused video result), DJ preparing past an unplayable song, DJ with shuffle, swipe gestures, arrow keys on the timeline, mood chips (desktop and phone) | 24 |
 
-Result on the production build (`npm run preview`): **238 / 238 passed**. The hand-over now renders as a React transition, so the long-task check at the blend also passes in development mode.
+Result on the production build (`npm run preview`): **240 / 240 passed**. The hand-over now renders as a React transition, so the long-task check at the blend also passes in development mode.
 
 A separate responsive sweep drives home, search, album, player and lyrics at 13 viewports (320×568 to 2560×1440, including landscape phones). It fails on any element that spills off-screen, then checks that the player never runs under the dock.
 

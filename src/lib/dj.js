@@ -351,7 +351,8 @@ export function vocalSpans({ duration, outLines = [], inLines = [], entry = 0 })
     const end = line.words?.length ? line.words.at(-1).end : line.end ?? line.time;
     if (Number.isFinite(end) && end > lastVocal) lastVocal = end;
   }
-  const firstVocal = (inLines || []).find(line => Number.isFinite(line?.time))?.time;
+  const opening = (inLines || []).find(line => Number.isFinite(line?.words?.[0]?.start ?? line?.time));
+  const firstVocal = opening?.words?.[0]?.start ?? opening?.time;
   return {
     outroSpan: Number.isFinite(lastVocal) && duration > lastVocal ? Math.round((duration - lastVocal) * 1000) / 1000 : Infinity,
     introSpan: Number.isFinite(firstVocal) && firstVocal > entry ? Math.round((firstVocal - entry) * 1000) / 1000 : Infinity,

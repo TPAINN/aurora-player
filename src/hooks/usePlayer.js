@@ -185,10 +185,11 @@ export function usePlayer() {
   }, []);
   // One resolver for playback and preparation: shared in-flight requests, and the
   // runner-up uploads kept as alternates.
-  const resolveSource = useCallback((selected, signal) => {
-    if (selected.videoId) return Promise.resolve({ videoId: selected.videoId, source: { kind: 'youtube', official: false, video: true, channel: selected.artist } });
+  // `search` looks up other uploads even for a song that arrived with its own video.
+  const resolveSource = useCallback((selected, signal, { search = false } = {}) => {
     const cached = prepared.current.get(selected.id);
-    if (cached?.videoId) return Promise.resolve(cached);
+    if (cached?.videoId && !search) return Promise.resolve(cached);
+    if (selected.videoId && !search) return Promise.resolve({ videoId: selected.videoId, source: { kind: 'youtube', official: false, video: true, channel: selected.artist } });
     if (resolving.current.has(selected.id)) return resolving.current.get(selected.id);
     const request = (async () => {
       const response = await fetch(buildApiUrl('/api/video/search', { artist: selected.artist, title: selected.title, duration: selected.duration, variant: selected.variant }), { signal });
@@ -204,6 +205,19 @@ export function usePlayer() {
     resolving.current.set(selected.id, request);
     return request;
   }, [markUnplayable]);
+  // A song that arrived with its own video has no runner-ups until YouTube refuses
+  // that video: then, once, the resolver is asked for other uploads of it.
+  const searched = useRef(new Set());
+  const searchAlternates = useCallback(async (selected, refused) => {
+    if (!selected?.videoId || searched.current.has(selected.id)) return false;
+    searched.current.add(selected.id);
+    try {
+      const found = await resolveSource(selected, undefined, { search: true });
+      const spare = [found.videoId, ...(alternates.current.get(selected.id) || [])].filter(id => id && id !== refused && id !== selected.videoId);
+      alternates.current.set(selected.id, [...new Set(spare)]);
+      return spare.length > 0;
+    } catch { return false; }
+  }, [resolveSource]);
   // Intent prefetch: a song the listener is about to choose resolves ahead of the tap.
   const warm = useCallback(track => {
     if (!track || track.localUrl || track.videoId || prepared.current.get(track.id)?.videoId || unplayable.current.has(track.id)) return;
@@ -480,6 +494,10 @@ export function usePlayer() {
   useEffect(() => { actions.current.load = loadTrack; }, [loadTrack]);
   const activeError = useCallback(() => {
     const selected = current.current.track;
+    if (selected?.videoId && !searched.current.has(selected.id) && !alternates.current.get(selected.id)?.length) {
+      void searchAlternates(selected, activeVideo.current).then(() => { if (current.current.track?.id === selected.id) actions.current.activeError?.(); });
+      return;
+    }
     const spare = selected && alternates.current.get(selected.id);
     if (spare?.length && player.current) {
       const videoId = spare.shift();
@@ -498,10 +516,14 @@ export function usePlayer() {
       return;
     }
     setError('This song can’t play here. Try another track or open an audio file.');
-  }, [markUnplayable, upcoming, loadTrack]);
+  }, [markUnplayable, upcoming, loadTrack, searchAlternates]);
   const standbyError = useCallback(() => {
     const blend = mix.current;
     if (blend?.kind !== 'online-blend' || blend.stage === 'mixing' || blend.stage === 'recover') return;
+    if (blend.selected.videoId && !searched.current.has(blend.selected.id) && !alternates.current.get(blend.selected.id)?.length) {
+      void searchAlternates(blend.selected, blend.videoId).then(() => { if (mix.current === blend) actions.current.standbyError?.(); });
+      return;
+    }
     const spare = alternates.current.get(blend.selected.id);
     const standby = yt.current[blend.index].player;
     if (spare?.length && standby && blend.stage !== 'starting') {
@@ -516,7 +538,7 @@ export function usePlayer() {
     markUnplayable(blend.selected);
     cancelMix();
     attemptedMix.current = '';
-  }, [markUnplayable, cancelMix]);
+  }, [markUnplayable, cancelMix, searchAlternates]);
   useEffect(() => { actions.current.activeError = activeError; actions.current.standbyError = standbyError; }, [activeError, standbyError]);
 
   // Metadata, lyrics and queue position follow the incoming audible track from its first beat.
