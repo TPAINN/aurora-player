@@ -70,3 +70,16 @@ test('home seeds are the most enjoyed distinct artists, newest first', async () 
     assert.equal(seeds[0].title, 'Three');
   });
 });
+
+test('without usable history, liked and recently played songs seed the home screen', async () => {
+  const { homeSeeds, topArtists } = await import('./listening.js');
+  withStorage(values => {
+    // Older history entries carry no track snapshot.
+    values.set('aurora-listening', JSON.stringify([{ key: 'nf|let you down', artist: 'nf', affinity: 2, at: Date.now() }]));
+    const liked = [{ id: 'l1', title: 'Adore You', artist: 'Harry Styles' }, { id: 'l2', title: 'Sign of the Times', artist: 'Harry Styles' }];
+    const recent = [{ id: 'r1', title: 'Let You Down', artist: 'NF' }, { id: 'r2', title: 'Chicago', artist: 'Michael Jackson' }];
+    const seeds = homeSeeds(3, [...liked, ...recent]);
+    assert.deepEqual(seeds.map(item => item.id), ['l1', 'r1', 'r2'], 'one song per artist, likes first');
+    assert.deepEqual(topArtists(2, recent), ['NF', 'Michael Jackson']);
+  });
+});

@@ -47,7 +47,7 @@ import { extractColors } from "../shared/palette";
 import { requestedVariant } from "../shared/audio-variants.js";
 import { artworkAt, artworkSrcSet } from "./lib/artwork";
 import { qualityLabel } from "./lib/audio-format";
-import { homeSeeds, recordLike, tasteFilter } from "./lib/listening";
+import { homeSeeds, recordLike, tasteFilter, topArtists } from "./lib/listening";
 import Welcome from "./components/Welcome";
 import { shouldWelcome } from "./lib/welcome";
 import FluidText from "./components/FluidText";
@@ -777,6 +777,7 @@ function DjStatus({ player }) {
       </span>
       <div>
         <strong>{player.djEnabled ? state.label || "Ready when you are" : "DJ transition is off"}</strong>
+        {busy && state.entryAt > 0.5 && <p className="dj-entry">Next song enters at {formatTime(state.entryAt)}</p>}
         <p>
           {state.fromBpm && state.toBpm
             ? `${Math.round(state.fromBpm)} → ${Math.round(state.toBpm)} BPM · tempo glide`
@@ -807,10 +808,10 @@ export default function App() {
   const { page, immersive, sheet, collection } = nav.view;
   const setImmersive = (open) => (open ? nav.openPlayer() : nav.closePlayer());
   const setSheet = (next) => (next ? nav.openSheet(next) : nav.closeSheet());
-  const [featured, setFeatured] = useState([]);
+  const [starterPicks, setStarterPicks] = useState([]);
   const [catalogError, setCatalogError] = useState("");
   const [query, setQuery] = useState("");
-  const [forYou, setForYou] = useState([]);
+  const [forYouRows, setForYou] = useState([]);
   const [revealed, setRevealed] = useState(() => !shouldWelcome());
   const [motionArt, setMotionArt] = useState(() => {
     try {
@@ -850,14 +851,12 @@ export default function App() {
     else focusSearchOnMount.current = true;
   };
   const fileRef = useRef(null);
-  const heroTrack =
-    (immersive ? player.track : null) || featured[featureIndex] || featured[0];
   const currentFavorite = favorites.some((t) => t.id === player.track?.id);
 
   useEffect(() => {
     const controller = new AbortController();
     getFeaturedTracks(controller.signal)
-      .then(setFeatured)
+      .then(setStarterPicks)
       .catch((e) => {
         if (e.name !== "AbortError")
           setCatalogError(
@@ -896,18 +895,52 @@ export default function App() {
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: "instant" });
   }, [immersive, page, collection]);
-  // Home adapts to on-device listening: rows seeded by the artists enjoyed most.
+  // Home adapts to what this listener plays, finishes and likes (all on-device).
+  // Seeds come from listening history, then liked and recently played songs.
+  const tasteList = useMemo(() => [...favorites, ...recent], [favorites, recent]);
+  const seedKey = useMemo(() => homeSeeds(3, tasteList).map((seed) => seed.id).join("|"), [tasteList, player.track?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const rowCache = useRef(new Map());
   useEffect(() => {
     if (page !== "home") return;
-    const seeds = homeSeeds(2);
+    const seeds = homeSeeds(3, tasteList);
     if (!seeds.length) return;
     const controller = new AbortController();
-    Promise.allSettled(seeds.map((seed) => getSimilarTracks(seed, controller.signal).then((tracks) => ({ seed, tracks: tasteFilter(tracks).slice(0, 10) }))))
-      .then((rows) => {
-        if (!controller.signal.aborted) setForYou(rows.filter((row) => row.status === "fulfilled" && row.value.tracks.length >= 3).map((row) => row.value));
-      });
+    Promise.allSettled(
+      seeds.map((seed) => {
+        const cached = rowCache.current.get(seed.id);
+        if (cached) return Promise.resolve({ seed, tracks: tasteFilter(cached) });
+        return getSimilarTracks(seed, controller.signal).then((tracks) => {
+          rowCache.current.set(seed.id, tracks);
+          return { seed, tracks: tasteFilter(tracks) };
+        });
+      }),
+    ).then((rows) => {
+      if (!controller.signal.aborted) setForYou(rows.filter((row) => row.status === "fulfilled" && row.value.tracks.length >= 3).map((row) => ({ ...row.value, tracks: row.value.tracks.slice(0, 10) })));
+    });
     return () => controller.abort();
-  }, [page]);
+  }, [page, seedKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Rows only exist while there is something to seed them.
+  const forYou = useMemo(() => (seedKey ? forYouRows : []), [seedKey, forYouRows]);
+  // One interleaved mix across the listener's seeds: the spotlight and "Made for you".
+  const personalMix = useMemo(() => {
+    const seen = new Set();
+    const mix = [];
+    for (let i = 0; i < 10; i++)
+      for (const row of forYou) {
+        const track = row.tracks[i];
+        if (track && !seen.has(track.id)) {
+          seen.add(track.id);
+          mix.push(track);
+        }
+      }
+    return mix;
+  }, [forYou]);
+  const personalized = personalMix.length >= 5;
+  const featured = personalized ? personalMix.slice(0, 6) : starterPicks;
+  const heroTrack =
+    (immersive ? player.track : null) || featured[featureIndex] || featured[0];
+  const madeForYou = personalized && personalMix.length > 6 ? personalMix.slice(6, 12) : featured.slice(0, 6);
+  const favouriteArtists = forYou.map((row) => row.seed.artist).filter((name, i, all) => all.indexOf(name) === i);
   // Albums, artists and playlists open as pages with their own history entry.
   const collectionKey = collection ? `${collection.type}:${collection.id}` : "";
   useEffect(() => {
@@ -1718,7 +1751,7 @@ export default function App() {
                       <>
                         <div className="stage-copy">
                           <span className="feature-label">
-                            <span /> In the spotlight
+                            <span /> {personalized ? "Picked for you" : "In the spotlight"}
                           </span>
                           <FluidText as="h2">{heroTrack.artist}</FluidText>
                           <FluidText as="p">{heroTrack.title}</FluidText>
@@ -1819,7 +1852,7 @@ export default function App() {
                       [
                         "Daily rotation",
                         "The tracks you come back to",
-                        "The Weeknd Dua Lipa",
+                        topArtists(2, tasteList).join(" ") || "The Weeknd Dua Lipa",
                         Disc3,
                       ],
                       [
@@ -1884,8 +1917,12 @@ export default function App() {
                   <Motion.section variants={sectionMotion} className="music-section">
                     <div className="section-heading">
                       <div>
-                        <h2>Made for a good listen</h2>
-                        <p>A few favorites to get you started.</p>
+                        <h2>{personalized ? "Made for you" : "Made for a good listen"}</h2>
+                        <p>
+                          {personalized
+                            ? `Shaped by what you play${favouriteArtists.length ? `, around ${favouriteArtists.slice(0, 2).join(" and ")}` : ""}.`
+                            : "A few favorites to get you started."}
+                        </p>
                       </div>
                       <button
                         className="text-button"
@@ -1895,7 +1932,7 @@ export default function App() {
                       </button>
                     </div>
                     <div className="album-grid">
-                      {featured.slice(0, 6).map((track) => (
+                      {madeForYou.map((track) => (
                         <button
                           className="album-card"
                           key={track.id}

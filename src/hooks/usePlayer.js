@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useRef, useState } from 'react';
 import { buildApiUrl } from '../lib/api';
 import { getSimilarTracks, getTrackTempo } from '../lib/catalog';
 import { pickSeed, recordListening, tasteFilter } from '../lib/listening';
-import { analyzeLocalTempo, beatAlignedEntry, equalPower, glideRate, phaseNudge, planOnlineCue, planTransition, quantizeRate, smoothstep } from '../lib/dj';
+import { analyzeLocalTempo, beatAlignedEntry, chooseEntry, equalPower, glideRate, phaseNudge, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, smoothstep } from '../lib/dj';
 import { detectLanguage } from '../../shared/language.js';
 import { artworkAt } from '../lib/artwork';
 import { probeFile } from '../lib/audio-format';
@@ -383,12 +383,19 @@ export function usePlayer() {
     request.current?.abort();
     const controller = new AbortController(); request.current = controller;
     current.current.track = selected;
-    setDjWindow(null);
-    setTrack(selected); clock.set(position); setDuration(length);
-    setQueueIndex(current.current.queue.findIndex(item => item.id === selected.id));
-    setLyrics(null); setLyricsOffset(0); setLyricsLoading(!selected.localUrl); setPlaying(true); setError('');
-    if (!selected.localUrl) showLyricsFor(selected, token, controller, videoId);
-    setSourceInfo(selected.localUrl ? { kind: 'local', format: selected.format || null } : prepared.current.get(selected.id)?.source || { kind: 'youtube', official: false });
+    clock.set(position);
+    const ready = prepared.current.get(selected.id);
+    // The hand-over re-renders title, lyrics and queue while both songs play: as a
+    // transition it yields to the browser instead of blocking a frame of the blend.
+    startTransition(() => {
+      setDjWindow(null);
+      setTrack(selected); setDuration(length);
+      setQueueIndex(current.current.queue.findIndex(item => item.id === selected.id));
+      // Pre-loaded lyrics appear at once; no "finding the words" flash mid-blend.
+      setLyrics(ready?.lyrics || null); setLyricsOffset(0); setLyricsLoading(!selected.localUrl && !ready?.lyrics); setPlaying(true); setError('');
+      setSourceInfo(selected.localUrl ? { kind: 'local', format: selected.format || null } : ready?.source || { kind: 'youtube', official: false });
+    });
+    if (!selected.localUrl && !ready?.lyrics) showLyricsFor(selected, token, controller, videoId);
   }, [flushListening, showLyricsFor, clock]);
 
   const seek = useCallback(value => {
@@ -623,7 +630,9 @@ export function usePlayer() {
       incoming.element.playbackRate = 1; incoming.element.preservesPitch = true;
       incoming.gain.gain.setValueAtTime(0, graph.currentTime);
       // Land the incoming first beat on the outgoing grid; a later nudge absorbs play() latency.
-      incoming.element.currentTime = beatAlignedEntry({ introStart: to?.introStart || 0, inGrid: to?.intro?.grid, outPosition: outgoing.element.currentTime, outGrid: from?.outro?.grid, rate: outgoing.element.playbackRate });
+      // Song B enters at the section that best continues song A's exit energy, on its beat grid.
+      const entry = chooseEntry({ levels: to?.levels, introStart: to?.introStart || 0, grid: to?.intro?.grid, targetLevel: from?.exitLevel });
+      incoming.element.currentTime = beatAlignedEntry({ introStart: entry, inGrid: to?.intro?.grid, outPosition: outgoing.element.currentTime, outGrid: from?.outro?.grid, rate: outgoing.element.playbackRate });
       await incoming.element.play();
       if (mix.current !== token) { incoming.element.pause(); return; }
       const seconds = Math.min(overrideSeconds || plan.seconds, Math.max(.5, remaining / Math.max(1, plan.rate)));
@@ -658,7 +667,7 @@ export function usePlayer() {
       Object.assign(token, { starting: false, started: now, seconds, plan, from, to, startRate: outgoing.element.playbackRate });
       audio.current = incoming.element;
       commitIncoming(selected, { duration: Number.isFinite(incoming.element.duration) ? incoming.element.duration : 0, position: incoming.element.currentTime });
-      announce({ phase: 'mixing', label: plan.matched ? 'Tempo matched · hollow blend' : 'Hollow blend', mode: 'local', progress: 0, fromBpm: plan.matched ? from.outro.bpm : undefined, toBpm: plan.targetBpm ?? undefined, effects: ['hollow', 'echo', ...(plan.matched ? ['tempo'] : [])] });
+      announce({ phase: 'mixing', label: plan.matched ? 'Tempo matched · hollow blend' : 'Hollow blend', mode: 'local', progress: 0, entryAt: incoming.element.currentTime, fromBpm: plan.matched ? from.outro.bpm : undefined, toBpm: plan.targetBpm ?? undefined, effects: ['hollow', 'echo', ...(plan.matched ? ['tempo'] : [])] });
     } catch {
       if (mix.current === token) { cancelMix(); if (overrideSeconds) void loadTrack(selected, current.current.queue); }
       // The original track continues; normal advance retries the next file.
@@ -690,8 +699,8 @@ export function usePlayer() {
     if (!incoming) return;
     if (blend.stage === 'priming') {
       const loaded = incoming.getVideoData?.().video_id === blend.videoId;
-      if (loaded && incoming.getPlayerState?.() === 1 && incoming.getCurrentTime?.() > .15) {
-        incoming.pauseVideo(); incoming.seekTo(0, true);
+      if (loaded && incoming.getPlayerState?.() === 1 && incoming.getCurrentTime?.() > (blend.entry || 0) + .15) {
+        incoming.pauseVideo(); incoming.seekTo(blend.entry || 0, true);
         blend.stage = 'primed';
       }
       return;
@@ -807,13 +816,16 @@ export function usePlayer() {
     if (attemptedMix.current !== key && videoId && !blend && position >= Math.min(cue.start - 2, Math.max(6, cue.start - PRIME_LEAD)) && position < cue.start - 1) {
       // Pre-buffer the next song silently on the standby deck.
       const index = standbyIndex();
-      const primed = { kind: 'online-blend', stage: 'priming', key, selected, videoId, index, cue, seconds: cue.seconds, plan, verified: false };
+      // Song B's entry: past a long instrumental intro when its timed lyrics show one.
+      const nextLyrics = prepared.current.get(selected.id)?.lyrics;
+      const entry = dj ? planOnlineEntry(nextLyrics?.sync !== 'plain' ? nextLyrics?.lines : [], cue.seconds) : 0;
+      const primed = { kind: 'online-blend', stage: 'priming', key, selected, videoId, index, cue, entry, seconds: cue.seconds, plan, verified: false };
       mix.current = primed;
-      if (dj) announce({ phase: 'priming', label: 'Getting the next song ready', mode: 'online' });
+      if (dj) announce({ phase: 'priming', label: 'Getting the next song ready', mode: 'online', entryAt: entry });
       void ensurePlayer(videoId, index).then(standby => {
         if (mix.current !== primed) return;
         standby.mute(); standby.setVolume(0); standby.setPlaybackRate?.(1);
-        standby.loadVideoById(videoId, 0);
+        standby.loadVideoById(videoId, primed.entry);
       }).catch(() => { if (mix.current === primed) primed.stage = 'failed'; });
       return;
     }

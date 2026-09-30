@@ -135,7 +135,8 @@ export function analyzeSamples(data, sampleRate) {
   const windowStart = (data.length - length) / sampleRate;
   const intro = introTempo && { ...introTempo, grid: { origin: introTempo.phase, period: 60 / introTempo.bpm } };
   const outro = outroTempo && { ...outroTempo, grid: { origin: windowStart + outroTempo.phase, period: 60 / outroTempo.bpm } };
-  return { introStart: findIntroStart(data, sampleRate), mixStart: findMixPoint(data, sampleRate, TARGET_OVERLAP, outro?.grid), intro, outro, duration: data.length / sampleRate };
+  const mixStart = findMixPoint(data, sampleRate, TARGET_OVERLAP, outro?.grid);
+  return { introStart: findIntroStart(data, sampleRate), mixStart, intro, outro, duration: data.length / sampleRate, levels: loudness(data, sampleRate, 0, 35), exitLevel: average(loudness(data, sampleRate, mixStart, TARGET_OVERLAP)) };
 }
 
 // Prefer a low-energy phrase in the final 30 seconds, snapped to the beat grid when known.
@@ -192,3 +193,59 @@ export function phaseNudge({ inPosition, inGrid, outPosition, outGrid, outRate =
   if (Math.abs(seconds) < .008) return 1;
   return 1 - Math.max(-.04, Math.min(.04, seconds * .8));
 }
+
+// Best entry into song B: within its first 30 seconds, on a 4-bar phrase boundary
+// when the beat is known, pick the section whose loudness best continues what
+// song A is leaving with. Earlier is preferred, so intros are never skipped for
+// a marginal gain, and unknown energy keeps B's natural start.
+export function chooseEntry({ levels, hop = .5, introStart = 0, grid = null, targetLevel = null, maxSeconds = 30 }) {
+  if (!(targetLevel > 0) || !levels?.length) return introStart;
+  const span = 4;
+  const levelAt = time => {
+    const from = Math.max(0, Math.floor(time / hop)), to = Math.min(levels.length, Math.ceil((time + span) / hop));
+    if (to <= from) return 0;
+    let sum = 0;
+    for (let i = from; i < to; i++) sum += levels[i];
+    return sum / (to - from);
+  };
+  const candidates = [{ time: introStart, phrase: true }];
+  if (grid?.period) {
+    const bar = grid.period * 4;
+    for (let k = Math.ceil((introStart - grid.origin) / bar - 1e-9); ; k++) {
+      const time = grid.origin + k * bar;
+      if (time > maxSeconds) break;
+      if (time > introStart + 1e-6) candidates.push({ time, phrase: k % 4 === 0 });
+    }
+  } else {
+    for (let time = Math.ceil(introStart / 2) * 2; time <= maxSeconds; time += 2) if (time > introStart) candidates.push({ time, phrase: true });
+  }
+  let best = candidates[0], lowest = Infinity;
+  for (const candidate of candidates) {
+    const score = Math.abs(Math.log((levelAt(candidate.time) + 1e-3) / (targetLevel + 1e-3))) + .015 * (candidate.time - introStart) + (candidate.phrase ? 0 : .1);
+    if (score < lowest - 1e-9) { lowest = score; best = candidate; }
+  }
+  return Math.round(best.time * 1000) / 1000;
+}
+
+// Online, only genuinely timed lyrics reveal an instrumental intro: start song B
+// so the blend completes a few seconds before its first sung line.
+export function planOnlineEntry(lines = [], seconds = 5) {
+  const first = (lines || []).find(line => Number.isFinite(line?.time))?.time;
+  if (!(first > seconds + 10)) return 0;
+  return Math.min(45, Math.round(first - seconds - 4));
+}
+
+// RMS per half second: a small loudness profile for choosing entry points.
+export function loudness(samples, sampleRate, from, seconds, hop = .5) {
+  const levels = [];
+  const step = Math.max(1, Math.floor(sampleRate * hop));
+  const end = Math.min(samples.length, Math.floor((from + seconds) * sampleRate));
+  for (let start = Math.floor(from * sampleRate); start < end; start += step) {
+    let sum = 0;
+    const stop = Math.min(end, start + step);
+    for (let i = start; i < stop; i++) sum += samples[i] ** 2;
+    levels.push(Math.sqrt(sum / Math.max(1, stop - start)));
+  }
+  return levels;
+}
+const average = values => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;

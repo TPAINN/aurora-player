@@ -1,18 +1,18 @@
 # Live interaction tests
 
-`scripts/live-tests.mjs` drives the real app in Chromium. The catalogue, lyrics and tempo APIs are stubbed (some deliberately slow or failing), and a simulated YouTube player records loads, plays, pauses, seeks, volumes and playback rates. Group G decodes real generated WAV audio. 177 checks in seven groups:
+`scripts/live-tests.mjs` drives the real app in Chromium. The catalogue, lyrics and tempo APIs are stubbed (some deliberately slow or failing), and a simulated YouTube player records loads, plays, pauses, seeks, volumes and playback rates. Group G decodes real generated WAV audio. 184 checks in seven groups:
 
 | Group | Covers | Checks |
 | --- | --- | --- |
 | A | Home, carousel, navigation, sidebar, shortcuts | 16 |
 | B | Search: ideas, dedupe, stale results, skeletons, keys, retry, recents, Play next, 8D variant | 23 |
 | C | Playback, keyboard, seek, volume, likes, lyrics sync/scroll/interlude, queue and sheets, a11y names | 51 |
-| D | DJ priming, overlap, equal power, tempo glide bounds, manual blend, seamless mode, main-thread load | 29 |
+| D | DJ priming, overlap, equal power, tempo glide bounds, manual blend, song B entry past a long intro, seamless mode, main-thread load | 32 |
 | E | Mobile (390 px), tablet (900 px), reduced motion | 15 |
-| F | Search categories, collections, Back gestures, adaptive radio and home, quality chip and audio sheet, blend length, motion backdrop, opening, favicons, local file format | 36 |
-| G | Local DJ transition with real decoded WAV audio (120 → 126 BPM): glide, bound, blend, hand-over, completion | 7 |
+| F | Search categories, collections, Back gestures, adaptive radio and home (spotlight, Made for you, Daily rotation), quality chip and audio sheet, blend length, motion backdrop, opening, favicons, local file format | 39 |
+| G | Local DJ transition with real decoded WAV audio (120 → 126 BPM): glide, bound, blend, entry at B's first full section, hand-over, completion | 8 |
 
-Result on the production build (`npm run preview`): **177 / 177 passed**. In development mode the long-task check at the DJ hand-over can fail, because of React's dev overhead; it passes in production.
+Result on the production build (`npm run preview`): **184 / 184 passed**. The hand-over now renders as a React transition, so the long-task check at the blend also passes in development mode.
 
 A separate responsive sweep drives home, search, album, player and lyrics at 13 viewports (320×568 to 2560×1440, including landscape phones). It fails on any element that spills off-screen, then checks that the player never runs under the dock.
 
