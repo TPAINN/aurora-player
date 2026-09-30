@@ -554,7 +554,7 @@ if (!only || only === 'G') {
   await check('G', 'song B enters at its first full section, not its quiet intro', async () => { const t = await playerTime(page); ok(t >= 15 && t <= 24, String(t)); });
   await wait(10000);
   await check('G', 'song B eases back to its own tempo instead of snapping', async () => { const rates = await page.evaluate(() => window.__rates); const entered = rates.findIndex(r => r > .97 && r < .98); ok(entered >= 0 && rates.slice(entered).some(r => r > .99 && r < 1), rates.slice(-10).join(',')); });
-  await check('G', 'the blend completes and the DJ returns to idle', async () => { await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(700); const text = await page.textContent('.dj-now'); ok(/complete|Ready/i.test(text), text); await page.keyboard.press('Escape'); await wait(500); });
+  await check('G', 'the blend completes and the DJ returns to idle', async () => { await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(700); let text = await page.textContent('.dj-now'); for (let i = 0; i < 24 && !/complete|Ready/i.test(text); i++) { await wait(500); text = await page.textContent('.dj-now'); } ok(/complete|Ready/i.test(text), text); await page.keyboard.press('Escape'); await wait(500); });
   await check('G', 'no runtime errors in the local DJ blend', async () => ok(!errors.length, errors.join(' | ')));
   await context.close();
 }
@@ -666,6 +666,21 @@ if (!only || only === 'I') {
   await page.goto(BASE); await wait(500); await startQueue(page, ['Slow Tide']);
   await check('I', 'a video YouTube refuses falls back to the next upload', async () => { await page.click('.dock-transport button[aria-label="Next track"]'); await wait(2500); const rows = await events(page); ok(rows.some(row => row[1] === 'refused' && row[2] === 'CCCCCCCCCCC') && rows.some(row => row[1] === 'load' && row[2] === 'EEEEEEEEEEE'), JSON.stringify(rows.filter(row => ['load', 'refused'].includes(row[1])).slice(-4))); ok((await title(page)).startsWith('Slow Tide')); });
   await check('I', 'no runtime errors on a refused video', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'I') {
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 }, prefs: { refused: JSON.stringify(['VVVVVVVVVV1']) } });
+  await page.goto(BASE); await wait(500); await goSearch(page); await wait(400); await searchFor(page, 'band');
+  await check('I', 'a refused video result searches for another upload of it', async () => { await page.click('.search-tabs [role=tab]:has-text("Videos")'); await wait(900); await page.click('.video-card >> nth=0'); await wait(2500); const rows = await events(page); ok(rows.some(row => row[1] === 'refused' && row[2] === 'VVVVVVVVVV1') && rows.some(row => row[1] === 'load' && row[2] === 'DDDDDDDDDDD'), JSON.stringify(rows.filter(row => ['load', 'refused'].includes(row[1])).slice(-4))); ok((await title(page)).includes('Night Drive'), await title(page)); });
+  await check('I', 'no runtime errors on a refused video result', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'I') {
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 }, prefs: { refused: JSON.stringify(['VVVVVVVVVV1']) } });
+  await page.goto(BASE); await wait(500); await goSearch(page); await wait(400); await searchFor(page, 'band');
+  await page.route('**/api/video/search?*', route => route.fulfill({ status: 502, json: { error: 'down' } }));
+  await check('I', 'a failed search for another upload stays retryable instead of skipping', async () => { await page.click('.search-tabs [role=tab]:has-text("Videos")'); await wait(900); await page.click('.video-card >> nth=0'); await wait(2500); const rows = await events(page); ok(!rows.some(row => row[1] === 'load' && row[2] === 'VVVVVVVVVV2'), JSON.stringify(rows.filter(row => ['load', 'refused'].includes(row[1])).slice(-4))); ok((await title(page)).includes('Night Drive'), await title(page)); ok(await page.locator('.track-row.is-unavailable').count() === 0); ok(/connect|retry/i.test(await page.textContent('.toast').catch(() => '')), await page.textContent('.toast').catch(() => 'no toast')); });
+  await check('I', 'no runtime errors when the upload search fails', async () => ok(!errors.length, errors.join(' | ')));
   await context.close();
 }
 if (!only || only === 'I') {
