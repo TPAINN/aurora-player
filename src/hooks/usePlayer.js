@@ -207,16 +207,20 @@ export function usePlayer() {
   }, [markUnplayable]);
   // A song that arrived with its own video has no runner-ups until YouTube refuses
   // that video: then, once, the resolver is asked for other uploads of it.
+  // 'failed' means the resolver could not be reached: the song stays playable and
+  // the search is tried again next time.
   const searched = useRef(new Set());
   const searchAlternates = useCallback(async (selected, refused) => {
-    if (!selected?.videoId || searched.current.has(selected.id)) return false;
     searched.current.add(selected.id);
     try {
       const found = await resolveSource(selected, undefined, { search: true });
       const spare = [found.videoId, ...(alternates.current.get(selected.id) || [])].filter(id => id && id !== refused && id !== selected.videoId);
       alternates.current.set(selected.id, [...new Set(spare)]);
-      return spare.length > 0;
-    } catch { return false; }
+      return spare.length ? 'found' : 'none';
+    } catch {
+      searched.current.delete(selected.id);
+      return 'failed';
+    }
   }, [resolveSource]);
   // Intent prefetch: a song the listener is about to choose resolves ahead of the tap.
   const warm = useCallback(track => {
@@ -495,7 +499,12 @@ export function usePlayer() {
   const activeError = useCallback(() => {
     const selected = current.current.track;
     if (selected?.videoId && !searched.current.has(selected.id) && !alternates.current.get(selected.id)?.length) {
-      void searchAlternates(selected, activeVideo.current).then(() => { if (current.current.track?.id === selected.id) actions.current.activeError?.(); });
+      void searchAlternates(selected, activeVideo.current).then(result => {
+        if (current.current.track?.id !== selected.id) return;
+        if (result !== 'failed') { actions.current.activeError?.(); return; }
+        setLoading(false); setPlaying(false);
+        setError('The music source could not connect. Please retry.');
+      });
       return;
     }
     const spare = selected && alternates.current.get(selected.id);
@@ -521,7 +530,12 @@ export function usePlayer() {
     const blend = mix.current;
     if (blend?.kind !== 'online-blend' || blend.stage === 'mixing' || blend.stage === 'recover') return;
     if (blend.selected.videoId && !searched.current.has(blend.selected.id) && !alternates.current.get(blend.selected.id)?.length) {
-      void searchAlternates(blend.selected, blend.videoId).then(() => { if (mix.current === blend) actions.current.standbyError?.(); });
+      void searchAlternates(blend.selected, blend.videoId).then(result => {
+        if (mix.current !== blend) return;
+        // Unreachable resolver: skip this blend, not the song; it plays normally later.
+        if (result === 'failed') cancelMix();
+        else actions.current.standbyError?.();
+      });
       return;
     }
     const spare = alternates.current.get(blend.selected.id);
