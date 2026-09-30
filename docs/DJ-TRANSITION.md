@@ -30,6 +30,8 @@ The resolver rejects 8D/16D/3D-audio, slowed/reverb, sped-up, nightcore, bass-bo
 
 ## Controls
 
+Blend length can be Quick (about 3 s), Natural (about 5 s) or Long (about 8 s); when the beat is known it is rounded to whole bars.
+
 Live DJ changes (optional) makes a manual Next overlap too: a primed online deck blends in 3 seconds, local audio in 3 seconds, otherwise a short fade. Pause, seek, disabling DJ and queue edits that change the next song cancel scheduled work and restore levels and tempo; a seek or resume re-arms the transition. Radio additions that do not change the next song leave a prepared transition alone. The timeline highlights the planned region, including the glide.
 
 ## Radio

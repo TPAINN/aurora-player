@@ -126,3 +126,12 @@ test('phase nudge pulls a late or early incoming beat back onto the grid', async
   assert.equal(phaseNudge({ inPosition: 10.1, inGrid: { origin: 0, period: .25 }, outPosition: 20, outGrid: grid, outRate: 1.3 }), 1, 'unrelated periods are left alone');
   assert.equal(phaseNudge({ inPosition: 10, inGrid: null, outPosition: 20, outGrid: grid, outRate: 1 }), 1);
 });
+
+test('blend length preference scales the bar-quantised overlap', () => {
+  const quick = planTransition({ bpm: 120, confidence: .9 }, { bpm: 120, confidence: .9 }, 3);
+  const long = planTransition({ bpm: 120, confidence: .9 }, { bpm: 120, confidence: .9 }, 8);
+  assert.ok(quick.seconds >= 2.4 && quick.seconds <= 4.2, String(quick.seconds));
+  assert.ok(long.seconds >= 6.4 && long.seconds <= 11.2, String(long.seconds));
+  assert.equal(planTransition(null, null, 8).seconds, 8);
+  assert.equal(planOnlineCue(200, [], 8).seconds, 8);
+});
