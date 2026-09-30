@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import {
   AnimatePresence,
   MotionConfig,
@@ -39,8 +39,11 @@ import {
   X,
 } from "lucide-react";
 import { usePlayer } from "./hooks/usePlayer";
+import { useStore } from "./hooks/useStore";
 import { getFeaturedTracks, searchTracks } from "./lib/catalog";
 import { extractColors } from "../shared/palette";
+import { requestedVariant } from "../shared/audio-variants.js";
+import { artworkAt, artworkSrcSet } from "./lib/artwork";
 import Welcome from "./components/Welcome";
 import FluidText from "./components/FluidText";
 import {
@@ -89,16 +92,7 @@ function Cover({ track, className = "", eager = false }) {
       {track?.artwork ? (
         <img
           src={track.artwork}
-          srcSet={
-            track.artwork.includes("mzstatic.com")
-              ? [160, 320, 600]
-                  .map(
-                    (size) =>
-                      `${track.artwork.replace(/600x600bb/, `${size}x${size}bb`)} ${size}w`,
-                  )
-                  .join(", ")
-              : undefined
-          }
+          srcSet={artworkSrcSet(track.artwork)}
           sizes={className === "" ? "(max-width:760px) 45vw, 300px" : "300px"}
           alt={`${track.title} artwork`}
           loading={eager ? "eager" : "lazy"}
@@ -114,14 +108,14 @@ function Cover({ track, className = "", eager = false }) {
   );
 }
 // Artwork that crossfades when the track changes instead of swapping abruptly.
-function FadingCover({ track, className = "", eager = false }) {
+function FadingCover({ track, className = "", eager = false, size = 600 }) {
   return (
     <div className={`cover fading-cover ${className}`}>
       <AnimatePresence initial={false}>
         {track?.artwork ? (
           <Motion.img
             key={track.artwork}
-            src={track.artwork}
+            src={artworkAt(track.artwork, size)}
             alt={`${track.title} artwork`}
             loading={eager ? "eager" : "lazy"}
             decoding="async"
@@ -188,7 +182,9 @@ function Seek({ player }) {
   // input event stutters playback and cancels DJ preparation repeatedly.
   const [drag, setDrag] = useState(null);
   const duration = Math.max(player.duration || player.track?.duration || 0, 1);
-  const value = drag ?? Math.min(player.time || 0, duration);
+  // Whole seconds are enough for the bar; the CSS transition interpolates between them.
+  const time = useStore(player.clock, (value) => Math.round(value * 4) / 4);
+  const value = drag ?? Math.min(time || 0, duration);
   const zone = player.djEnabled ? player.djWindow : null;
   const zoneLabel = zone
     ? `DJ transition from ${formatTime(zone.start)} to ${formatTime(zone.end)}${zone.ready ? ", next track ready" : ""}`
@@ -293,7 +289,10 @@ function Transport({ player, large = false }) {
 const LINE_LEAD = 0.35;
 const lineEnd = (line) => line?.words?.at(-1)?.end ?? line?.end;
 
-function Interlude({ progress }) {
+function Interlude({ clock, offset, start, end }) {
+  const progress = useStore(clock, (value) =>
+    Math.round(Math.max(0, Math.min(1, (value + offset - start) / (end - start))) * 60) / 60,
+  );
   return (
     <Motion.div
       className="lyric-interlude"
@@ -328,25 +327,34 @@ function Lyrics({ player }) {
         .split(/\r?\n/)
         .filter((line) => line.trim())
         .map((text) => ({ text })), [player.lyrics]);
-  const adjusted = (player.time || 0) + (player.lyricsOffset || 0);
+  const offset = player.lyricsOffset || 0;
   const timed = player.lyrics?.sync !== "plain";
   const lead = reduce ? 0 : LINE_LEAD;
-  let active = -1;
-  if (timed)
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].time <= adjusted + lead) active = i;
-      else break;
-    }
+  // Re-render only when the active line or interlude state changes, not every clock tick.
+  const position = useStore(player.clock, (value) => {
+    const adjusted = value + offset;
+    let current = -1;
+    if (timed)
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].time <= adjusted + lead) current = i;
+        else break;
+      }
+    const start = current >= 0 ? lineEnd(lines[current]) : 0;
+    const end = lines[current + 1]?.time;
+    const gap =
+      timed &&
+      Number.isFinite(start) &&
+      Number.isFinite(end) &&
+      end - start > 4 &&
+      adjusted >= start + 0.4 &&
+      adjusted < end - 0.5;
+    return `${current}:${gap ? 1 : 0}`;
+  });
+  const active = Number(position.split(":")[0]);
+  const inGap = position.endsWith(":1");
   const gapStart = active >= 0 ? lineEnd(lines[active]) : 0;
   const gapEnd = lines[active + 1]?.time;
-  const inGap =
-    timed &&
-    Number.isFinite(gapStart) &&
-    Number.isFinite(gapEnd) &&
-    gapEnd - gapStart > 4 &&
-    adjusted >= gapStart + 0.4 &&
-    adjusted < gapEnd - 0.5;
-  const gapProgress = inGap ? (adjusted - gapStart) / (gapEnd - gapStart) : 0;
+  const interlude = { clock: player.clock, offset, start: gapStart, end: gapEnd };
   const stopScroll = () => scrolling.current?.stop();
   useEffect(() => {
     const box = container.current;
@@ -368,6 +376,17 @@ function Lyrics({ player }) {
     });
     return stopScroll;
   }, [mountedList, active, following, reduce, inGap]);
+  // Edge fading via visibility classes: a mask on the scrolling list forced the
+  // whole list to re-rasterise on every painted word.
+  useEffect(() => {
+    if (!mountedList || !("IntersectionObserver" in window)) return;
+    const observer = new IntersectionObserver(
+      (entries) => entries.forEach((entry) => entry.target.classList.toggle("at-edge", entry.intersectionRatio < 0.99)),
+      { root: mountedList, rootMargin: "-14% 0px -14% 0px", threshold: [0, 0.99] },
+    );
+    mountedList.querySelectorAll(".lyric-line").forEach((line) => observer.observe(line));
+    return () => observer.disconnect();
+  }, [mountedList, lines]);
   const { getPlaybackTime, lyricsOffset = 0, lyricsLoading } = player;
   useEffect(() => {
     if (!mountedList || !timed || lyricsLoading) return;
@@ -392,10 +411,19 @@ function Lyrics({ player }) {
             const progress = reduce
               ? Number(time >= word.start)
               : Math.min(1, Math.max(0, (time - word.start + lead) / Math.max(0.001, word.end - word.start + lead)));
-            fill.style.setProperty("--fill", progress.toFixed(4));
+            // Write only on change: every style write invalidates paint for that word.
+            const value = progress.toFixed(3);
+            if (fill.dataset.fill !== value) {
+              fill.dataset.fill = value;
+              fill.style.setProperty("--fill", value);
+            }
+            const state = time >= word.end ? "sung" : time >= word.start - lead ? "singing" : "";
             const holder = fill.parentElement;
-            holder.classList.toggle("singing", time >= word.start - lead && time < word.end);
-            holder.classList.toggle("sung", time >= word.end);
+            if (holder.dataset.state !== state) {
+              holder.dataset.state = state;
+              holder.classList.toggle("singing", state === "singing");
+              holder.classList.toggle("sung", state === "sung");
+            }
           });
         }
         previousTime = time;
@@ -458,7 +486,7 @@ function Lyrics({ player }) {
         >
           <div className="lyrics-spacer" />
           <AnimatePresence initial={false}>
-            {inGap && active === -1 && <Interlude key="intro" progress={gapProgress} />}
+            {inGap && active === -1 && <Interlude key="intro" {...interlude} />}
           </AnimatePresence>
           {lines.map((line, i) => (
             <div key={`${i}-${line.time}`} className="lyric-block">
@@ -488,7 +516,7 @@ function Lyrics({ player }) {
                   : line.text}
               </button>
               <AnimatePresence initial={false}>
-                {inGap && i === active && <Interlude key="gap" progress={gapProgress} />}
+                {inGap && i === active && <Interlude key="gap" {...interlude} />}
               </AnimatePresence>
             </div>
           ))}
@@ -629,12 +657,13 @@ function djPhaseLabel(player) {
 
 function DjPill({ player, onClick, label }) {
   const active = player.djEnabled && player.djState?.phase !== "idle";
+  const progress = useStore(player.mixProgress, (value) => Math.round(value * 50) / 50);
   return (
     <button
       className={`dj-pill ${player.djEnabled ? "enabled" : ""} ${active ? "is-active" : ""}`}
       onClick={onClick}
       aria-label={label}
-      style={{ "--dj-progress": active ? player.djState?.progress ?? 0 : 0 }}
+      style={{ "--dj-progress": active ? progress : 0 }}
     >
       <AudioLines size={16} />
       <span>DJ transition</span>
@@ -657,6 +686,7 @@ function DjStatus({ player }) {
   const state = player.djState || {};
   const busy = player.djEnabled && state.phase && state.phase !== "idle";
   const effects = state.effects || [];
+  const progress = useStore(player.mixProgress, (value) => Math.round(value * 100) / 100);
   return (
     <div className={`dj-now ${busy ? "is-busy" : ""}`} role="status">
       <span className="dj-orbit">
@@ -681,7 +711,7 @@ function DjStatus({ player }) {
           </span>
         )}
         <span className="dj-progress" aria-hidden="true">
-          <i style={{ transform: `scaleX(${busy ? state.progress ?? 0 : 0})` }} />
+          <i style={{ transform: `scaleX(${busy ? progress : 0})` }} />
         </span>
       </div>
     </div>
@@ -716,6 +746,13 @@ export default function App() {
   const [notice, setNotice] = useState("");
   const [featureIndex, setFeatureIndex] = useState(0);
   const searchRef = useRef(null);
+  // The search page animates in after the previous page leaves, so focus is
+  // requested here and applied when the field actually mounts.
+  const focusSearchOnMount = useRef(false);
+  const focusSearch = () => {
+    if (searchRef.current) searchRef.current.focus();
+    else focusSearchOnMount.current = true;
+  };
   const fileRef = useRef(null);
   const heroTrack =
     (immersive ? player.track : null) || featured[featureIndex] || featured[0];
@@ -779,20 +816,6 @@ export default function App() {
       ? `${player.track.title} · Aurora`
       : "Aurora — Your music, closer";
   }, [player.track]);
-  useEffect(() => {
-    const key = (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
-        e.preventDefault();
-        setImmersive(false);
-        setPage("search");
-        setTimeout(() => searchRef.current?.focus(), 0);
-      }
-      if (e.key === "Escape" && !sheet && !e.target.closest?.("input, textarea, select"))
-        setImmersive(false);
-    };
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  }, [sheet]);
 
   const persist = (key, value) => {
     try {
@@ -810,8 +833,14 @@ export default function App() {
   };
   // Starting a new song keeps songs the listener queued by hand; radio picks made
   // for the previous song are replaced by fresh ones for this one.
-  const play = (track, list) => {
+  const play = (selected, list) => {
     rememberSearch();
+    // Altered versions (8D, slowed…) only when the listener searched for one.
+    const variant = page === "search" ? requestedVariant(query) : "";
+    const track =
+      variant && !requestedVariant(selected.title) && !selected.variant
+        ? { ...selected, id: `${selected.id}~${variant}`, variant }
+        : selected;
     player.loadTrack(
       track,
       list ?? [
@@ -851,8 +880,53 @@ export default function App() {
   const navigate = (next) => {
     setPage(next);
     setImmersive(false);
-    if (next === "search") setTimeout(() => searchRef.current?.focus(), 0);
+    if (next === "search") focusSearch();
   };
+  const mutedVolume = useRef(80);
+  const toggleMute = () => {
+    if (player.volume > 0) {
+      mutedVolume.current = player.volume;
+      player.setVolume(0);
+      setNotice("Muted");
+    } else player.setVolume(mutedVolume.current || 80);
+  };
+  // Always reads the latest player and handlers without re-binding the listener.
+  const onShortcut = useEffectEvent((e) => {
+    if (!player.track && e.key !== "/") return;
+    const handled = {
+      " ": () => player.togglePlay(),
+      ArrowRight: () => (e.shiftKey ? player.next() : player.seek(player.getPlaybackTime() + 5)),
+      ArrowLeft: () => (e.shiftKey ? player.previous() : player.seek(Math.max(0, player.getPlaybackTime() - 5))),
+      m: () => toggleMute(),
+      l: () => { setShowLyrics((value) => !value); setImmersive(true); },
+      f: () => toggleFavorite(player.track),
+      "/": () => navigate("search"),
+    }[e.key.length === 1 ? e.key.toLowerCase() : e.key];
+    if (!handled) return;
+    e.preventDefault();
+    handled();
+  });
+  useEffect(() => {
+    const key = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+        e.preventDefault();
+        setImmersive(false);
+        setPage("search");
+        focusSearch();
+      }
+      if (e.key === "Escape" && !sheet && !e.target.closest?.("input, textarea, select"))
+        setImmersive(false);
+      // Media shortcuts never steal keys from fields, controls or open dialogs.
+      // Fields keep every key; sliders keep their arrows; buttons keep Space.
+      if (sheet || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.target.closest?.('textarea, select, [contenteditable], input:not([type="range"])')) return;
+      if (e.target.matches?.('input[type="range"]') && /^(Arrow|Home|End|Page)/.test(e.key)) return;
+      if (e.key === " " && e.target.closest?.("button, a")) return;
+      onShortcut(e);
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [sheet]);
   const addQueue = (track) => {
     rememberSearch();
     player.addToQueue(track);
@@ -1328,7 +1402,13 @@ export default function App() {
                     <Motion.label variants={sectionMotion} className={`search-field ${searching ? "is-searching" : ""}`}>
                       <Search size={22} />
                       <input
-                        ref={searchRef}
+                        ref={(node) => {
+                          searchRef.current = node;
+                          if (node && focusSearchOnMount.current) {
+                            focusSearchOnMount.current = false;
+                            node.focus({ preventScroll: true });
+                          }
+                        }}
                         type="search"
                         enterKeyHint="search"
                         autoComplete="off"
@@ -1507,7 +1587,7 @@ export default function App() {
                       <Motion.div
                         key={player.track.artwork}
                         className="art-bg-layer"
-                        style={{ backgroundImage: `url("${player.track.artwork}")` }}
+                        style={{ backgroundImage: `url("${artworkAt(player.track.artwork, 1000)}")` }}
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1, transition: { duration: 1.4, ease: EASE } }}
                         exit={{ opacity: 0, transition: { duration: 1.2, ease: EASE_IN_OUT } }}
@@ -1570,7 +1650,7 @@ export default function App() {
                       else if (info.offset.x > 65) player.previous();
                     }}
                   >
-                    <FadingCover track={player.track} eager />
+                    <FadingCover track={player.track} eager size={1200} />
                     <span className="art-caption">
                       <span
                         className={
@@ -1688,7 +1768,7 @@ export default function App() {
               player.track ? setImmersive(true) : navigate("search")
             }
           >
-            <FadingCover track={player.track} />
+            <FadingCover track={player.track} size={160} />
             <span>
               <strong>{player.track?.title || "Make yourself at home"}</strong>
               <small>
@@ -1977,6 +2057,22 @@ export default function App() {
                 >
                   <Upload />
                 </IconButton>
+              </div>
+              <div className="shortcut-list" aria-label="Keyboard shortcuts">
+                {[
+                  ["Space", "Play or pause"],
+                  ["← →", "Seek 5 seconds"],
+                  ["⇧ ← →", "Previous or next"],
+                  ["L", "Lyrics"],
+                  ["M", "Mute"],
+                  ["F", "Like"],
+                  ["/", "Search"],
+                ].map(([keys, label]) => (
+                  <span key={keys}>
+                    <kbd>{keys}</kbd>
+                    {label}
+                  </span>
+                ))}
               </div>
               <div className="settings-note">
                 <Headphones size={23} />

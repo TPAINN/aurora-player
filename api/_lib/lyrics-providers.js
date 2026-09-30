@@ -61,24 +61,54 @@ async function simp(track, signal) {
 async function lrclib(track, signal) {
   return parseTrack(await get(urlFor('https://lrclib.net/api/get', { track_name: track.title, artist_name: track.artist, duration: track.duration, album_name: track.album }),signal),'LRCLib',track.duration);
 }
+// Fuzzy catalogue search: tolerant of album and small duration differences, never of a different song.
+async function lrclibSearch(track, signal) {
+  const data = await get(urlFor('https://lrclib.net/api/search', { track_name: track.title, artist_name: track.artist }),signal);
+  const candidates = (Array.isArray(data) ? data : []).filter(item => item && match(item.trackName) === match(track.title) && match(item.artistName) === match(track.artist)
+    && (!track.duration || Math.abs(Number(item.duration)-track.duration) <= 5));
+  const hit = candidates.find(item => item.syncedLyrics) || candidates[0];
+  return hit ? parseTrack(hit,'LRCLib',track.duration) : null;
+}
+
+// Catalogue decorations that lyric databases usually omit.
+export function cleanTrack(track) {
+  const title = String(track.title || '')
+    .replace(/\s*[([](?:feat|ft|with|prod)\.?\s[^)\]]*[)\]]/gi, '')
+    .replace(/\s+-\s+(?:\d{4}\s+)?(?:remaster(?:ed)?|radio edit|single version|album version|mono|stereo|live|edit)\b.*$/i, '')
+    .replace(/\s*[([](?:\d{4}\s+)?(?:remaster(?:ed)?|radio edit|single version|album version)[^)\]]*[)\]]/gi, '')
+    .trim();
+  const artist = String(track.artist || '').split(/\s*(?:,|&|\bfeat\.?|\bft\.?|\bx\b|\bwith\b)\s*/i)[0].trim();
+  if (!title || !artist || (title === track.title && artist === track.artist)) return null;
+  return { ...track, title, artist };
+}
+
+const rank = result => result?.sync === 'word' ? 3 : result?.sync === 'line' ? 2 : result ? 1 : 0;
+// Resolve on the first genuine word timing; otherwise keep the best fallback.
+function race(track, providers, signal) {
+  let best = null;
+  return new Promise(resolve => {
+    let remaining = providers.length;
+    for (const provider of providers) {
+      Promise.resolve().then(() => provider(track,signal)).catch(() => null).then(result => {
+        if (rank(result) > rank(best)) best = result;
+        remaining--;
+        if (rank(best) === 3 || !remaining) resolve(best);
+      });
+    }
+  });
+}
+
 export async function fetchLyrics(track) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(),6500);
-  const providers = [simp,better,bini,plus,(t,s) => better(t,s,true),lrclib];
-  // Resolve on the first genuine word timing; otherwise keep the best fallback.
-  let best = null;
-  const rank = result => result?.sync === 'word' ? 3 : result?.sync === 'line' ? 2 : result ? 1 : 0;
+  const providers = [simp,better,bini,plus,(t,s) => better(t,s,true),lrclib,lrclibSearch];
   try {
-    return await new Promise(resolve => {
-      let remaining = providers.length;
-      for (const provider of providers) {
-        Promise.resolve().then(() => provider(track,controller.signal)).catch(() => null).then(result => {
-          if (rank(result) > rank(best)) best = result;
-          remaining--;
-          if (rank(best) === 3 || !remaining) resolve(best);
-        });
-      }
-    });
+    const best = await race(track, providers, controller.signal);
+    const cleaned = rank(best) < 2 && !controller.signal.aborted ? cleanTrack(track) : null;
+    if (!cleaned) return best;
+    // The video-bound SimpMusic lookup already ran; retry the text-matched providers.
+    const retry = await race(cleaned, [better,bini,plus,lrclib,lrclibSearch], controller.signal);
+    return rank(retry) > rank(best) ? retry : best;
   } finally {
     clearTimeout(timeout);
     controller.abort();
