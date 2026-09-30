@@ -9,10 +9,12 @@ export const SOFT_SPRING = { type: 'spring', stiffness: 120, damping: 22, mass: 
 export const SHEET_SPRING = { type: 'spring', stiffness: 190, damping: 30, mass: 1 };
 export const PILL_SPRING = { type: 'spring', stiffness: 380, damping: 34 };
 
+// Pages rise and fade. No blur: blurring a whole page every frame stutters on
+// ordinary devices, most visibly in the reveal after the opening animation.
 export const page = {
-  initial: { opacity: 0, y: 18, filter: 'blur(8px)' },
-  animate: { opacity: 1, y: 0, filter: 'blur(0px)', transition: { duration: 0.65, ease: EASE, staggerChildren: 0.07, delayChildren: 0.05 } },
-  exit: { opacity: 0, y: -10, filter: 'blur(6px)', transition: { duration: 0.32, ease: EASE_EXIT } },
+  initial: { opacity: 0, y: 18 },
+  animate: { opacity: 1, y: 0, transition: { duration: 0.65, ease: EASE, staggerChildren: 0.07, delayChildren: 0.05 } },
+  exit: { opacity: 0, y: -10, transition: { duration: 0.32, ease: EASE_EXIT } },
 };
 
 export const section = {
@@ -77,3 +79,11 @@ export const HEART_SPRING = { type: 'spring', stiffness: 520, damping: 14, mass:
 
 // Magnetic controls: quick to follow the pointer, soft to settle back.
 export const MAGNET_SPRING = { stiffness: 260, damping: 18, mass: 0.6 };
+
+// A DJ blend hands over as a slow dissolve that matches the music: the new cover
+// sharpens out of a soft blur with a gentle settle, the old one melts away.
+export const blendSwap = {
+  initial: { opacity: 0, scale: 1.06, filter: 'blur(16px)' },
+  animate: { opacity: 1, scale: 1, filter: 'blur(0px)', transition: { duration: 2.6, ease: EASE } },
+  exit: { opacity: 0, scale: 0.98, filter: 'blur(12px)', transition: { duration: 2.2, ease: EASE_IN_OUT } },
+};

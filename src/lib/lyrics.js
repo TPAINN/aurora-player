@@ -462,12 +462,34 @@ const HELD_NOTE = 1.5;
 
 export function peakMoments(lines) {
   if (!Array.isArray(lines) || !lines.length || !lines.every((line) => Number.isFinite(line?.time))) return [];
-  const refrain = weightChorusRangesByIntensity(lines, detectChorusRanges(lines));
+  const refrain = snapToWords(weightChorusRangesByIntensity(lines, detectChorusRanges(lines)), lines);
+  // A held note is a peak exactly while it is held, with a breath after it.
   const held = [];
   for (const line of lines)
     for (const word of line.words || [])
-      if (word.end - word.start >= HELD_NOTE) held.push({ start: Math.max(0, word.start - 0.5), end: word.end + 1.2 });
-  return mergeRanges([...refrain, ...held].map((range) => ({ ...range })), 2);
+      if (word.end - word.start >= HELD_NOTE) held.push({ start: word.start, end: word.end + 0.3 });
+  return mergeRanges([...refrain, ...held].map((range) => ({ ...range })), 0.75);
+}
+
+// Refrain ranges come from line-level repetition; snap them to the sung words:
+// from the first word of the first refrain line to the last word of the last.
+// Line-synced lyrics end just before the next line starts.
+function snapToWords(ranges, lines) {
+  return ranges.map((range) => {
+    const inside = [];
+    lines.forEach((line, index) => { if (line.time >= range.start - 0.06 && line.time <= range.end) inside.push(index); });
+    if (!inside.length) return range;
+    const first = lines[inside[0]];
+    const start = first.words?.length ? first.words[0].start : first.time;
+    let end = start;
+    for (const index of inside) {
+      const line = lines[index];
+      const next = lines[index + 1];
+      const lineEnd = line.words?.length ? lineSpan(line).end : Number.isFinite(line.end) ? line.end : next ? next.time - 0.1 : line.time + 4;
+      if (lineEnd > end) end = lineEnd;
+    }
+    return { start, end };
+  });
 }
 
 export const isPeakAt = (ranges, time) => ranges.some((range) => time >= range.start && time < range.end);

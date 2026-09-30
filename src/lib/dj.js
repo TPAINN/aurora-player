@@ -334,3 +334,26 @@ export function loudness(samples, sampleRate, from, seconds, hop = .5) {
   return levels;
 }
 const average = values => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
+
+// Auto blend length: the longest blend (up to 10 s) that fits both the room song A
+// leaves after its last sung word and the room song B leaves before its first,
+// so two voices never overlap; never shorter than 5 s. Unknown room is no limit.
+export function adaptiveBlend({ outroSpan = Infinity, introSpan = Infinity } = {}) {
+  const room = [outroSpan, introSpan].filter(value => Number.isFinite(value) && value > 0);
+  return Math.max(MIN_BLEND, Math.min(MAX_BLEND, ...room));
+}
+
+// Online, only timed lyrics tell where the voices are: song A's instrumental tail
+// after its last sung word, and song B's instrumental lead-in from its entry point.
+export function vocalSpans({ duration, outLines = [], inLines = [], entry = 0 }) {
+  let lastVocal = -Infinity;
+  for (const line of outLines || []) {
+    const end = line.words?.length ? line.words.at(-1).end : line.end ?? line.time;
+    if (Number.isFinite(end) && end > lastVocal) lastVocal = end;
+  }
+  const firstVocal = (inLines || []).find(line => Number.isFinite(line?.time))?.time;
+  return {
+    outroSpan: Number.isFinite(lastVocal) && duration > lastVocal ? Math.round((duration - lastVocal) * 1000) / 1000 : Infinity,
+    introSpan: Number.isFinite(firstVocal) && firstVocal > entry ? Math.round((firstVocal - entry) * 1000) / 1000 : Infinity,
+  };
+}
