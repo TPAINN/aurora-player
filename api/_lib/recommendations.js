@@ -1,4 +1,4 @@
-import { compatibleFamilies, detectLanguage, genreFamily, genreLanguageHint } from '../../shared/language.js';
+import { compatibleFamilies, detectLanguage, detectTitleLanguage, genreFamily, genreLanguageHint } from '../../shared/language.js';
 
 const fold = value => String(value || '').normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 const titleKey = value => fold(String(value || '').replace(/\([^)]*\)|\[[^\]]*\]/g, '').replace(/\s+-\s+(?:remaster|radio|live|explicit|clean|album|single|deluxe).*$/i, ''));
@@ -105,6 +105,20 @@ export function artistCredits(name) {
   return [...new Set([full, ...(parts.length > 1 ? parts : [])])].filter(Boolean);
 }
 
+// The language an artist's titles share: all of them read as one text, or a clear
+// majority of individually readable titles (three or more, at least 60 %).
+export function catalogueLanguage(titles) {
+  const list = (titles || []).filter(title => typeof title === 'string' && title.trim());
+  if (!list.length) return null;
+  const together = detectLanguage(list.join(' '))?.lang;
+  if (together) return together;
+  const votes = new Map();
+  for (const title of list) { const lang = detectTitleLanguage(title)?.lang; if (lang) votes.set(lang, (votes.get(lang) || 0) + 1); }
+  const [lang, count] = [...votes].sort((a, b) => b[1] - a[1])[0] || [];
+  const total = [...votes.values()].reduce((sum, value) => sum + value, 0);
+  return count >= 3 && count / total >= 0.6 ? lang : null;
+}
+
 export async function fetchRecommendations(current, { fetcher = fetch, signal = AbortSignal.timeout(8000), lang = null, genre = null, limit = 10 } = {}) {
   const deezer = async path => readJson(new URL(path, 'https://api.deezer.com'), AbortSignal.any([signal, AbortSignal.timeout(2200)]), fetcher);
   const optional = promise => promise.catch(error => { if (signal.aborted) throw error; return null; });
@@ -150,6 +164,9 @@ export async function fetchRecommendations(current, { fetcher = fetch, signal = 
       ]);
       seedGenres?.forEach(family => seedFamilies.add(family));
       seedLang ||= seedLyrics?.lang || null;
+      // No lyrics to read (instrumental-leaning dance music, for one): the artist's
+      // own titles, read together, still say which language they sing in.
+      seedLang ||= catalogueLanguage((top?.data || []).map(item => item.title));
       const relatedArtists = (related?.data || []).filter(item => Number.isSafeInteger(item.id) && item.id > 0).slice(0, 4);
       const groups = await Promise.all(relatedArtists.map(item => optional(deezer(`/artist/${item.id}/top?limit=5`))));
       const relatedTracks = groups.map(group => tracksOf(group, `Similar to ${current.artist}`, 'related'));
@@ -166,7 +183,7 @@ export async function fetchRecommendations(current, { fetcher = fetch, signal = 
   const unique = selectRecommendations(pool, current, Infinity);
   const evaluated = await Promise.all(unique.slice(0, EVALUATED).map(async (track, index) => {
     const [profile, families] = await Promise.all([lyricProfile(track, fetcher, signal), seedFamilies.size ? genresOf(track.albumId) : null]);
-    const language = profile?.lang || detectLanguage(`${track.title} ${track.album}`)?.lang || null;
+    const language = profile?.lang || detectLanguage(`${track.title} ${track.album}`)?.lang || detectTitleLanguage(track.title)?.lang || null;
     return { ...track, index, language, families, lyricsAvailable: profile?.available };
   }));
   const coherent = evaluated.flatMap(track => {

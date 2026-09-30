@@ -4,7 +4,9 @@ import {
   MotionConfig,
   animate,
   motion as Motion,
+  useMotionValue,
   useSpring,
+  useTransform,
   useReducedMotion,
   usePresence,
 } from "framer-motion";
@@ -44,7 +46,9 @@ import {
 import { usePlayer } from "./hooks/usePlayer";
 import { useStore } from "./hooks/useStore";
 import { useNavigation } from "./hooks/useNavigation";
-import { getCollection, getFeaturedTracks, getSimilarTracks, searchCatalog } from "./lib/catalog";
+import { getCollection, getFeaturedTracks, getMoodTracks, getSimilarTracks, searchCatalog } from "./lib/catalog";
+import { MOODS } from "../shared/moods.js";
+import { detectLanguage } from "../shared/language.js";
 import { extractColors } from "../shared/palette";
 import { requestedVariant } from "../shared/audio-variants.js";
 import { artworkAt, artworkSrcSet } from "./lib/artwork";
@@ -60,6 +64,7 @@ import {
   EASE_IN_OUT,
   PILL_SPRING,
   SHEET_SPRING,
+  blendSwap,
   coverSwap,
   crossfade,
   HEART_SPRING,
@@ -122,9 +127,14 @@ function Cover({ track, className = "", eager = false }) {
   );
 }
 // Artwork that crossfades when the track changes instead of swapping abruptly.
-function FadingCover({ track, className = "", eager = false, size = 600, direction = null }) {
-  // A direction turns the crossfade into a travelling swap (the now-playing cover).
-  const motion = direction ? { variants: coverSwap, custom: direction, initial: "initial", animate: "animate", exit: "exit" } : crossfade;
+function FadingCover({ track, className = "", eager = false, size = 600, direction = null, blend = false }) {
+  // A direction turns the crossfade into a travelling swap (the now-playing cover);
+  // a DJ blend dissolves instead of sliding.
+  const motion = blend
+    ? { variants: blendSwap, initial: "initial", animate: "animate", exit: "exit" }
+    : direction
+      ? { variants: coverSwap, custom: direction, initial: "initial", animate: "animate", exit: "exit" }
+      : crossfade;
   return (
     <div className={`cover fading-cover ${className}`}>
       <AnimatePresence initial={false} custom={direction}>
@@ -135,6 +145,7 @@ function FadingCover({ track, className = "", eager = false, size = 600, directi
             alt={`${track.title} artwork`}
             loading={eager ? "eager" : "lazy"}
             decoding="async"
+            draggable={false}
             {...motion}
           />
         ) : (
@@ -199,7 +210,9 @@ function Brand() {
         <i />
         <i />
       </span>
-      aurora<span className="brand-period">.</span>
+      <span className="brand-word">
+        aurora<span className="brand-period">.</span>
+      </span>
     </span>
   );
 }
@@ -249,6 +262,42 @@ function Waveform() {
       <i />
       <i />
     </span>
+  );
+}
+
+// The now-playing cover follows the finger: sideways to change song (it tilts and
+// a "Next"/"Previous" hint fades in), down to close the player. Direction lock
+// keeps the two gestures apart; release springs it home.
+function SwipeCover({ player, onClose, children }) {
+  const x = useMotionValue(0);
+  const y = useMotionValue(0);
+  const rotate = useTransform(x, [-260, 260], [-7, 7]);
+  const scale = useTransform(y, [0, 240], [1, 0.92]);
+  const nextHint = useTransform(x, [-150, -45], [1, 0]);
+  const previousHint = useTransform(x, [45, 150], [0, 1]);
+  return (
+    <Motion.div
+      className="now-playing-art"
+      drag
+      dragDirectionLock
+      dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
+      dragElastic={{ left: 0.45, right: 0.45, top: 0.04, bottom: 0.5 }}
+      dragTransition={{ bounceStiffness: 320, bounceDamping: 26 }}
+      style={{ x, y, rotate, scale }}
+      onDragEnd={(_, info) => {
+        if (info.offset.x < -80 || info.velocity.x < -650) player.next();
+        else if (info.offset.x > 80 || info.velocity.x > 650) player.previous();
+        else if (info.offset.y > 110 || info.velocity.y > 750) onClose();
+      }}
+    >
+      {children}
+      <Motion.span className="swipe-hint is-next" style={{ opacity: nextHint }} aria-hidden="true">
+        Next <ArrowRight size={15} />
+      </Motion.span>
+      <Motion.span className="swipe-hint is-previous" style={{ opacity: previousHint }} aria-hidden="true">
+        <ArrowLeft size={15} /> Previous
+      </Motion.span>
+    </Motion.div>
   );
 }
 
@@ -501,7 +550,7 @@ function BestPartChip({ player }) {
           key="best"
           type="button"
           className="best-part-chip"
-          onClick={() => player.seek(Math.max(0, best.start - offset - 0.6))}
+          onClick={() => player.seek(Math.max(0, best.start - offset - 0.35))}
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0, scale: 0.9 }}
@@ -522,6 +571,7 @@ function ArtBackdrop({ player }) {
   const offset = player.lyricsOffset || 0;
   const peak = useStore(player.clock, (value) => peaks.length > 0 && isPeakAt(peaks, value + offset));
   const artwork = player.track?.artwork;
+  const blend = player.changeKind === "blend";
   return (
     <>
       <div className={`player-art-background ${peak ? "is-peak" : ""}`}>
@@ -532,8 +582,8 @@ function ArtBackdrop({ player }) {
               className="art-bg-layer"
               style={{ backgroundImage: `url("${artworkAt(artwork, 1000)}")` }}
               initial={{ opacity: 0 }}
-              animate={{ opacity: 1, transition: { duration: 1.6, ease: EASE } }}
-              exit={{ opacity: 0, transition: { duration: 1.4, ease: EASE_IN_OUT } }}
+              animate={{ opacity: 1, transition: { duration: blend ? 3 : 1.6, ease: EASE } }}
+              exit={{ opacity: 0, transition: { duration: blend ? 2.8 : 1.4, ease: EASE_IN_OUT } }}
             />
           )}
         </AnimatePresence>
@@ -1034,6 +1084,8 @@ export default function App() {
   const setImmersive = (open) => (open ? nav.openPlayer() : nav.closePlayer());
   const setSheet = (next) => (next ? nav.openSheet(next) : nav.closeSheet());
   const [starterPicks, setStarterPicks] = useState([]);
+  const [mood, setMood] = useState(null);
+  const [moodResult, setMoodResult] = useState({ mood: null, tracks: [] });
   const [catalogError, setCatalogError] = useState("");
   const [query, setQuery] = useState("");
   const [forYouRows, setForYou] = useState([]);
@@ -1141,6 +1193,20 @@ export default function App() {
       cancelAnimationFrame(frame);
     };
   }, []);
+  // Mood songs follow the language of the lyrics playing now, when it is known.
+  const listeningLang = useMemo(() => detectLanguage((player.lyrics?.lines || []).map((line) => line.text).join(" "))?.lang || null, [player.lyrics]);
+  useEffect(() => {
+    if (!mood) return;
+    const controller = new AbortController();
+    getMoodTracks(mood, controller.signal, { lang: listeningLang })
+      .then((tracks) => setMoodResult({ mood, tracks }))
+      .catch((error) => {
+        if (error.name === "AbortError") return;
+        setMoodResult({ mood, tracks: [] });
+        setNotice("That mood is unavailable right now.");
+      });
+    return () => controller.abort();
+  }, [mood, listeningLang]);
   // Each screen starts at its top: opening the player or a page never inherits scroll.
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: "instant" });
@@ -1205,11 +1271,19 @@ export default function App() {
   }, [tasteList]);
   const personalized = personalMix.length >= 5;
   const headline = personalized ? `Your frequency, ${daypart() === "night" || daypart() === "evening" ? "tonight" : "today"}` : "Find your frequency";
-  const featured = personalized ? personalMix.slice(0, 6) : starterPicks;
+  // Mood chips: one mood at a time re-shapes the suggestions; choosing it again clears it.
+  const activeMood = MOODS.find((item) => item.id === mood) || null;
+  const moodTracks = useMemo(() => (mood && moodResult.mood === mood ? tasteFilter(moodResult.tracks) : []), [mood, moodResult]);
+  const moodLoading = Boolean(mood) && moodResult.mood !== mood;
+  const moodMode = Boolean(activeMood) && moodTracks.length >= 5;
+  const featured = moodMode ? moodTracks.slice(0, 6) : personalized ? personalMix.slice(0, 6) : starterPicks;
   const heroTrack =
     (immersive ? player.track : null) || featured[featureIndex] || featured[0];
   // A full grid or none of the leftovers: a short mix reuses the spotlight picks.
-  const madeForYou = personalized && personalMix.length >= 10 ? personalMix.slice(6, 12) : featured.slice(0, 6);
+  const madeForYou = moodMode
+    ? moodTracks.slice(6, 12).length >= 4 ? moodTracks.slice(6, 12) : moodTracks.slice(0, 6)
+    : personalized && personalMix.length >= 10 ? personalMix.slice(6, 12) : featured.slice(0, 6);
+  const moreForMood = moodMode ? moodTracks.slice(12, 24) : [];
   const favouriteArtists = forYou.map((row) => row.seed.artist).filter((name, i, all) => all.indexOf(name) === i);
   // Albums, artists and playlists open as pages with their own history entry.
   const collectionKey = collection ? `${collection.type}:${collection.id}` : "";
@@ -1310,7 +1384,19 @@ export default function App() {
     nav.goPage(next);
     if (next === "search") focusSearch();
   };
+  // Hover (after a short rest) or touch warms a song's source, so play starts sooner.
+  const intentTimer = useRef(0);
+  const intent = (track) => ({
+    onPointerEnter: (event) => {
+      if (event.pointerType !== "mouse") return;
+      clearTimeout(intentTimer.current);
+      intentTimer.current = setTimeout(() => player.warm(track), 150);
+    },
+    onPointerLeave: () => clearTimeout(intentTimer.current),
+    onTouchStart: () => player.warm(track),
+  });
   const mutedVolume = useRef(80);
+  const swiped = useRef(false);
   const toggleMute = () => {
     if (player.volume > 0) {
       mutedVolume.current = player.volume;
@@ -1346,7 +1432,10 @@ export default function App() {
       // Fields keep every key; sliders keep their arrows; buttons keep Space.
       if (sheet || e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.target.closest?.('textarea, select, [contenteditable], input:not([type="range"])')) return;
-      if (e.target.matches?.('input[type="range"]') && /^(Arrow|Home|End|Page)/.test(e.key)) return;
+      // The timeline's native arrow step is 0.1 s; ← → always jump 5 s instead.
+      // Other sliders (volume) keep their own arrows.
+      const onTimeline = e.target.matches?.('input[aria-label="Seek in track"]') && (e.key === "ArrowLeft" || e.key === "ArrowRight");
+      if (!onTimeline && e.target.matches?.('input[type="range"]') && /^(Arrow|Home|End|Page)/.test(e.key)) return;
       if (e.key === " " && e.target.closest?.("button, a")) return;
       onShortcut(e);
   });
@@ -1375,12 +1464,28 @@ export default function App() {
         <Motion.div
           layout={queueMode ? "position" : false}
           {...listItem(i)}
-          className={`track-row ${selected ? "selected" : ""}`}
+          // Queue rows: swipe left to remove. A swipe never counts as a tap.
+          drag={queueMode ? "x" : false}
+          dragDirectionLock
+          dragConstraints={{ left: 0, right: 0 }}
+          dragElastic={{ left: 0.55, right: 0.04 }}
+          onDragStart={() => { swiped.current = true; }}
+          onDragEnd={(_, info) => {
+            if (info.offset.x < -110 || info.velocity.x < -700)
+              player.setQueue(player.queue.filter((_, index) => index !== i));
+            setTimeout(() => { swiped.current = false; }, 0);
+          }}
+          className={`track-row ${selected ? "selected" : ""} ${player.unavailable?.has(track.id) ? "is-unavailable" : ""}`}
+          title={player.unavailable?.has(track.id) ? "Not available to play here" : undefined}
           key={`${track.id}#${occurrence}`}
         >
           <button
+            {...intent(track)}
             className="track-main"
-            onClick={() => play(track, queueMode ? tracks : context)}
+            onClick={() => {
+              if (swiped.current) return;
+              play(track, queueMode ? tracks : context);
+            }}
           >
             <span className="track-number">
               {selected && player.playing ? (
@@ -1863,7 +1968,7 @@ export default function App() {
         >
           <div id="youtube-player" />
         </div>
-        <Motion.aside layout layoutDependency={sidebarCollapsed} className="sidebar">
+        <aside className="sidebar">
           <IconButton
             className="sidebar-toggle"
             label={sidebarCollapsed ? "Expand sidebar" : "Minimize sidebar"}
@@ -1946,8 +2051,13 @@ export default function App() {
             </button>
             <span>Just you and the music.</span>
           </div>
-        </Motion.aside>
-        <Motion.main layout layoutDependency={sidebarCollapsed} className="main-content">
+        </aside>
+        <Motion.main
+          layout="position"
+          layoutDependency={sidebarCollapsed}
+          transition={{ layout: { duration: 0.6, ease: EASE } }}
+          className="main-content"
+        >
           <AnimatePresence mode="wait" initial={false}>
           {!(immersive && player.track) ? (
             <Motion.div
@@ -2012,6 +2122,21 @@ export default function App() {
                       <Search />
                     </button>
                   </div>
+                  <div className="mood-chips" role="group" aria-label="Moods">
+                    {MOODS.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={`mood-chip ${mood === item.id ? "selected" : ""}`}
+                        aria-pressed={mood === item.id}
+                        onClick={() => setMood((value) => (value === item.id ? null : item.id))}
+                      >
+                        {mood === item.id && <Motion.span layoutId="mood-pill" className="nav-pill" transition={PILL_SPRING} />}
+                        {item.label}
+                        {mood === item.id && moodLoading && <Waveform />}
+                      </button>
+                    ))}
+                  </div>
                   <Motion.section
                     variants={sectionMotion}
                     className="discovery-stage spotlight"
@@ -2022,7 +2147,7 @@ export default function App() {
                       <>
                         <div className="stage-copy">
                           <span className="feature-label">
-                            <span /> {personalized ? "Picked for you" : "In the spotlight"}
+                            <span /> {moodMode ? `${activeMood.label} · picked for you` : personalized ? "Picked for you" : "In the spotlight"}
                           </span>
                           <FluidText as="h2">{heroTrack.artist}</FluidText>
                           <FluidText as="p">{heroTrack.title}</FluidText>
@@ -2157,7 +2282,7 @@ export default function App() {
                       </button>
                     ))}
                   </Motion.section>
-                  {forYou.map(({ seed, tracks }) => (
+                  {!moodMode && forYou.map(({ seed, tracks }) => (
                     <RevealSection key={seed.id} className="music-section for-you">
                       <div className="section-heading">
                         <div>
@@ -2170,7 +2295,7 @@ export default function App() {
                       </div>
                       <div className="shelf">
                         {tracks.map((track, i) => (
-                          <Motion.button key={track.id} variants={revealCard} className="album-card" onClick={() => play(track, tracks.slice(i))}>
+                          <Motion.button key={track.id} variants={revealCard} className="album-card" {...intent(track)} onClick={() => play(track, tracks.slice(i))}>
                             <div className="album-image spotlight">
                               <Cover track={track} />
                               <span className="album-play">
@@ -2187,11 +2312,13 @@ export default function App() {
                   <RevealSection className="music-section">
                     <div className="section-heading">
                       <div>
-                        <h2>{personalized ? "Made for you" : "Made for a good listen"}</h2>
+                        <h2>{moodMode ? activeMood.label : personalized ? "Made for you" : "Made for a good listen"}</h2>
                         <p>
-                          {personalized
-                            ? `Shaped by what you play${favouriteArtists.length ? `, around ${favouriteArtists.slice(0, 2).join(" and ")}` : ""}.`
-                            : "A few favorites to get you started."}
+                          {moodMode
+                            ? "Chosen for the mood, ordered by what you love."
+                            : personalized
+                              ? `Shaped by what you play${favouriteArtists.length ? `, around ${favouriteArtists.slice(0, 2).join(" and ")}` : ""}.`
+                              : "A few favorites to get you started."}
                         </p>
                       </div>
                       <button
@@ -2205,7 +2332,7 @@ export default function App() {
                       {madeForYou.map((track) => (
                         <Motion.button
                           variants={revealCard}
-                          className="album-card"
+                          className="album-card" {...intent(track)}
                           key={track.id}
                           onClick={() => play(track)}
                         >
@@ -2221,6 +2348,33 @@ export default function App() {
                       ))}
                     </div>
                   </RevealSection>
+                  {moreForMood.length >= 4 && (
+                    <RevealSection key={`more-${mood}`} className="music-section mood-more">
+                      <div className="section-heading">
+                        <div>
+                          <h2>More {activeMood.label.toLowerCase()}</h2>
+                          <p>Keep the feeling going.</p>
+                        </div>
+                        <button className="text-button" onClick={() => play(moreForMood[0], moreForMood)}>
+                          Play all <Play size={14} fill="currentColor" />
+                        </button>
+                      </div>
+                      <div className="shelf">
+                        {moreForMood.map((track, i) => (
+                          <Motion.button key={track.id} variants={revealCard} className="album-card" {...intent(track)} onClick={() => play(track, moreForMood.slice(i))}>
+                            <div className="album-image spotlight">
+                              <Cover track={track} />
+                              <span className="album-play">
+                                <Play size={21} fill="currentColor" />
+                              </span>
+                            </div>
+                            <strong>{track.title}</strong>
+                            <span>{track.artist}</span>
+                          </Motion.button>
+                        ))}
+                      </div>
+                    </RevealSection>
+                  )}
                   {repeatSongs.length > 0 && (
                     <RevealSection className="music-section on-repeat">
                       <div className="section-heading">
@@ -2234,7 +2388,7 @@ export default function App() {
                       </div>
                       <div className="shelf">
                         {repeatSongs.map((track, i) => (
-                          <Motion.button key={track.id} variants={revealCard} className="album-card" onClick={() => play(track, repeatSongs.slice(i))}>
+                          <Motion.button key={track.id} variants={revealCard} className="album-card" {...intent(track)} onClick={() => play(track, repeatSongs.slice(i))}>
                             <div className="album-image spotlight">
                               <Cover track={track} />
                               <span className="album-play">
@@ -2362,17 +2516,8 @@ export default function App() {
                   </div>
                 </header>
                 <div className="now-playing-body">
-                  <Motion.div
-                    className="now-playing-art"
-                    drag="x"
-                    dragConstraints={{ left: 0, right: 0 }}
-                    dragElastic={0.12}
-                    onDragEnd={(_, info) => {
-                      if (info.offset.x < -65) player.next();
-                      else if (info.offset.x > 65) player.previous();
-                    }}
-                  >
-                    <FadingCover track={player.track} eager size={1200} direction={player.direction} />
+                  <SwipeCover player={player} onClose={() => setImmersive(false)}>
+                    <FadingCover track={player.track} eager size={1200} direction={player.direction} blend={player.changeKind === "blend"} />
                     <span className="art-caption">
                       <span
                         className={
@@ -2385,7 +2530,7 @@ export default function App() {
                       </span>
                       {player.playing ? "In the moment" : "Take a moment"}
                     </span>
-                  </Motion.div>
+                  </SwipeCover>
                   <AnimatePresence>
                     {showLyrics && (
                       <Motion.div
@@ -2401,7 +2546,18 @@ export default function App() {
                         transition={{ duration: 0.8, ease: EASE }}
                         className="desktop-lyrics"
                       >
-                        <Lyrics key={player.track.id} player={player} />
+                        {/* Song changes crossfade the lyrics; a DJ blend hands over slower. */}
+                        <AnimatePresence initial={false} mode="popLayout">
+                          <Motion.div
+                            key={player.track.id}
+                            className="lyrics-handover"
+                            initial={{ opacity: 0, y: 22 }}
+                            animate={{ opacity: 1, y: 0, transition: { duration: player.changeKind === "blend" ? 1.6 : 0.8, ease: EASE, delay: player.changeKind === "blend" ? 0.5 : 0.1 } }}
+                            exit={{ opacity: 0, y: -16, transition: { duration: player.changeKind === "blend" ? 1.1 : 0.35, ease: EASE_IN_OUT } }}
+                          >
+                            <Lyrics player={player} />
+                          </Motion.div>
+                        </AnimatePresence>
                       </Motion.div>
                     )}
                   </AnimatePresence>
@@ -2711,14 +2867,15 @@ export default function App() {
               <div className="setting-row">
                 <div>
                   <strong>Blend length</strong>
-                  <p>5–10 seconds, in whole bars when the beat is known.</p>
+                  <p>Auto fits the longest blend the music leaves room for, in whole bars.</p>
                 </div>
                 <div className="segmented" role="radiogroup" aria-label="Blend length">
                   {[
-                    [5, "Tight"],
-                    [8, "Natural"],
-                    [10, "Long"],
-                  ].map(([seconds, label]) => (
+                    ["auto", "Auto", "5–10s"],
+                    [5, "Tight", "5s"],
+                    [8, "Natural", "8s"],
+                    [10, "Long", "10s"],
+                  ].map(([seconds, label, hint]) => (
                     <button
                       key={seconds}
                       role="radio"
@@ -2728,7 +2885,7 @@ export default function App() {
                     >
                       {player.blendLength === seconds && <Motion.span layoutId="blend-pill" className="nav-pill" transition={PILL_SPRING} />}
                       {label}
-                      <small>{seconds}s</small>
+                      <small>{hint}</small>
                     </button>
                   ))}
                 </div>
@@ -2917,7 +3074,7 @@ export default function App() {
           }}
         />
         <AnimatePresence>
-          {(notice || player.error) && (
+          {(notice || player.notice || player.error) && (
             <Motion.div
               role={player.error ? "alert" : "status"}
               className={`toast ${player.error ? "error-toast" : ""}`}
@@ -2925,7 +3082,7 @@ export default function App() {
               animate={{ opacity: 1, y: 0, scale: 1, transition: { type: "spring", stiffness: 260, damping: 24 } }}
               exit={{ opacity: 0, y: 12, scale: 0.98, transition: { duration: 0.35, ease: EASE_EXIT } }}
             >
-              <span>{player.error || notice}</span>
+              <span>{player.error || player.notice || notice}</span>
               {player.error && (
                 <button
                   onClick={() =>

@@ -3547,9 +3547,11 @@ button {
   .shelf {
     grid-auto-columns: 42vw;
     gap: 14px;
-    margin-inline: -23px;
-    padding-inline: 23px;
-    scroll-padding-inline: 23px;
+    /* Full-bleed at any gutter width: the row spans the viewport, content keeps the gutter. */
+    width: 100vw;
+    margin-inline: calc(50% - 50vw);
+    padding-inline: calc(50vw - 50%);
+    scroll-padding-inline: calc(50vw - 50%);
   }
 }
 
@@ -3857,6 +3859,8 @@ button {
    would cost every frame on low-end desktops. */
 @media (max-width: 760px) {
   .player-art-background {
+    /* Overscan, so the slow drift never exposes an edge. */
+    inset: -4%;
     animation: backdrop-drift 38s ease-in-out infinite alternate;
   }
 }
@@ -3953,16 +3957,17 @@ html.scroll-locked {
   }
 }
 
-/* The song's refrain and best part: faint marks under the timeline, and a chip to jump there. */
+/* The song's refrain and best part: brighter segments of the rail itself (seen
+   through its translucent unplayed part), and a chip to jump there. */
 .peak-mark {
   position: absolute;
-  bottom: -5px;
-  height: 2px;
-  border-radius: 2px;
-  background: #ffffff38;
+  top: 0;
+  bottom: 0;
+  z-index: 0;
+  border-radius: 8px;
+  background: #ffffff4d;
   pointer-events: none;
-}
-.meta-chips {
+}.meta-chips {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -4176,4 +4181,302 @@ html.scroll-locked {
     transform: scaleY(1);
     opacity: 1;
   }
+}
+
+/* Songs with no playable upload stay listed but step back; the queue skips them. */
+.track-row.is-unavailable {
+  opacity: 0.42;
+}
+.track-row.is-unavailable .track-main strong::after {
+  content: " · Unavailable";
+  font-weight: 500;
+  color: #9aa79d;
+}
+
+/* Glow lives on the unmasked text under the fill, never on the masked fill layer:
+   a mask clips a text-shadow into visible boxes at each word's edge, and a glow
+   under a moving mask would repaint every frame. It changes only with word state. */
+.lyric-line.current .lyric-word.sung .word-fill,
+.lyric-word.singing .word-fill,
+.lyric-word.held.singing .word-fill {
+  text-shadow: none;
+}
+.lyric-word > span:first-child {
+  transition: text-shadow 1.2s var(--ease-soft);
+}
+.lyric-line.current .lyric-word.sung > span:first-child {
+  text-shadow: 0 0 14px #ffffff2e;
+}
+.lyric-word.singing > span:first-child {
+  text-shadow:
+    0 0 16px #ffffff47,
+    0 0 32px #c3ebcf24;
+}
+.lyric-word.held.singing > span:first-child {
+  text-shadow:
+    0 0 22px #ffffff66,
+    0 0 44px #c3ebcf3d;
+}
+/* Interlude dots grow as the break progresses: room on every side so the first
+   dot is never clipped by the reveal container. */
+.lyric-interlude {
+  padding: 6px 10px;
+  margin-left: -10px;
+}
+
+/* The DJ window: a thin outlined capsule around the rail, filled once ready. */
+.dj-seek-zone,
+.player-dock .dj-seek-zone {
+  top: 50%;
+  height: 9px;
+  translate: 0 -50%;
+  border-radius: 9px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px #c3ebcf73;
+}
+.dj-seek-zone.ready,
+.player-dock .dj-seek-zone.ready {
+  background: #c3ebcf1f;
+  box-shadow: inset 0 0 0 1px #c3ebcfb3;
+}
+@media (max-width: 760px) {
+  .player-dock .dj-seek-zone {
+    height: 6px;
+  }
+}
+
+/* Swipe the cover: both axes belong to the gesture (sideways = change song,
+   down = close), so the browser must not claim vertical pans for scrolling. */
+.now-playing-art {
+  position: relative;
+  touch-action: none;
+  cursor: grab;
+}
+.now-playing-art:active {
+  cursor: grabbing;
+}
+.swipe-hint {
+  position: absolute;
+  top: 50%;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 13px;
+  border-radius: 999px;
+  translate: 0 -50%;
+  background: #0d1110cc;
+  border: 1px solid #c3ebcf40;
+  color: #d8f3e0;
+  font-size: 12px;
+  font-weight: 650;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+}
+.swipe-hint.is-next {
+  right: 14px;
+}
+.swipe-hint.is-previous {
+  left: 14px;
+}
+/* Artwork never starts the browser's own image drag (it would cancel the swipe). */
+.now-playing-art img,
+.dock-track img,
+.track-row img {
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+/* ── Sidebar: collapse and expand ───────────────────────────────────────────
+   The rail's width glides; labels fade and slide out quickly, then back in a
+   beat after the rail has opened. Main content slides into place unscaled, and
+   the player dock follows the same curve. */
+@media (min-width: 761px) {
+  .sidebar {
+    overflow: hidden;
+    transition:
+      width 0.6s var(--ease-soft),
+      padding 0.6s var(--ease-soft);
+  }
+  .sidebar .brand-word,
+  .sidebar nav span,
+  .sidebar kbd,
+  .sidebar-label,
+  .collection-link > span:last-child,
+  .sidebar-bottom span {
+    white-space: nowrap;
+    transition:
+      opacity 0.4s var(--ease-soft) 0.16s,
+      translate 0.5s var(--ease-soft) 0.12s;
+  }
+  .sidebar-collapsed .sidebar .brand-word,
+  .sidebar-collapsed .sidebar nav span,
+  .sidebar-collapsed .sidebar kbd,
+  .sidebar-collapsed .sidebar-label,
+  .sidebar-collapsed .collection-link > span:last-child,
+  .sidebar-collapsed .sidebar-bottom span {
+    display: inline;
+    opacity: 0;
+    translate: -8px 0;
+    pointer-events: none;
+    transition:
+      opacity 0.18s ease,
+      translate 0.3s var(--ease-soft);
+  }
+  .sidebar-collapsed .sidebar .brand {
+    font-size: 30px;
+    gap: 10px;
+    letter-spacing: -1.4px;
+  }
+  .sidebar-collapsed .sidebar-label {
+    display: block;
+  }
+  .player-dock {
+    transition: left 0.6s var(--ease-soft);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .player-dock {
+    transition: none;
+  }
+}
+
+/* ── Artwork ↔ video mode ───────────────────────────────────────────────────
+   The video surface keeps its full-viewport geometry at all times and only
+   fades (settling from a slight zoom), so switching never shows it jump or
+   shrink. The cover fades, blurs and eases smaller while its space closes. */
+.video-surface {
+  inset: 0;
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  scale: 1.03;
+  transition:
+    opacity 0.9s var(--ease-soft),
+    scale 1.2s var(--ease-soft);
+}
+.video-surface.is-visible {
+  scale: 1;
+}
+.video-surface iframe {
+  inset: auto;
+  top: 50%;
+  left: 50%;
+  width: 100vw;
+  height: 56.25vw;
+  min-width: 177.78dvh;
+  min-height: 100dvh;
+  transform: translate(-50%, -50%) scale(1.04);
+}
+.player-art-background {
+  transition:
+    scale 3.4s var(--ease-soft),
+    opacity 0.9s var(--ease-soft);
+}
+@media (min-width: 761px) {
+  .now-playing-art {
+    transition:
+      opacity 0.6s var(--ease-soft),
+      scale 0.8s var(--ease-soft),
+      filter 0.7s var(--ease-soft),
+      width 0.8s var(--ease-soft),
+      margin 0.8s var(--ease-soft);
+  }
+  .has-video .now-playing-art {
+    display: block;
+    width: 0;
+    margin-inline: 0;
+    opacity: 0;
+    scale: 0.9;
+    filter: blur(10px);
+    pointer-events: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .video-surface,
+  .now-playing-art {
+    transition: none;
+    scale: none;
+  }
+}
+.desktop-lyrics {
+  position: relative;
+}
+.lyrics-handover {
+  height: 100%;
+  width: 100%;
+}
+
+/* ── Mood chips ─────────────────────────────────────────────────────────────
+   Quiet pills; the selection is a mint pill that glides between moods. One row
+   that scrolls sideways on phones, wrapping on wide screens. */
+.mood-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 26px;
+}
+.mood-chip {
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border-radius: 999px;
+  background: #ffffff0d;
+  border: 1px solid #ffffff12;
+  color: #dfe6de;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition:
+    color 0.35s var(--ease-soft),
+    background-color 0.35s var(--ease-soft),
+    border-color 0.35s var(--ease-soft);
+}
+.mood-chip .nav-pill {
+  background: #c3ebcf;
+  border-radius: inherit;
+}
+.mood-chip.selected {
+  color: #0f1512;
+  background: transparent;
+  border-color: transparent;
+}
+.mood-chip .waveform-loader i {
+  background: #0f1512;
+}
+.mood-chip .waveform-loader {
+  height: 12px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .mood-chip:not(.selected):hover {
+    background: #ffffff17;
+    border-color: #ffffff21;
+  }
+}
+@media (max-width: 760px) {
+  .mood-chips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    /* Full-bleed at any gutter width: the row spans the viewport, content keeps the gutter. */
+    width: 100vw;
+    margin-inline: calc(50% - 50vw);
+    padding-inline: calc(50vw - 50%);
+    scroll-padding-inline: calc(50vw - 50%);
+    overscroll-behavior-x: contain;
+  }
+  .mood-chips::-webkit-scrollbar {
+    display: none;
+  }
+}
+/* Icons keep their size while the rail narrows; only the labels give way. */
+.sidebar nav button > svg,
+.collection-link > :first-child,
+.sidebar-bottom button > svg,
+.brand-mark {
+  flex-shrink: 0;
 }

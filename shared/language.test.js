@@ -41,3 +41,13 @@ test('neighbouring genre families are compatible, distant ones are not', async (
   assert.equal(compatibleFamilies('pop', 'metal'), false);
   assert.equal(compatibleFamilies('classical', 'hiphop'), false);
 });
+
+test('short titles reveal their language from telling letters and words', async () => {
+  const { detectTitleLanguage } = await import('./language.js');
+  assert.equal(detectTitleLanguage('Por Que Não Tentar de Novo')?.lang, 'pt');
+  assert.equal(detectTitleLanguage('Qué Más Quieres de Mí')?.lang, 'es');
+  assert.equal(detectTitleLanguage('Deep in the night I feel you')?.lang, 'en');
+  assert.equal(detectTitleLanguage('Straße der Träume')?.lang, 'de');
+  assert.equal(detectTitleLanguage('Personal'), null, 'one neutral word decides nothing');
+  assert.equal(detectTitleLanguage('Mi Gente')?.lang ?? null, null, 'too little to tell');
+});
