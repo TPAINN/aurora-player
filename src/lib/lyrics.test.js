@@ -51,3 +51,27 @@ test('the best part is the longest peak, the earliest one on ties', async () => 
   assert.deepEqual(bestPart([{ start: 30, end: 42 }, { start: 90, end: 110 }, { start: 150, end: 166 }]), { start: 90, end: 110 });
   assert.deepEqual(bestPart([{ start: 30, end: 40 }, { start: 90, end: 100 }]), { start: 30, end: 40 });
 });
+
+// Word-timed version of the same song: every line's first word starts 0.4 s after
+// the line, and the last word ends 3.1 s after it.
+const timedSong = song.map(line => ({ ...line, words: line.text.split(' ').map((text, i, all) => ({ text: `${text} `, start: line.time + 0.4 + i * (2.7 / all.length), end: line.time + 0.4 + (i + 1) * (2.7 / all.length) })) }));
+
+test('refrain peaks start on the first sung word and end on the last one', () => {
+  const peaks = peakMoments(timedSong);
+  const second = peaks.find(range => range.start > timedSong[11].time && range.start < timedSong[13].time);
+  assert.ok(second, JSON.stringify(peaks));
+  assert.ok(Math.abs(second.start - (timedSong[12].time + 0.4)) < 1e-6, `start ${second.start}`);
+  assert.ok(Math.abs(second.end - (timedSong[15].time + 3.1)) < 1e-6, `end ${second.end}`);
+});
+
+test('a held note is a peak exactly while it is held', () => {
+  const lines = [{ time: 20, text: 'and I scream', words: [{ text: 'and ', start: 20, end: 20.3 }, { text: 'I ', start: 20.3, end: 20.5 }, { text: 'scream', start: 20.5, end: 23.5 }] }];
+  const [peak] = peakMoments(lines);
+  assert.ok(Math.abs(peak.start - 20.5) < 1e-6 && Math.abs(peak.end - 23.8) < 1e-6, JSON.stringify(peak));
+});
+
+test('the refrain never swallows the verse line after it', () => {
+  const peaks = peakMoments(timedSong);
+  assert.equal(isPeakAt(peaks, timedSong[16].time + 1), false);
+  assert.equal(isPeakAt(peaks, timedSong[8].time + 1), false);
+});

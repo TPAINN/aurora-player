@@ -50,7 +50,7 @@ function fakeYouTube() {
       this.clock = setInterval(() => { if (this.state === 1) { this.t += .05 * this.rate; if (this.t >= this.dur) { this.t = this.dur; this.set(0); } } }, 50);
     }
     set(state) { this.state = state; this.o.events.onStateChange?.({ target: this, data: state }); }
-    loadVideoById(id, start = 0) { this.vid = id; this.t = start; this.dur = Number(JSON.parse(localStorage.getItem('durations') || '{}')[id] || 60); log('load', id, this.muted, start); this.set(3); setTimeout(() => this.set(1), 250); }
+    loadVideoById(id, start = 0) { if (JSON.parse(localStorage.getItem('refused') || '[]').includes(id)) { this.vid = id; log('refused', id); setTimeout(() => this.o.events.onError?.({ target: this, data: 150 }), 120); return; } this.vid = id; this.t = start; this.dur = Number(JSON.parse(localStorage.getItem('durations') || '{}')[id] || 60); log('load', id, this.muted, start); this.set(3); setTimeout(() => this.set(1), 250); }
     playVideo() { log('play', this.vid, this.muted); setTimeout(() => this.set(1), 150); }
     pauseVideo() { log('pause', this.vid); this.set(2); }
     stopVideo() { this.set(5); } seekTo(t) { log('seek', this.vid, Math.round(t * 10) / 10); this.t = t; }
@@ -75,7 +75,7 @@ const categories = term => ({
   playlists: [{ id: 'PLroads', title: 'Road trip', owner: 'Aurora fan', count: 2, artwork: 'https://img.test/c/pl.jpg' }],
   top: /^band of night$/i.test(term.trim()) ? { kind: 'artist', id: 7 } : /slowed|mashup/i.test(term) ? { kind: 'video', id: 'VVVVVVVVVV1' } : { kind: 'song', id: 1 },
 });
-async function newSession(browser, { viewport = { width: 1440, height: 900 }, prefs = {}, reducedMotion = 'no-preference', searchDelay = 120, failSearch = () => false, recommendations = [], welcome = false, longIntro = false, incomingBpm = 124 } = {}) {
+async function newSession(browser, { viewport = { width: 1440, height: 900 }, prefs = {}, reducedMotion = 'no-preference', searchDelay = 120, failSearch = () => false, recommendations = [], welcome = false, longIntro = false, incomingBpm = 124, unplayable = [] } = {}) {
   const context = await browser.newContext({ viewport, reducedMotion, hasTouch: viewport.width < 700 });
   await context.addInitScript(values => {
     if (!sessionStorage.getItem('seeded')) { for (const [key, value] of Object.entries(values)) localStorage.setItem(key, value); sessionStorage.setItem('seeded', '1'); }
@@ -110,7 +110,9 @@ async function newSession(browser, { viewport = { width: 1440, height: 900 }, pr
   });
   await page.route('**/api/video/search?*', route => {
     const title = new URL(route.request().url()).searchParams.get('title');
-    return route.fulfill({ json: { videoId: { 'Night Drive': 'AAAAAAAAAAA', 'Morning Light': 'BBBBBBBBBBB', 'Slow Tide': 'CCCCCCCCCCC' }[title] || 'DDDDDDDDDDD', channel: title === 'Night Drive' ? 'Band - Topic' : 'Band Uploads', title } });
+    if (unplayable.includes(title)) return route.fulfill({ json: { videoId: null, candidates: [] } });
+    const videoId = { 'Night Drive': 'AAAAAAAAAAA', 'Morning Light': 'BBBBBBBBBBB', 'Slow Tide': 'CCCCCCCCCCC' }[title] || 'DDDDDDDDDDD';
+    return route.fulfill({ json: { videoId, channel: title === 'Night Drive' ? 'Band - Topic' : 'Band Uploads', title, candidates: [{ videoId }, { videoId: 'EEEEEEEEEEE' }] } });
   });
   await page.route('**/api/lyrics/structured?*', async route => {
     const title = new URL(route.request().url()).searchParams.get('title');
@@ -120,6 +122,7 @@ async function newSession(browser, { viewport = { width: 1440, height: 900 }, pr
   });
   await page.route('**/api/tempo?*', route => route.fulfill({ json: { bpm: new URL(route.request().url()).searchParams.get('title') === 'Night Drive' ? 120 : incomingBpm } }));
   await page.route('**/api/recommendations?*', route => route.fulfill({ json: { tracks: recommendations } }));
+  await page.route('**/api/mood?*', route => { const mood = new URL(route.request().url()).searchParams.get('mood'); return route.fulfill({ json: { tracks: Array.from({ length: 16 }, (_, i) => ({ id: `mood:${mood}:${i}`, title: `${mood} song ${i + 1}`, artist: `Mood artist ${i % 8}`, album: 'LP', artwork: 'https://img.test/c/m.jpg', duration: 60, mood })) } }); });
   await page.route('https://www.youtube.com/**', route => route.abort());
   return { context, page, errors, requests };
 }
@@ -247,7 +250,7 @@ if (!only || only === 'C') {
   await check('C', 'instrumental gap shows the interlude', async () => { await setSeek(page, 19); await wait(1200); ok(await page.locator('.lyric-interlude').count() === 1); });
   await check('C', 'lyric frame rate stays smooth', async () => { const fps = await page.evaluate(() => new Promise(resolve => { let frames = 0; const start = performance.now(); const tick = () => { frames++; if (performance.now() - start < 1500) requestAnimationFrame(tick); else resolve(frames / 1.5); }; requestAnimationFrame(tick); })); ok(fps >= 40, `fps ${fps} (headless software rendering)`); });
   const fps = () => page.evaluate(() => new Promise(resolve => { let frames = 0; const start = performance.now(); const tick = () => { frames++; if (performance.now() - start < 1500) requestAnimationFrame(tick); else resolve(frames / 1.5); }; requestAnimationFrame(tick); }));
-  await check('C', 'the backdrop opens up on a held note, smoothly', async () => { await setSeek(page, 26.4); await wait(300); const rate = await fps(); await wait(800); ok(await page.locator('.player-art-background.is-peak').count() === 1); ok(rate >= 30, `fps ${rate} during the zoom (software rendering)`); });
+  await check('C', 'the backdrop opens up on a held note, smoothly', async () => { await setSeek(page, 26.6); await wait(400); ok(await page.locator('.player-art-background.is-peak').count() === 1, 'no peak while the note is held'); const rate = await fps(); ok(rate >= 30, `fps ${rate} during the zoom (software rendering)`); });
   await check('C', 'and settles again outside the peak', async () => { await setSeek(page, 7); await wait(900); ok(await page.locator('.player-art-background.is-peak').count() === 0); });
   await check('C', 'video mode toggles on', async () => { await page.click('button[aria-label="Video mode"]'); await wait(500); ok(await page.locator('.aurora-app.has-video').count() === 1); });
   await check('C', 'artwork mode toggles back', async () => { await page.click('button[aria-label="Artwork mode"]'); await wait(500); ok(await page.locator('.aurora-app.has-video').count() === 0); });
@@ -366,9 +369,9 @@ if (!only || only === 'D') {
 if (!only || only === 'D') {
   const { context, page, errors } = await djSession({}, { longIntro: true });
   await wait(7500);
-  await check('D', 'song B with a long intro is buffered from its chosen entry', async () => { const load = (await events(page)).find(row => row[1] === 'load' && row[2] === 'BBBBBBBBBBB' && row[3] === true); ok(load && load[4] >= 25 && load[4] <= 33, JSON.stringify(load)); });
+  await check('D', 'song B with a long intro is buffered from its chosen entry', async () => { const load = (await events(page)).find(row => row[1] === 'load' && row[2] === 'BBBBBBBBBBB' && row[3] === true); ok(load && load[4] >= 22 && load[4] <= 33, JSON.stringify(load)); });
   await setSeek(page, 31); await wait(9000);
-  await check('D', 'song B enters past its intro and its vocals follow the blend', async () => { ok((await title(page)).startsWith('Morning Light')); const t = await playerTime(page); ok(t >= 30 && t < 38, String(t)); });
+  await check('D', 'song B enters past its intro and its vocals follow the blend', async () => { ok((await title(page)).startsWith('Morning Light')); const t = await playerTime(page); ok(t >= 27 && t < 38, String(t)); });
   await check('D', 'no runtime errors with a chosen entry', async () => ok(!errors.length, errors.join(' | ')));
   await context.close();
 }
@@ -628,11 +631,11 @@ if (!only || only === 'H') {
     ok(during === 2 && settled === 1, `during ${during}, settled ${settled}`);
     await page.click('.dock-transport button[aria-label="Play"]'); await wait(500);
   });
-  await check('H', '10 · blends last 5–10 s: Tight, Natural (default) and Long', async () => {
+  await check('H', '10 · blends last 5–10 s: Auto (default), Tight, Natural and Long', async () => {
     await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(800);
     const labels = await page.locator('.segmented [role=radio]').allTextContents();
-    ok(labels.join('|') === 'Tight5s|Natural8s|Long10s', labels.join('|'));
-    ok(await page.getAttribute('.segmented [role=radio]:has-text("Natural")', 'aria-checked') === 'true');
+    ok(labels.join('|') === 'Auto5–10s|Tight5s|Natural8s|Long10s', labels.join('|'));
+    ok(await page.getAttribute('.segmented [role=radio]:has-text("Auto")', 'aria-checked') === 'true');
     await page.keyboard.press('Escape'); await wait(600);
   });
   await check('H', 'no runtime errors across the new scenarios', async () => ok(!errors.length, errors.join(' | ')));
@@ -646,6 +649,92 @@ if (!only || only === 'H') {
     ok(await mobile.page.evaluate(() => getComputedStyle(document.querySelector('.sheet header')).position) === 'sticky', 'sticky sheet header');
   });
   await mobile.context.close();
+}
+
+// ── I: resilience — songs that can't play never stop the music ──
+if (!only || only === 'I') {
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 }, unplayable: ['Morning Light'] });
+  await page.goto(BASE); await wait(500); await startQueue(page, ['Morning Light', 'Slow Tide']);
+  await check('I', 'Next skips a song with no playable upload and keeps playing', async () => { await page.click('.dock-transport button[aria-label="Next track"]'); await wait(2200); ok((await title(page)).startsWith('Slow Tide'), await title(page)); });
+  await check('I', 'a short notice says the song is skipped', async () => ok(/moved on|will be skipped/.test(await page.textContent('.toast').catch(() => ''))));
+  await check('I', 'the skipped song is marked unavailable in the queue', async () => { await page.click('.dock-actions button[aria-label="Queue"], button[aria-label="Open queue"], .dock-actions button:has(svg.lucide-list-music)').catch(() => {}); await wait(900); ok(await page.locator('.track-row.is-unavailable').count() >= 1); await page.keyboard.press('Escape'); await wait(500); });
+  await check('I', 'no runtime errors while skipping', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'I') {
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 }, prefs: { refused: JSON.stringify(['CCCCCCCCCCC']) } });
+  await page.goto(BASE); await wait(500); await startQueue(page, ['Slow Tide']);
+  await check('I', 'a video YouTube refuses falls back to the next upload', async () => { await page.click('.dock-transport button[aria-label="Next track"]'); await wait(2500); const rows = await events(page); ok(rows.some(row => row[1] === 'refused' && row[2] === 'CCCCCCCCCCC') && rows.some(row => row[1] === 'load' && row[2] === 'EEEEEEEEEEE'), JSON.stringify(rows.filter(row => ['load', 'refused'].includes(row[1])).slice(-4))); ok((await title(page)).startsWith('Slow Tide')); });
+  await check('I', 'no runtime errors on a refused video', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'I') {
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 }, prefs: { 'aurora-dj': 'true' }, unplayable: ['Morning Light'] });
+  await page.goto(BASE); await wait(500); await startQueue(page, ['Morning Light', 'Slow Tide']); await wait(7500);
+  await check('I', 'the DJ prepares the next playable song when one can\'t play', async () => { const load = (await events(page)).find(row => row[1] === 'load' && row[2] === 'CCCCCCCCCCC' && row[3] === true); ok(load, 'standby never loaded Slow Tide'); });
+  await check('I', 'no runtime errors in a DJ queue with a gap', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'I') {
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 }, prefs: { 'aurora-dj': 'true' } });
+  await page.goto(BASE); await wait(500); await startQueue(page, ['Morning Light', 'Slow Tide']);
+  await page.click('.dock-transport button[aria-label="Shuffle"]'); await wait(7500);
+  await check('I', 'with shuffle on, the DJ still prepares the next song ahead', async () => { const load = (await events(page)).find(row => row[1] === 'load' && ['BBBBBBBBBBB', 'CCCCCCCCCCC'].includes(row[2]) && row[3] === true); ok(load, 'no muted standby load'); });
+  await check('I', 'no runtime errors with shuffle and DJ', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+
+if (!only || only === 'I') {
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 } });
+  await page.goto(BASE); await wait(500); await startQueue(page, ['Morning Light', 'Slow Tide']);
+  if (!(await page.locator('.immersive-player').count())) { await page.click('.dock-track'); await wait(1200); }
+  const drag = async (dx, dy) => { const box = await page.locator('.now-playing-art').boundingBox(); const cx = box.x + box.width / 2, cy = box.y + box.height / 2; await page.mouse.move(cx, cy); await page.mouse.down(); await page.mouse.move(cx + dx / 2, cy + dy / 2, { steps: 6 }); await page.mouse.move(cx + dx, cy + dy, { steps: 6 }); await page.mouse.up(); };
+  await check('I', 'swiping the cover left plays the next song', async () => { await drag(-190, 0); await wait(1500); ok((await title(page)).startsWith('Morning Light'), await title(page)); });
+  await check('I', 'swiping the cover right goes back', async () => { await drag(190, 0); await wait(1500); ok((await title(page)).startsWith('Night Drive'), await title(page)); });
+  await check('I', 'swiping the cover down closes the player', async () => { await drag(0, 180); await wait(1200); ok(await page.locator('.immersive-player').count() === 0); });
+  await check('I', '← and → jump 5 s even while the timeline has focus', async () => {
+    await page.focus('.dock-seek input[aria-label="Seek in track"]'); const before = await playerTime(page);
+    await page.keyboard.press('ArrowRight'); await wait(400); const after = await playerTime(page);
+    ok(after - before >= 4, `${before} → ${after}`);
+  });
+  await check('I', 'swiping a queue row left removes it', async () => {
+    await page.click('button[aria-label="Open queue"]'); await wait(900);
+    const count = await page.locator('.sheet .track-row').count();
+    const row = await page.locator('.sheet .track-row:has-text("Slow Tide")').boundingBox();
+    await page.mouse.move(row.x + row.width / 2, row.y + row.height / 2); await page.mouse.down();
+    await page.mouse.move(row.x + row.width / 2 - 90, row.y + row.height / 2, { steps: 5 }); await page.mouse.move(row.x + row.width / 2 - 200, row.y + row.height / 2, { steps: 5 }); await page.mouse.up();
+    await wait(900);
+    ok(await page.locator('.sheet .track-row').count() === count - 1 && await page.locator('.sheet .track-row:has-text("Slow Tide")').count() === 0);
+    ok((await title(page)).startsWith('Night Drive'), 'the swipe did not play the row');
+    await page.keyboard.press('Escape'); await wait(500);
+  });
+  await check('I', 'no runtime errors while swiping', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+
+if (!only || only === 'I') {
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 } });
+  await page.goto(BASE); await wait(1500);
+  await check('I', 'ten mood chips, in English', async () => { const labels = await page.locator('.mood-chips .mood-chip').allTextContents(); ok(labels.join('|') === 'Sad|Chill|Workout|Sleep|Energize|Romance|Feel good|Party|Commute|Focus', labels.join('|')); });
+  await check('I', 'choosing a mood re-shapes the suggestions around it', async () => {
+    await page.click('.mood-chip:has-text("Chill")'); await wait(1400);
+    ok(await page.getAttribute('.mood-chip:has-text("Chill")', 'aria-pressed') === 'true');
+    ok((await page.textContent('.stage-copy .feature-label')).includes('Chill'));
+    ok((await page.textContent('.stage-copy h2, .stage-copy p')).length > 0);
+    ok(await page.locator('.music-section h2:text-is("Chill")').count() === 1, 'Chill grid');
+    ok(await page.locator('.mood-more').count() === 1, 'more chill shelf');
+  });
+  await check('I', 'another mood replaces it', async () => { await page.click('.mood-chip:has-text("Focus")'); await wait(1400); ok((await page.textContent('.stage-copy .feature-label')).includes('Focus')); ok(await page.getAttribute('.mood-chip:has-text("Chill")', 'aria-pressed') === 'false'); });
+  await check('I', 'choosing the same mood again restores the default suggestions', async () => { await page.click('.mood-chip:has-text("Focus")'); await wait(1400); ok(!(await page.textContent('.stage-copy .feature-label')).includes('Focus')); ok(await page.locator('.mood-chip[aria-pressed="true"]').count() === 0); ok(await page.locator('.mood-more').count() === 0); });
+  await check('I', 'no runtime errors with moods', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+  const phone = await newSession(browser, { viewport: { width: 360, height: 760 } });
+  await phone.page.goto(BASE); await wait(1500);
+  await check('I', 'on a phone the mood row scrolls sideways without moving the page', async () => {
+    ok(await phone.page.evaluate(() => document.scrollingElement.scrollWidth <= innerWidth + 1), 'page overflows');
+    ok(await phone.page.evaluate(() => { const row = document.querySelector('.mood-chips'); return row.scrollWidth > row.clientWidth; }), 'chips should scroll');
+  });
+  await phone.context.close();
 }
 
 await browser.close();

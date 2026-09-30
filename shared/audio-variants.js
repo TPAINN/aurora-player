@@ -7,6 +7,9 @@ export const VARIANTS = [
   ['nightcore', /\bnightcore\b/],
   ['bass boosted', /\bbass\s?boost(?:ed)?\b/],
   ['loop', /\b\d+\s?(?:hour|hr)s?\b|\bloop(?:ed)?\b/],
+  // Not the song as sung: the backing without its voice, or the voice alone.
+  ['instrumental', /\binstrumental\b|\bkaraoke\b|\bbacking track\b|\bno vocals?\b|\bwithout vocals?\b|\bminus one\b/],
+  ['acapella', /\ba ?cappella\b|\bacapella\b|\bvocals? only\b|\bisolated vocals?\b/],
 ];
 
 const clean = value => String(value || '').toLowerCase().normalize('NFD').replace(/\p{M}/gu, '')

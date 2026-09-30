@@ -179,3 +179,20 @@ test('the iTunes fallback accepts songs by any credited artist', async () => {
   } });
   assert.ok(result.length >= 4, `only ${result.length}`);
 });
+
+test('with no lyrics to read, the artist\'s own titles set the language and keep the radio in it', async () => {
+  const english = ['Turned To Stone', 'Feel The Love Tonight', 'Say You Will Come Back', 'Where Are You Now', 'In My Head All Night', 'Lost In The Music'];
+  const radio = [
+    { id: 11, title: 'Por Que Não Tentar de Novo', artist: 'Udora' },
+    ...english.map((title, i) => ({ id: 20 + i, title: `${title} (Club Mix)`, artist: `House ${i}` })),
+  ].map(item => ({ id: item.id, title: item.title, duration: 250, artist: { id: 500 + item.id, name: item.artist }, album: { id: 1, title: 'LP', cover_big: 'https://example.com/c.jpg' } }));
+  const result = await fetchRecommendations({ artist: 'Kali Mija', title: 'Personal' }, { fetcher: async url => {
+    if (url.hostname === 'lrclib.net') return new Response('{}', { status: 404 });
+    if (url.pathname === '/search/artist') return json({ data: [{ id: 5, name: 'Kali Mija' }] });
+    if (url.pathname === '/artist/5/top') return json({ data: english.map((title, i) => ({ id: 900 + i, title, duration: 250, artist: { id: 5, name: 'Kali Mija' }, album: { id: 2, title: 'EP' } })) });
+    if (url.pathname === '/artist/5/radio') return json({ data: radio });
+    return json({ data: [] });
+  } });
+  assert.ok(result.length >= 4, `only ${result.length}`);
+  assert.ok(!result.some(track => track.title.startsWith('Por Que')), result.map(track => track.title).join(' | '));
+});

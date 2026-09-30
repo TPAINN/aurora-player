@@ -61,6 +61,25 @@ export function detectLanguage(text) {
   return best >= .12 && best - second >= .04 ? { lang, confidence: Math.min(1, best * 2) } : null;
 }
 
+// Letters that belong to one language among its neighbours.
+const TELLING_LETTERS = [['pt', /[ãõ]/i], ['es', /[ñ¿¡]/i], ['tr', /[ğşı]/i], ['de', /[ßäöü]/i], ['sv', /[å]/i], ['pl', /[ąęłńśźż]/i], ['ro', /[ăâîșț]/i]];
+
+// Titles are short: script decides at once; otherwise telling letters backed by at
+// least one function word, or two more function words than any other language.
+// Too little text returns null rather than a guess.
+export function detectTitleLanguage(text) {
+  const byScript = detectLanguage(text);
+  if (byScript) return byScript;
+  const value = String(text || '');
+  const tokens = fold(value).split(/[^\p{L}]+/u).filter(Boolean);
+  if (tokens.length < 3) return null;
+  const counts = Object.entries(WORDS).map(([lang, words]) => [lang, tokens.filter(token => words.has(token)).length]).sort((a, b) => b[1] - a[1]);
+  const telling = TELLING_LETTERS.find(([, pattern]) => pattern.test(value))?.[0];
+  if (telling && (counts.find(([lang]) => lang === telling)?.[1] || 0) >= 1) return { lang: telling, confidence: 0.7 };
+  const [[lang, best], [, second]] = counts;
+  return best >= 2 && best - second >= 1 ? { lang, confidence: 0.6 } : null;
+}
+
 const REGIONAL = [
   [/greek|λαϊκ|entechno|rebetiko/i, 'el'], [/k-?pop|korean/i, 'ko'], [/j-?pop|j-?rock|anime|japan|enka/i, 'ja'],
   [/mandopop|cantopop|c-?pop|chinese/i, 'zh'], [/turkish|arabesk/i, 'tr'], [/arabic|khaleeji|rai/i, 'ar'],
