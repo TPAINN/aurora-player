@@ -4,6 +4,7 @@ import {
   MotionConfig,
   animate,
   motion as Motion,
+  useSpring,
   useReducedMotion,
   usePresence,
 } from "framer-motion";
@@ -61,6 +62,11 @@ import {
   SHEET_SPRING,
   coverSwap,
   crossfade,
+  HEART_SPRING,
+  MAGNET_SPRING,
+  iconSwap,
+  revealCard,
+  revealSection,
   listItem,
   page as pageMotion,
   player as playerMotion,
@@ -198,21 +204,131 @@ function Brand() {
   );
 }
 function PlayButton({ player, large = false }) {
-  return (
+  const button = (
     <IconButton
       label={player.playing ? "Pause" : "Play"}
       className={`play-button ${large ? "large" : ""}`}
       disabled={!player.track || player.loading}
       onClick={player.togglePlay}
     >
-      {player.loading ? (
-        <LoaderCircle className="spin" />
-      ) : player.playing ? (
-        <Pause fill="currentColor" />
-      ) : (
-        <Play fill="currentColor" />
-      )}
+      <span className="play-glyph">
+        <AnimatePresence mode="popLayout" initial={false}>
+          <Motion.span key={player.loading ? "loading" : player.playing ? "pause" : "play"} {...iconSwap}>
+            {player.loading ? (
+              <LoaderCircle className="spin" />
+            ) : player.playing ? (
+              <Pause fill="currentColor" />
+            ) : (
+              <Play fill="currentColor" />
+            )}
+          </Motion.span>
+        </AnimatePresence>
+      </span>
     </IconButton>
+  );
+  return large ? <Magnetic strength={0.3}>{button}</Magnetic> : button;
+}
+
+// Its own presence boundary: the page switcher skips entrance states on first
+// load (initial={false}), which would leave nothing for the scroll reveal to play.
+function RevealSection(props) {
+  return (
+    <AnimatePresence>
+      <Motion.section {...revealSection} {...props} />
+    </AnimatePresence>
+  );
+}
+
+// A small waveform loader: five bars rise and fall in sequence (transform only).
+function Waveform() {
+  return (
+    <span className="waveform-loader" aria-hidden="true">
+      <i />
+      <i />
+      <i />
+      <i />
+      <i />
+    </span>
+  );
+}
+
+// Magnetic: leans toward a fine pointer on a spring and settles back when it leaves.
+function Magnetic({ children, strength = 0.22, limit = 10 }) {
+  const x = useSpring(0, MAGNET_SPRING);
+  const y = useSpring(0, MAGNET_SPRING);
+  const move = (event) => {
+    if (event.pointerType !== "mouse" || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    const box = event.currentTarget.getBoundingClientRect();
+    const clamp = (value) => Math.max(-limit, Math.min(limit, value));
+    x.set(clamp((event.clientX - box.left - box.width / 2) * strength));
+    y.set(clamp((event.clientY - box.top - box.height / 2) * strength));
+  };
+  const leave = () => {
+    x.set(0);
+    y.set(0);
+  };
+  return (
+    <Motion.span className="magnetic" style={{ x, y }} onPointerMove={move} onPointerLeave={leave}>
+      {children}
+    </Motion.span>
+  );
+}
+
+// Text generate: each word rises out of a soft blur, one after another. Its own
+// presence boundary lets it play on first load and whenever the words change.
+function RevealWords({ text }) {
+  const words = text.split(" ");
+  return (
+    <AnimatePresence mode="wait">
+      <Motion.span key={text} className="reveal-words" aria-hidden="true">
+        {words.map((word, i) => [
+          i > 0 ? " " : null,
+          <Motion.span
+            key={`${word}-${i}`}
+            className="reveal-word"
+            initial={{ opacity: 0, y: "0.35em", filter: "blur(10px)" }}
+            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+            exit={{ opacity: 0, filter: "blur(6px)", transition: { duration: 0.25 } }}
+            transition={{ duration: 0.85, ease: EASE, delay: 0.08 + i * 0.07 }}
+          >
+            {word}
+          </Motion.span>,
+        ])}
+      </Motion.span>
+    </AnimatePresence>
+  );
+}
+
+// A like pops the heart past full size and sends out a soft ring; unliking settles quietly.
+function LikeHeart({ liked, size = 24 }) {
+  const [previous, setPrevious] = useState(liked);
+  const [burst, setBurst] = useState(0);
+  if (previous !== liked) {
+    setPrevious(liked);
+    if (liked) setBurst((value) => value + 1);
+  }
+  return (
+    <span className="like-heart">
+      <Motion.span
+        key={burst}
+        className="like-glyph"
+        initial={burst ? { scale: 0.55 } : false}
+        animate={{ scale: 1 }}
+        transition={HEART_SPRING}
+      >
+        <Heart size={size} fill={liked ? "currentColor" : "none"} />
+      </Motion.span>
+      {burst > 0 && (
+        <Motion.span
+          key={`ring-${burst}`}
+          className="like-ring"
+          aria-hidden="true"
+          initial={{ scale: 0.4, opacity: 0.7 }}
+          animate={{ scale: 1.9, opacity: 0 }}
+          transition={{ duration: 0.65, ease: EASE }}
+        />
+      )}
+    </span>
   );
 }
 function Seek({ player }) {
@@ -1001,6 +1117,30 @@ export default function App() {
       controller.abort();
     };
   }, [query, searchRetry, searchType]);
+  // Spotlight: a soft light follows a fine pointer across cards (one delegated,
+  // frame-throttled listener that only writes two custom properties).
+  useEffect(() => {
+    if (!window.matchMedia?.("(hover: hover) and (pointer: fine)").matches) return;
+    let frame = 0;
+    let latest = null;
+    const paint = () => {
+      frame = 0;
+      const target = latest?.target?.closest?.(".spotlight");
+      if (!target) return;
+      const box = target.getBoundingClientRect();
+      target.style.setProperty("--spot-x", `${latest.clientX - box.left}px`);
+      target.style.setProperty("--spot-y", `${latest.clientY - box.top}px`);
+    };
+    const move = (event) => {
+      latest = event;
+      if (!frame) frame = requestAnimationFrame(paint);
+    };
+    document.addEventListener("pointermove", move, { passive: true });
+    return () => {
+      document.removeEventListener("pointermove", move);
+      cancelAnimationFrame(frame);
+    };
+  }, []);
   // Each screen starts at its top: opening the player or a page never inherits scroll.
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: "instant" });
@@ -1064,6 +1204,7 @@ export default function App() {
     });
   }, [tasteList]);
   const personalized = personalMix.length >= 5;
+  const headline = personalized ? `Your frequency, ${daypart() === "night" || daypart() === "evening" ? "tonight" : "today"}` : "Find your frequency";
   const featured = personalized ? personalMix.slice(0, 6) : starterPicks;
   const heroTrack =
     (immersive ? player.track : null) || featured[featureIndex] || featured[0];
@@ -1858,9 +1999,9 @@ export default function App() {
                   <div className="page-heading">
                     <div>
                       <p>{greeting(listenerName.trim())} {personalized ? "Here’s what your ears have been asking for." : "A little less noise, a little more music."}</p>
-                      <h1>
-                        {personalized ? `Your frequency, ${daypart() === "night" || daypart() === "evening" ? "tonight" : "today"}` : "Find your frequency"}
-                        <span>.</span>
+                      <h1 aria-label={`${headline}.`}>
+                        <RevealWords text={headline} />
+                        <span aria-hidden="true">.</span>
                       </h1>
                     </div>
                     <button
@@ -1873,7 +2014,7 @@ export default function App() {
                   </div>
                   <Motion.section
                     variants={sectionMotion}
-                    className="discovery-stage"
+                    className="discovery-stage spotlight"
                     aria-label="Featured music"
                   >
                     <div className="stage-aura" />
@@ -1885,6 +2026,7 @@ export default function App() {
                           </span>
                           <FluidText as="h2">{heroTrack.artist}</FluidText>
                           <FluidText as="p">{heroTrack.title}</FluidText>
+                          <Magnetic>
                           <button
                             className="primary-button"
                             onClick={() => play(heroTrack)}
@@ -1892,6 +2034,7 @@ export default function App() {
                             <Play size={16} fill="currentColor" />
                             Press play
                           </button>
+                          </Magnetic>
                           <span className="stage-caption">
                             An entirely different kind of listening.
                           </span>
@@ -1997,7 +2140,7 @@ export default function App() {
                     ].map(([title, subtitle, term, Icon], i) => (
                       <button
                         key={title}
-                        className={`mood-card mood-${i}`}
+                        className={`mood-card mood-${i} spotlight`}
                         onClick={() => {
                           setQuery(term);
                           navigate("search");
@@ -2015,7 +2158,7 @@ export default function App() {
                     ))}
                   </Motion.section>
                   {forYou.map(({ seed, tracks }) => (
-                    <Motion.section key={seed.id} variants={sectionMotion} className="music-section for-you">
+                    <RevealSection key={seed.id} className="music-section for-you">
                       <div className="section-heading">
                         <div>
                           <h2>{seed.id === nowSeed?.id ? `More like ${seed.title}` : `Because you listened to ${seed.title}`}</h2>
@@ -2027,8 +2170,8 @@ export default function App() {
                       </div>
                       <div className="shelf">
                         {tracks.map((track, i) => (
-                          <Motion.button key={track.id} {...listItem(i)} className="album-card" onClick={() => play(track, tracks.slice(i))}>
-                            <div className="album-image">
+                          <Motion.button key={track.id} variants={revealCard} className="album-card" onClick={() => play(track, tracks.slice(i))}>
+                            <div className="album-image spotlight">
                               <Cover track={track} />
                               <span className="album-play">
                                 <Play size={21} fill="currentColor" />
@@ -2039,9 +2182,9 @@ export default function App() {
                           </Motion.button>
                         ))}
                       </div>
-                    </Motion.section>
+                    </RevealSection>
                   ))}
-                  <Motion.section variants={sectionMotion} className="music-section">
+                  <RevealSection className="music-section">
                     <div className="section-heading">
                       <div>
                         <h2>{personalized ? "Made for you" : "Made for a good listen"}</h2>
@@ -2060,12 +2203,13 @@ export default function App() {
                     </div>
                     <div className="album-grid">
                       {madeForYou.map((track) => (
-                        <button
+                        <Motion.button
+                          variants={revealCard}
                           className="album-card"
                           key={track.id}
                           onClick={() => play(track)}
                         >
-                          <div className="album-image">
+                          <div className="album-image spotlight">
                             <Cover track={track} />
                             <span className="album-play">
                               <Play size={21} fill="currentColor" />
@@ -2073,12 +2217,12 @@ export default function App() {
                           </div>
                           <strong>{track.title}</strong>
                           <span>{track.artist}</span>
-                        </button>
+                        </Motion.button>
                       ))}
                     </div>
-                  </Motion.section>
+                  </RevealSection>
                   {repeatSongs.length > 0 && (
-                    <Motion.section variants={sectionMotion} className="music-section on-repeat">
+                    <RevealSection className="music-section on-repeat">
                       <div className="section-heading">
                         <div>
                           <h2>On repeat</h2>
@@ -2090,8 +2234,8 @@ export default function App() {
                       </div>
                       <div className="shelf">
                         {repeatSongs.map((track, i) => (
-                          <Motion.button key={track.id} {...listItem(i)} className="album-card" onClick={() => play(track, repeatSongs.slice(i))}>
-                            <div className="album-image">
+                          <Motion.button key={track.id} variants={revealCard} className="album-card" onClick={() => play(track, repeatSongs.slice(i))}>
+                            <div className="album-image spotlight">
                               <Cover track={track} />
                               <span className="album-play">
                                 <Play size={21} fill="currentColor" />
@@ -2102,10 +2246,10 @@ export default function App() {
                           </Motion.button>
                         ))}
                       </div>
-                    </Motion.section>
+                    </RevealSection>
                   )}
                   {yourArtists.length >= 2 && (
-                    <Motion.section variants={sectionMotion} className="music-section your-artists">
+                    <RevealSection className="music-section your-artists">
                       <div className="section-heading">
                         <div>
                           <h2>Your artists</h2>
@@ -2113,10 +2257,10 @@ export default function App() {
                         </div>
                       </div>
                       <div className="artist-row">
-                        {yourArtists.map((track, i) => (
+                        {yourArtists.map((track) => (
                           <Motion.button
                             key={track.artist}
-                            {...listItem(i)}
+                            variants={revealCard}
                             className="artist-card"
                             aria-label={`Music by ${track.artist}`}
                             onClick={() => {
@@ -2132,16 +2276,16 @@ export default function App() {
                           </Motion.button>
                         ))}
                       </div>
-                    </Motion.section>
+                    </RevealSection>
                   )}
                   {recent.length > 0 && (
-                    <Motion.section variants={sectionMotion} className="music-section">
+                    <RevealSection className="music-section">
                       <div className="section-heading">
                         <h2>Back to your favorites</h2>
                         <span className="muted">Recently played</span>
                       </div>
                       {trackRows(recent.slice(0, 5))}
-                    </Motion.section>
+                    </RevealSection>
                   )}
                   <footer className="browse-footer">
                     <Brand />
@@ -2273,10 +2417,7 @@ export default function App() {
                         className={currentFavorite ? "is-liked" : ""}
                         onClick={() => toggleFavorite(player.track)}
                       >
-                        <Heart
-                          size={20}
-                          fill={currentFavorite ? "currentColor" : "none"}
-                        />
+                        <LikeHeart size={20} liked={!!currentFavorite} />
                         {currentFavorite ? "Liked" : "Like"}
                       </button>
                       <button
@@ -2323,7 +2464,7 @@ export default function App() {
                     active={currentFavorite}
                     onClick={() => toggleFavorite(player.track)}
                   >
-                    <Heart fill={currentFavorite ? "currentColor" : "none"} />
+                    <LikeHeart liked={!!currentFavorite} />
                   </IconButton>
                 </div>
               </Motion.section>
@@ -2459,7 +2600,8 @@ export default function App() {
                     <DjPill player={player} onClick={() => setSheet("dj")} />
                   </div>
                   {player.recommendationsLoading && (
-                    <p className="queue-status" role="status">
+                    <p className="queue-status is-loading" role="status">
+                      <Waveform />
                       Finding the next good listen…
                     </p>
                   )}
