@@ -1,15 +1,15 @@
-import { parseLrc, parsePlus, parseTrack, parseTtml } from './lyrics-formats.js';
+import { decodeKrc, parseKrc, parseLrc, parsePlus, parseTrack, parseTtml } from './lyrics-formats.js';
 
-const HOSTS = new Set(['lyrics-api.boidu.dev','lyrics-api.binimum.org','lyrics-storage.binimum.org','lyricsplus.binimum.org','lyricsplus-seven.vercel.app','api-lyrics.simpmusic.org','lrclib.net']);
+const HOSTS = new Set(['lyrics-api.boidu.dev','lyrics-api.binimum.org','lyrics-storage.binimum.org','lyricsplus.binimum.org','lyricsplus-seven.vercel.app','api-lyrics.simpmusic.org','lrclib.net','krcs.kugou.com','lyrics.kugou.com','music.163.com']);
 export function allowedLyricsUrl(value) {
   try {
     const url = new URL(value);
     return url.protocol === 'https:' && !url.username && !url.password && !url.port && HOSTS.has(url.hostname);
   } catch { return false; }
 }
-async function get(url, signal, json = true) {
+async function get(url, signal, json = true, extraHeaders = {}) {
   if (!allowedLyricsUrl(url)) throw new Error('Disallowed lyrics upstream');
-  const response = await fetch(url, { signal, redirect: 'error', headers: { Accept: json ? 'application/json' : 'application/ttml+xml, application/xml, text/xml', 'User-Agent': 'AuroraPlayer/1.0' } });
+  const response = await fetch(url, { signal, redirect: 'error', headers: { Accept: json ? 'application/json' : 'application/ttml+xml, application/xml, text/xml', 'User-Agent': 'AuroraPlayer/1.0', ...extraHeaders } });
   if (!response.ok) throw new Error(`Lyrics upstream ${response.status}`);
   if (Number(response.headers.get('content-length')) > 500000) throw new Error('Lyrics response too large');
   const reader = response.body.getReader();
@@ -70,6 +70,31 @@ async function lrclibSearch(track, signal) {
   return hit ? parseTrack(hit,'LRCLib',track.duration) : null;
 }
 
+const near = (seconds, track) => !track.duration || Math.abs(seconds - track.duration) <= 3;
+// KuGou: word-timed KRC first, its LRC otherwise; matched on title, artist and duration.
+async function kugou(track, signal) {
+  const data = await get(urlFor('https://krcs.kugou.com/search', { ver: 1, man: 'yes', client: 'mobi', keyword: `${track.artist} - ${track.title}`, duration: Math.round((track.duration || 0) * 1000) }), signal);
+  const hit = (Array.isArray(data.candidates) ? data.candidates : []).find(item => item && match(item.song) === match(track.title) && match(item.singer).includes(match(track.artist)) && near(Number(item.duration) / 1000, track));
+  if (!hit || !/^\d+$/.test(String(hit.id)) || !/^[\w]+$/.test(String(hit.accesskey))) return null;
+  for (const fmt of ['krc', 'lrc']) {
+    try {
+      const body = await get(urlFor('https://lyrics.kugou.com/download', { ver: 1, client: 'pc', id: hit.id, accesskey: hit.accesskey, fmt, charset: 'utf8' }), signal);
+      const result = fmt === 'krc' ? parseKrc(decodeKrc(body.content), 'KuGou', track.duration) : parseLrc(Buffer.from(String(body.content || ''), 'base64').toString('utf8'), 'KuGou', track.duration);
+      if (result) return result;
+    } catch { if (signal.aborted) return null; }
+  }
+  return null;
+}
+// NetEase Cloud Music: strong coverage for Asian and many international releases.
+async function netease(track, signal) {
+  const headers = { Referer: 'https://music.163.com/' };
+  const data = await get(urlFor('https://music.163.com/api/search/get', { s: `${track.title} ${track.artist}`, type: 1, limit: 10 }), signal, true, headers);
+  const hit = (data.result?.songs || []).find(item => item && match(item.name) === match(track.title) && (item.artists || []).some(artist => match(track.artist).includes(match(artist.name))) && near(Number(item.duration) / 1000, track));
+  if (!hit || !Number.isSafeInteger(hit.id)) return null;
+  const lyric = await get(urlFor('https://music.163.com/api/song/lyric', { id: hit.id, lv: 1, kv: 1, tv: -1 }), signal, true, headers);
+  return parseLrc(lyric.lrc?.lyric, 'NetEase', track.duration);
+}
+
 // Catalogue decorations that lyric databases usually omit.
 export function cleanTrack(track) {
   const title = String(track.title || '')
@@ -101,13 +126,13 @@ function race(track, providers, signal) {
 export async function fetchLyrics(track) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(),6500);
-  const providers = [simp,better,bini,plus,(t,s) => better(t,s,true),lrclib,lrclibSearch];
+  const providers = [simp,better,bini,plus,(t,s) => better(t,s,true),lrclib,lrclibSearch,kugou,netease];
   try {
     const best = await race(track, providers, controller.signal);
     const cleaned = rank(best) < 2 && !controller.signal.aborted ? cleanTrack(track) : null;
     if (!cleaned) return best;
     // The video-bound SimpMusic lookup already ran; retry the text-matched providers.
-    const retry = await race(cleaned, [better,bini,plus,lrclib,lrclibSearch], controller.signal);
+    const retry = await race(cleaned, [better,bini,plus,lrclib,lrclibSearch,kugou,netease], controller.signal);
     return rank(retry) > rank(best) ? retry : best;
   } finally {
     clearTimeout(timeout);
