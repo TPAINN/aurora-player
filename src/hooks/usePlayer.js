@@ -2,8 +2,9 @@ import { startTransition, useCallback, useEffect, useRef, useState } from 'react
 import { buildApiUrl } from '../lib/api';
 import { getSimilarTracks, getTrackTempo } from '../lib/catalog';
 import { pickSeed, recordListening, tasteFilter } from '../lib/listening';
-import { analyzeLocalTempo, beatAlignedEntry, blendCurve, chooseEntry, equalPower, glideRate, phaseNudge, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
+import { adaptiveBlend, analyzeLocalTempo, beatAlignedEntry, blendCurve, vocalSpans, chooseEntry, equalPower, glideRate, phaseNudge, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
 import { playSweep } from '../lib/sweep';
+import { nextPlayable } from '../lib/queue';
 import { detectLanguage } from '../../shared/language.js';
 import { artworkAt } from '../lib/artwork';
 import { probeFile } from '../lib/audio-format';
@@ -60,7 +61,8 @@ const PRIME_LEAD = 90;
 const START_LEAD = .35;
 const START_TIMEOUT = 3000;
 // Blend lengths offered: 5–10 s, the range a DJ would ride two songs together.
-const BLENDS = [5, 8, 10];
+const BLENDS = ['auto', 5, 8, 10];
+const readBlend = value => (value === 'auto' ? 'auto' : BLENDS.includes(Number(value)) ? Number(value) : 'auto');
 // Some embeds only play whole 0.05 speed steps; tempo plans then use that grid.
 const RATE_STEP = .05;
 const snapRate = (value, quantum) => Number((Math.round(value / quantum) * quantum).toFixed(3));
@@ -83,6 +85,8 @@ export function usePlayer() {
   const [lyricsOffset, setLyricsOffset] = useState(0);
   // 1 when the listener moves forward (next, blend, pick), -1 for Previous: drives the change animation.
   const [direction, setDirection] = useState(1);
+  // How the current song arrived: 'blend' (a DJ transition) or 'skip' (a direct change).
+  const [changeKind, setChangeKind] = useState('skip');
   const travel = useRef(1);
   const [djEnabled, updateDjEnabled] = useState(() => readPreference('aurora-dj', false));
   const [liveDjChanges, updateLiveDjChanges] = useState(() => readPreference('aurora-live-dj', false));
@@ -91,7 +95,7 @@ export function usePlayer() {
   // Whether this YouTube embed honours fine playback rates: learnt once, by asking and reading back.
   const rateSupport = useRef('unknown');
   const [surround, updateSurround] = useState(() => readPreference('aurora-surround', true));
-  const [blendLength, updateBlendLength] = useState(() => { try { return BLENDS.includes(Number(localStorage.getItem('aurora-blend'))) ? Number(localStorage.getItem('aurora-blend')) : 8; } catch { return 8; } });
+  const [blendLength, updateBlendLength] = useState(() => { try { return readBlend(localStorage.getItem('aurora-blend')); } catch { return 'auto'; } });
   const [sourceInfo, setSourceInfo] = useState(null);
   const [djState, setDjState] = useState({ ...IDLE, mode: 'online' });
   const announced = useRef({ ...IDLE, mode: 'online' });
@@ -125,6 +129,21 @@ export function usePlayer() {
   const listening = useRef({ seconds: 0, last: 0 });
   const actions = useRef({});
   const current = useRef({ track: null, queue: [], shuffle: false, repeat: 'off', volume: 80 });
+  // Songs with no playable upload are skipped instead of stopping the music.
+  const unplayable = useRef(new Set());
+  const [unavailable, setUnavailable] = useState(() => new Set());
+  const shufflePick = useRef(null);
+  // Other uploads the resolver found, tried in turn when YouTube refuses one.
+  const alternates = useRef(new Map());
+  const resolving = useRef(new Map());
+  const autoSkips = useRef(0);
+  const [notice, setNotice] = useState('');
+  // Notices (a song skipped) show for a few seconds, then clear themselves.
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(''), 5000);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   useEffect(() => { current.current = { track, queue, shuffle, repeat, volume, lyrics }; }, [track, queue, shuffle, repeat, volume, lyrics]);
   useEffect(() => {
@@ -152,6 +171,56 @@ export function usePlayer() {
     announced.current = state;
     setDjState(state);
   }, [mixProgress]);
+  // The song that plays after `afterId`, skipping unplayable songs; shuffle picks ahead.
+  const upcoming = useCallback((state = current.current, afterId = state.track?.id, wrap = state.repeat === 'all') => {
+    const result = nextPlayable(state.queue, afterId, { shuffle: state.shuffle, wrap, unplayable: unplayable.current, pick: shufflePick.current });
+    shufflePick.current = result.pick;
+    return result.item;
+  }, []);
+  const markUnplayable = useCallback(item => {
+    if (!item?.id || unplayable.current.has(item.id)) return;
+    unplayable.current.add(item.id);
+    setUnavailable(new Set(unplayable.current));
+    if (item.id !== current.current.track?.id) setNotice(`“${item.title}” isn’t available to play here, so it will be skipped.`);
+  }, []);
+  // One resolver for playback and preparation: shared in-flight requests, and the
+  // runner-up uploads kept as alternates.
+  const resolveSource = useCallback((selected, signal) => {
+    if (selected.videoId) return Promise.resolve({ videoId: selected.videoId, source: { kind: 'youtube', official: false, video: true, channel: selected.artist } });
+    const cached = prepared.current.get(selected.id);
+    if (cached?.videoId) return Promise.resolve(cached);
+    if (resolving.current.has(selected.id)) return resolving.current.get(selected.id);
+    const request = (async () => {
+      const response = await fetch(buildApiUrl('/api/video/search', { artist: selected.artist, title: selected.title, duration: selected.duration, variant: selected.variant }), { signal });
+      if (!response.ok) throw new Error('The music source could not connect. Please retry.');
+      const data = await response.json();
+      if (!data.videoId) { markUnplayable(selected); return { videoId: null }; }
+      const entry = { ...(prepared.current.get(selected.id) || {}), videoId: data.videoId, source: describeSource(data) };
+      alternates.current.set(selected.id, (data.candidates || []).map(candidate => candidate.videoId).filter(id => id && id !== data.videoId).slice(0, 4));
+      prepared.current.set(selected.id, entry);
+      while (prepared.current.size > 12) prepared.current.delete(prepared.current.keys().next().value);
+      return entry;
+    })().finally(() => resolving.current.delete(selected.id));
+    resolving.current.set(selected.id, request);
+    return request;
+  }, [markUnplayable]);
+  // Intent prefetch: a song the listener is about to choose resolves ahead of the tap.
+  const warm = useCallback(track => {
+    if (!track || track.localUrl || track.videoId || prepared.current.get(track.id)?.videoId || unplayable.current.has(track.id)) return;
+    void resolveSource(track).catch(() => {});
+  }, [resolveSource]);
+  // The YouTube player script loads while the app is idle, not on the first tap.
+  useEffect(() => {
+    const idle = window.requestIdleCallback || (callback => setTimeout(callback, 1200));
+    const handle = idle(() => { void loadYoutubeApi().catch(() => {}); });
+    return () => (window.cancelIdleCallback || clearTimeout)(handle);
+  }, []);
+  // The blend length to aim for: a fixed choice, or Auto — the longest the music
+  // leaves room for (5–10 s), measured from the songs themselves.
+  const blendTarget = useCallback(spans => {
+    const choice = preferences.current.blendLength;
+    return choice === 'auto' ? adaptiveBlend(spans) : choice;
+  }, []);
   const setIdle = useCallback((label = IDLE.label) => {
     if (mounted.current) announce({ ...IDLE, label, mode: source.current === 'local' ? 'local' : 'online', progress: 0 });
   }, [announce]);
@@ -248,7 +317,7 @@ export function usePlayer() {
   const setTransitionFx = useCallback(value => { preferences.current.transitionFx = Boolean(value); updateTransitionFx(Boolean(value)); savePreference('aurora-dj-fx', Boolean(value)); }, []);
   const setLiveDjChanges = useCallback(value => { preferences.current.liveDjChanges = Boolean(value); updateLiveDjChanges(Boolean(value)); savePreference('aurora-live-dj', Boolean(value)); cancelMix(); }, [cancelMix]);
   const setBlendLength = useCallback(value => {
-    const seconds = BLENDS.includes(Number(value)) ? Number(value) : 8;
+    const seconds = readBlend(value);
     preferences.current.blendLength = seconds; updateBlendLength(seconds);
     try { localStorage.setItem('aurora-blend', String(seconds)); } catch { /* Preference lasts this session. */ }
     cancelMix(); attemptedMix.current = '';
@@ -292,9 +361,11 @@ export function usePlayer() {
             if (event.data === 1) setError('');
             if (event.data === 0 && event.target.getDuration() > 0 && event.target.getCurrentTime() >= event.target.getDuration() - 1) actions.current.ended?.();
           },
+          // YouTube refuses some uploads (removed, private, embedding disabled): try the
+          // runner-up uploads before giving up on the song.
           onError: event => {
-            if (event.target !== player.current) { if (mix.current?.kind === 'online-blend' && mix.current.stage !== 'mixing') mix.current.stage = 'failed'; return; }
-            if (source.current === 'youtube') { setLoading(false); setPlaying(false); setError('This video cannot play here. Try another track or open an audio file.'); }
+            if (event.target !== player.current) { actions.current.standbyError?.(); return; }
+            if (source.current === 'youtube') actions.current.activeError?.();
           },
         },
       });
@@ -327,8 +398,10 @@ export function usePlayer() {
     return lyricsRequest;
   }, [fetchLyrics]);
 
-  const loadTrack = useCallback(async (selected, list, fadeIn = false) => {
+  const loadTrack = useCallback(async (selected, list, fadeIn = false, auto = false) => {
     if (!selected) return;
+    // A song chosen by hand (or retried) gets a fresh chance to resolve.
+    if (!auto && unplayable.current.delete(selected.id)) setUnavailable(new Set(unplayable.current));
     flushListening();
     cancelMix();
     attemptedMix.current = '';
@@ -346,7 +419,7 @@ export function usePlayer() {
     current.current.queue = nextQueue;
     updateQueue(nextQueue); setQueueIndex(nextQueue.findIndex(item => item.id === selected.id));
     setDjWindow(null);
-    setDirection(travel.current); travel.current = 1;
+    setDirection(travel.current); travel.current = 1; setChangeKind('skip');
     setTrack(selected); clock.set(0); setDuration(selected.duration || 0); setPlaying(false); setLoading(true); setError(''); setLyrics(null); setLyricsOffset(0);
     setLyricsLoading(!selected.localUrl);
     const cached = prepared.current.get(selected.id);
@@ -360,16 +433,21 @@ export function usePlayer() {
         audio.current.volume = graph ? 1 : current.current.volume / 100;
         await audio.current.play();
       } else {
-        let videoId = selected.videoId || cached?.videoId;
-        let source = selected.videoId ? { kind: 'youtube', official: false, video: true, channel: selected.artist } : cached?.source;
-        if (!videoId) {
-          const response = await fetch(buildApiUrl('/api/video/search', { artist: selected.artist, title: selected.title, duration: selected.duration, variant: selected.variant }), { signal: controller.signal });
-          if (!response.ok) throw new Error('The music source could not connect. Please retry.');
-          const data = await response.json(); videoId = data.videoId; source = describeSource(data);
-        }
+        const { videoId, source } = await resolveSource(selected, controller.signal);
         if (mounted.current && token === generation.current) setSourceInfo(source || { kind: 'youtube', official: false });
         if (!mounted.current || token !== generation.current) return;
-        if (!videoId) throw new Error('No playable video found for this track. Try another song.');
+        if (!videoId) {
+          markUnplayable(selected);
+          // Moving through the queue never stops on a song without a playable upload.
+          if (auto && autoSkips.current < 5) {
+            autoSkips.current++;
+            setNotice(`“${selected.title}” isn’t available to play, so Aurora moved on.`);
+            const following = upcoming(current.current, selected.id, true);
+            if (following && following.id !== selected.id) { setLoading(false); void actions.current.load?.(following, current.current.queue, fadeIn, true); return; }
+          }
+          throw new Error(`“${selected.title}” isn’t available to play here. Try another song.`);
+        }
+        autoSkips.current = 0;
         if (!selected.videoId && !cached?.lyrics) {
           // SimpMusic needs the resolved YouTube ID; preserve a stronger initial result.
           void lyricsRequest.then(async initial => {
@@ -398,7 +476,48 @@ export function usePlayer() {
     } catch (err) {
       if (mounted.current && token === generation.current && err.name !== 'AbortError') { setError(err instanceof TypeError ? 'Could not reach the music service. Check your connection and retry.' : err.message || 'Playback failed.'); setPlaying(false); }
     } finally { if (mounted.current && token === generation.current) setLoading(false); }
-  }, [ensurePlayer, cancelMix, ensureAudioGraph, flushListening, showLyricsFor, fetchLyrics, announce, clock]);
+  }, [ensurePlayer, cancelMix, ensureAudioGraph, flushListening, showLyricsFor, fetchLyrics, announce, clock, resolveSource, markUnplayable, upcoming]);
+  useEffect(() => { actions.current.load = loadTrack; }, [loadTrack]);
+  const activeError = useCallback(() => {
+    const selected = current.current.track;
+    const spare = selected && alternates.current.get(selected.id);
+    if (spare?.length && player.current) {
+      const videoId = spare.shift();
+      prepared.current.set(selected.id, { ...(prepared.current.get(selected.id) || {}), videoId });
+      activeVideo.current = videoId;
+      player.current.loadVideoById(videoId);
+      return;
+    }
+    markUnplayable(selected);
+    setLoading(false); setPlaying(false);
+    const following = upcoming(current.current, selected?.id, true);
+    if (following && autoSkips.current < 5) {
+      autoSkips.current++;
+      setNotice(`“${selected?.title}” can’t play here, so Aurora moved on.`);
+      void loadTrack(following, current.current.queue, false, true);
+      return;
+    }
+    setError('This song can’t play here. Try another track or open an audio file.');
+  }, [markUnplayable, upcoming, loadTrack]);
+  const standbyError = useCallback(() => {
+    const blend = mix.current;
+    if (blend?.kind !== 'online-blend' || blend.stage === 'mixing' || blend.stage === 'recover') return;
+    const spare = alternates.current.get(blend.selected.id);
+    const standby = yt.current[blend.index].player;
+    if (spare?.length && standby && blend.stage !== 'starting') {
+      // Prepare the same song from another upload; the blend keeps its cue.
+      const videoId = spare.shift();
+      prepared.current.set(blend.selected.id, { ...(prepared.current.get(blend.selected.id) || {}), videoId });
+      Object.assign(blend, { videoId, stage: 'priming' });
+      standby.mute(); standby.setVolume(0); standby.loadVideoById(videoId, blend.entry || 0);
+      return;
+    }
+    // No upload of this song plays: drop it, and the next tick prepares the song after it.
+    markUnplayable(blend.selected);
+    cancelMix();
+    attemptedMix.current = '';
+  }, [markUnplayable, cancelMix]);
+  useEffect(() => { actions.current.activeError = activeError; actions.current.standbyError = standbyError; }, [activeError, standbyError]);
 
   // Metadata, lyrics and queue position follow the incoming audible track from its first beat.
   const commitIncoming = useCallback((selected, { duration: length = selected.duration || 0, position = 0, videoId } = {}) => {
@@ -412,7 +531,7 @@ export function usePlayer() {
     // The hand-over re-renders title, lyrics and queue while both songs play: as a
     // transition it yields to the browser instead of blocking a frame of the blend.
     startTransition(() => {
-      setDjWindow(null); setDirection(1);
+      setDjWindow(null); setDirection(1); setChangeKind('blend');
       setTrack(selected); setDuration(length);
       setQueueIndex(current.current.queue.findIndex(item => item.id === selected.id));
       // Pre-loaded lyrics appear at once; no "finding the words" flash mid-blend.
@@ -461,14 +580,14 @@ export function usePlayer() {
     if (ended === true) flushListening();
     if (!state.queue.length) return;
     if (ended === true && state.repeat === 'one') { seek(0); if (source.current === 'local') audio.current?.play().catch(err => setError(err.message)); else player.current?.playVideo(); return; }
-    const index = state.queue.findIndex(item => item.id === (pendingNext.current ?? state.track?.id));
-    let nextIndex = index + 1;
-    if (state.shuffle && state.queue.length > 1) nextIndex = (index + 1 + Math.floor(Math.random() * (state.queue.length - 1))) % state.queue.length;
-    if (nextIndex >= state.queue.length) {
-      if (state.repeat === 'all' || ended !== true) nextIndex = 0;
-      else { if (mix.current) cancelMix(); setPlaying(false); if (preferences.current.autoplay && !state.track?.localUrl) { waitingForRadio.current = true; recommendedFor.current = null; setRadioRetry(value => value + 1); } return; }
+    // Automatic advances stop at the end (radio tops up); a manual Next wraps around.
+    const selected = upcoming(state, pendingNext.current ?? state.track?.id, state.repeat === 'all' || ended !== true);
+    if (!selected) {
+      if (mix.current) cancelMix();
+      setPlaying(false);
+      if (ended === true && preferences.current.autoplay && !state.track?.localUrl) { waitingForRadio.current = true; recommendedFor.current = null; setRadioRetry(value => value + 1); }
+      return;
     }
-    const selected = state.queue[nextIndex];
     const isPlaying = source.current === 'local' ? !audio.current?.paused : player.current?.getPlayerState?.() === 1;
     if (ended !== true && preferences.current.djEnabled && preferences.current.liveDjChanges && isPlaying && selected.id !== state.track?.id) {
       const blend = mix.current;
@@ -485,13 +604,13 @@ export function usePlayer() {
         manualChange.current = setInterval(() => {
           const progress = Math.min(1, (performance.now() - started) / 700);
           player.current?.setVolume?.(state.volume * Math.cos(progress * Math.PI / 2));
-          if (progress >= 1) { clearInterval(manualChange.current); manualChange.current = null; void loadTrack(selected, state.queue, true); }
+          if (progress >= 1) { clearInterval(manualChange.current); manualChange.current = null; void loadTrack(selected, state.queue, true, true); }
         }, 25);
         return;
       }
     }
-    loadTrack(selected, state.queue, ended === true && preferences.current.djEnabled);
-  }, [loadTrack, seek, cancelMix, flushListening, beginOnlineBlend]);
+    loadTrack(selected, state.queue, ended === true && preferences.current.djEnabled, true);
+  }, [loadTrack, seek, cancelMix, flushListening, beginOnlineBlend, upcoming]);
   const previous = useCallback(() => {
     const seconds = source.current === 'local' ? audio.current?.currentTime : player.current?.getCurrentTime?.();
     if (seconds > 3) { seek(0); return; }
@@ -600,8 +719,8 @@ export function usePlayer() {
   // Warm the next local decoder, or resolve the online source, lyrics and catalogue tempo early.
   // A source cache reduces network work; the iframe still controls its own buffering.
   useEffect(() => {
-    if (!track || shuffle || repeat === 'one') return;
-    const selected = queue[queueIndex + 1] || (repeat === 'all' ? queue[0] : null);
+    if (!track || repeat === 'one') return;
+    const selected = upcoming({ track, queue, shuffle, repeat });
     if (!selected || selected.id === track.id) return;
     const controller = new AbortController();
     const learnTempo = async item => {
@@ -621,27 +740,18 @@ export function usePlayer() {
       if (inactive && !mix.current && inactive.element.src !== selected.localUrl) {
         inactive.element.preload = 'auto'; inactive.element.src = selected.localUrl; inactive.element.load();
       }
-    } else if (!prepared.current.has(selected.id)) {
+    } else if (!prepared.current.get(selected.id)?.lyrics) {
       void (async () => {
         try {
-          let videoId = selected.videoId;
-          let source = videoId ? { kind: 'youtube', official: false, video: true, channel: selected.artist } : null;
-          if (!videoId) {
-            const response = await fetch(buildApiUrl('/api/video/search', { artist: selected.artist, title: selected.title, duration: selected.duration, variant: selected.variant }), { signal: controller.signal });
-            if (!response.ok) return;
-            const data = await response.json();
-            videoId = data.videoId; source = describeSource(data);
-          }
-          if (!videoId || controller.signal.aborted) return;
-          const entry = { videoId, source }; prepared.current.set(selected.id, entry);
-          while (prepared.current.size > 3) prepared.current.delete(prepared.current.keys().next().value);
-          const response = await fetch(buildApiUrl('/api/lyrics/structured', { artist: selected.artist, title: selected.title, album: selected.album, duration: selected.duration, videoId }), { signal: controller.signal });
-          if (response.ok && !controller.signal.aborted) entry.lyrics = await response.json();
+          const entry = await resolveSource(selected, controller.signal);
+          if (!entry?.videoId || controller.signal.aborted) return;
+          const response = await fetch(buildApiUrl('/api/lyrics/structured', { artist: selected.artist, title: selected.title, album: selected.album, duration: selected.duration, videoId: entry.videoId }), { signal: controller.signal });
+          if (response.ok && !controller.signal.aborted) prepared.current.set(selected.id, { ...(prepared.current.get(selected.id) || entry), lyrics: await response.json() });
         } catch { /* Normal playback resolves again if speculative preparation fails. */ }
       })();
     }
     return () => controller.abort();
-  }, [track, queue, queueIndex, shuffle, repeat, djEnabled, ensurePlayer]);
+  }, [track, queue, queueIndex, shuffle, repeat, djEnabled, ensurePlayer, upcoming, resolveSource, unavailable]);
 
   const startLocalMix = useCallback(async (selected, remaining, overrideSeconds) => {
     const graph = ensureAudioGraph();
@@ -654,7 +764,7 @@ export function usePlayer() {
     mix.current = token;
     const from = analysis.current.get(current.current.track?.id);
     const to = analysis.current.get(selected.id);
-    const plan = planTransition(from?.outro, to?.intro, preferences.current.blendLength);
+    const plan = planTransition(from?.outro, to?.intro, blendTarget({ outroSpan: from ? from.duration - from.mixStart : Infinity }));
     try {
       if (incoming.element.src !== selected.localUrl) incoming.element.src = selected.localUrl;
       incoming.element.playbackRate = plan.inRate; incoming.element.preservesPitch = true;
@@ -715,7 +825,7 @@ export function usePlayer() {
       if (mix.current === token) { cancelMix(); if (overrideSeconds) void loadTrack(selected, current.current.queue); }
       // The original track continues; normal advance retries the next file.
     }
-  }, [ensureAudioGraph, cancelMix, loadTrack, commitIncoming, announce]);
+  }, [ensureAudioGraph, cancelMix, loadTrack, commitIncoming, announce, blendTarget]);
 
   const tickLocalMix = useCallback(activeMix => {
     if (activeMix.starting) return;
@@ -842,13 +952,13 @@ export function usePlayer() {
       if (progress >= 1) cancelMix();
       return;
     }
-    if (state.repeat === 'one' || state.shuffle) {
+    if (state.repeat === 'one') {
       setDjWindow(previous => previous === null ? previous : null);
       if (activeMix) cancelMix();
       return;
     }
-    const index = state.queue.findIndex(item => item.id === state.track?.id);
-    const selected = state.queue[index + 1] || (state.repeat === 'all' ? state.queue[0] : null);
+    // The next playable song (shuffle picks it ahead), prepared and blended the same way.
+    const selected = upcoming(state);
     if (!selected || selected.id === state.track?.id) {
       setDjWindow(previous => previous === null ? previous : null);
       if (activeMix) cancelMix();
@@ -860,7 +970,7 @@ export function usePlayer() {
       if (!element || element.paused || !selected.localUrl || !Number.isFinite(element.duration)) return;
       const remaining = element.duration - element.currentTime;
       const from = analysis.current.get(state.track?.id);
-      const plan = planTransition(from?.outro, analysis.current.get(selected.id)?.intro, preferences.current.blendLength);
+      const plan = planTransition(from?.outro, analysis.current.get(selected.id)?.intro, blendTarget({ outroSpan: from ? from.duration - from.mixStart : Infinity }));
       const start = Math.min(element.duration - plan.seconds, from?.mixStart ?? element.duration - plan.seconds);
       const rampStart = start - plan.rampSeconds;
       const standby = decks.current.find(deck => deck.element !== element);
@@ -882,8 +992,14 @@ export function usePlayer() {
     const length = active.getDuration();
     const position = active.getCurrentTime();
     const videoId = prepared.current.get(selected.id)?.videoId || selected.videoId;
+    // A source that failed to resolve earlier (for example offline) is retried in time.
+    if (!videoId && !selected.localUrl && !resolving.current.has(selected.id)) void resolveSource(selected).catch(() => {});
     const tempoA = dj ? tempos.current.get(state.track?.id) : null, tempoB = dj ? tempos.current.get(selected.id) : null;
-    const tempoPlan = options => planTransition(tempoA ? { bpm: tempoA, confidence: 1 } : null, tempoB ? { bpm: tempoB, confidence: 1 } : null, preferences.current.blendLength, options);
+    // Auto: fit the blend between song A's last sung word and song B's first.
+    const timed = lyricsData => (lyricsData?.sync && lyricsData.sync !== 'plain' ? lyricsData.lines : []);
+    const spans = vocalSpans({ duration: length, outLines: timed(state.lyrics), inLines: timed(prepared.current.get(selected.id)?.lyrics), entry: 0 });
+    const target = blendTarget({ outroSpan: spans.outroSpan - 2.5, introSpan: spans.introSpan });
+    const tempoPlan = options => planTransition(tempoA ? { bpm: tempoA, confidence: 1 } : null, tempoB ? { bpm: tempoB, confidence: 1 } : null, target, options);
     let plan = tempoPlan();
     const rates = active.getAvailablePlaybackRates?.();
     // Only glide when this embed actually plays the rates we need: it lists them,
@@ -950,7 +1066,7 @@ export function usePlayer() {
       active.setVolume(state.volume * Math.cos(progress * Math.PI / 2));
       announce({ phase: 'mixing', label: 'Gentle fade out', mode: 'online', progress });
     }
-  }, [cancelMix, startLocalMix, tickLocalMix, tickOnlineBlend, ensurePlayer, beginOnlineBlend, announce, mixProgress, audioContext]);
+  }, [cancelMix, startLocalMix, tickLocalMix, tickOnlineBlend, ensurePlayer, beginOnlineBlend, announce, mixProgress, audioContext, upcoming, resolveSource, blendTarget]);
 
   useEffect(() => { actions.current.manualMix = startLocalMix; }, [startLocalMix]);
   useEffect(() => { actions.current.ended = () => next(true); }, [next]);
@@ -1006,6 +1122,6 @@ export function usePlayer() {
     return Number.isFinite(value) ? value : 0;
   }, []);
 
-  return { direction, transitionFx, setTransitionFx, blendLength, setBlendLength, sourceInfo, surround, setSurround, audioOutput, track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, setLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime };
+  return { warm, notice, unavailable, changeKind, direction, transitionFx, setTransitionFx, blendLength, setBlendLength, sourceInfo, surround, setSurround, audioOutput, track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, setLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime };
 }
 export default usePlayer;

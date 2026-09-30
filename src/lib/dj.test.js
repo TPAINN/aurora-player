@@ -274,3 +274,20 @@ test('song A leaves when its last full-energy section ends, not deep in the fade
   const point = findMixPoint(samples, rate, 8);
   assert.ok(point >= 53 && point <= 56, String(point));
 });
+
+test('auto blend length prefers the longest blend the music leaves room for', async () => {
+  const { adaptiveBlend } = await import('./dj.js');
+  assert.equal(adaptiveBlend({}), 10, 'nothing in the way: the longest');
+  assert.equal(adaptiveBlend({ outroSpan: 7.2 }), 7.2, 'song A starts singing again 7.2 s before its end');
+  assert.equal(adaptiveBlend({ outroSpan: 30, introSpan: 6.5 }), 6.5, 'song B sings after 6.5 s');
+  assert.equal(adaptiveBlend({ outroSpan: 2, introSpan: 3 }), 5, 'never shorter than five seconds');
+  assert.equal(adaptiveBlend({ outroSpan: Infinity, introSpan: NaN }), 10);
+});
+
+test('online outro and intro spans come from genuinely timed lyrics only', async () => {
+  const { vocalSpans } = await import('./dj.js');
+  const a = [{ time: 150, words: [{ start: 150, end: 151 }, { start: 151, end: 190.5 - 0 }] }];
+  assert.deepEqual(vocalSpans({ duration: 200, outLines: a, inLines: [{ time: 8.5 }], entry: 0 }), { outroSpan: 9.5, introSpan: 8.5 });
+  assert.deepEqual(vocalSpans({ duration: 200, outLines: [], inLines: [], entry: 0 }), { outroSpan: Infinity, introSpan: Infinity });
+  assert.deepEqual(vocalSpans({ duration: 200, outLines: [], inLines: [{ time: 40 }], entry: 25 }), { outroSpan: Infinity, introSpan: 15 });
+});
