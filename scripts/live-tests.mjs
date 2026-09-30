@@ -588,6 +588,20 @@ if (!only || only === 'H') {
   });
   await check('H', '5 · "On repeat" lists the songs you keep finishing', async () => { const text = await page.textContent('.on-repeat'); ok(text.includes('Night Drive') && text.includes('Slow Tide'), text.slice(0, 120)); ok(text.indexOf('Night Drive') < text.indexOf('Slow Tide'), 'most played first'); });
   await check('H', '6 · "Your artists" shows the voices you come back to', async () => ok(await page.locator('.your-artists .artist-card').count() >= 2));
+  await check('H', 'sections below the fold reveal as they scroll into view', async () => {
+    const before = await page.evaluate(() => Number(getComputedStyle(document.querySelector('.your-artists')).opacity));
+    await page.evaluate(() => document.querySelector('.your-artists').scrollIntoView({ block: 'center' })); await wait(1400);
+    const after = await page.evaluate(() => Number(getComputedStyle(document.querySelector('.your-artists')).opacity));
+    ok(before < .5 && after > .99, `before ${before}, after ${after}`);
+    await page.evaluate(() => window.scrollTo(0, 0)); await wait(400);
+  });
+  await check('H', 'a soft spotlight follows the pointer across mood cards', async () => {
+    const box = await page.locator('.mood-card >> nth=1').boundingBox();
+    await page.mouse.move(box.x + 30, box.y + 20); await page.mouse.move(box.x + 60, box.y + 30, { steps: 4 }); await wait(200);
+    const x = await page.evaluate(() => document.querySelectorAll('.mood-card')[1].style.getPropertyValue('--spot-x'));
+    ok(/^\d+(\.\d+)?px$/.test(x) && Math.abs(parseFloat(x) - 60) < 3, x);
+  });
+  await check('H', 'the headline rises word by word and stays readable', async () => ok((await page.getAttribute('.page-heading h1', 'aria-label')).startsWith('Your frequency') && await page.locator('.page-heading .reveal-word').count() >= 3));
   await check('H', '7 · the heading speaks to you once home is personal', async () => ok(/Your frequency, (today|tonight)/.test(await page.textContent('.page-heading h1')), await page.textContent('.page-heading h1')));
   await check('H', '8 · a playing song leads home with "More like …"', async () => {
     await startQueue(page); await wait(800);
@@ -600,6 +614,19 @@ if (!only || only === 'H') {
     ok(await page.locator('.seek-track .peak-mark').count() >= 1, 'no refrain marks');
     await page.click('.immersive-track-meta .best-part-chip'); await wait(900);
     const t = await playerTime(page); ok(t >= 24 && t <= 27, String(t));
+  });
+  await check('H', 'liking a song pops the heart with a ring', async () => {
+    await page.click('.immersive-track-meta button[aria-label="Like track"]'); await wait(120);
+    ok(await page.locator('.immersive-track-meta .like-ring').count() === 1);
+    await wait(700); await page.click('.immersive-track-meta button[aria-label="Unlike track"]'); await wait(400);
+  });
+  await check('H', 'play and pause morph instead of cutting', async () => {
+    await page.click('.dock-transport button[aria-label="Pause"]');
+    const during = await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => resolve(document.querySelectorAll('.dock-transport .play-glyph > span').length))));
+    await wait(600);
+    const settled = await page.locator('.dock-transport .play-glyph > span').count();
+    ok(during === 2 && settled === 1, `during ${during}, settled ${settled}`);
+    await page.click('.dock-transport button[aria-label="Play"]'); await wait(500);
   });
   await check('H', '10 · blends last 5–10 s: Tight, Natural (default) and Long', async () => {
     await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(800);
