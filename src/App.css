@@ -2755,10 +2755,10 @@ button {
   transform: scale(0.965);
   transform-origin: left center;
   transition:
-    opacity 0.95s var(--ease-soft),
-    transform 1.1s var(--ease-soft),
-    color 0.95s var(--ease-soft),
-    filter 1.1s var(--ease-soft);
+    opacity 1.3s var(--ease-soft),
+    transform 1.5s var(--ease-soft),
+    color 1.3s var(--ease-soft),
+    filter 1.5s var(--ease-soft);
   filter: blur(0.35px);
 }
 .lyric-line.upcoming {
@@ -2799,20 +2799,41 @@ button {
   color: inherit;
 }
 .lyric-word.singing {
-  transform: translateY(-2px);
+  transform: translateY(-2.5px);
 }
+/* A wide, soft leading edge: the fill glows into each word instead of cutting. */
 .word-fill {
   --fill: 0;
   clip-path: none;
-  -webkit-mask-image: linear-gradient(90deg, #000 calc(var(--fill) * 135% - 35%), transparent calc(var(--fill) * 135%));
-  mask-image: linear-gradient(90deg, #000 calc(var(--fill) * 135% - 35%), transparent calc(var(--fill) * 135%));
-  transition: text-shadow 1.2s var(--ease-soft);
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(var(--fill) * 150% - 50%), transparent calc(var(--fill) * 150%));
+  mask-image: linear-gradient(90deg, #000 calc(var(--fill) * 150% - 50%), transparent calc(var(--fill) * 150%));
+  transition: text-shadow 1.4s var(--ease-soft);
+}
+.lyric-line.current .lyric-word.sung .word-fill {
+  text-shadow: 0 0 12px #ffffff26;
 }
 .lyric-word.singing .word-fill {
-  text-shadow: 0 0 18px #ffffff40;
+  text-shadow:
+    0 0 14px #ffffff5c,
+    0 0 30px #c3ebcf29;
 }
-.lyric-line:not(.current) .word-fill {
+/* Held notes swell in glow as they are sung. */
+.lyric-word.held.singing .word-fill {
+  text-shadow:
+    0 0 calc(12px + var(--fill) * 14px) rgb(255 255 255 / calc(0.3 + var(--fill) * 0.3)),
+    0 0 calc(24px + var(--fill) * 22px) rgb(195 235 207 / calc(0.12 + var(--fill) * 0.2));
+}
+.lyric-line:not(.current):not(.is-singing) .word-fill {
   text-shadow: none;
+}
+/* Backing vocals sit a step behind the lead line. */
+.lyric-word.backing {
+  opacity: 0.72;
+}
+/* A line whose backing vocals run past the next line's start keeps filling, visibly. */
+.lyric-line.past.is-singing {
+  opacity: 0.66;
+  filter: none;
 }
 .lyric-interlude {
   display: flex;
@@ -3822,4 +3843,34 @@ button {
   .immersive-player {
     min-height: 0;
   }
+}
+
+/* Peak moments (refrain, held notes): the backdrop slowly opens up and brightens.
+   Only scale and opacity move, so the blurred artwork is never re-rasterised. */
+.player-art-background {
+  transition:
+    scale 3.4s var(--ease-soft),
+    opacity 3.4s var(--ease-soft);
+}
+.player-art-background.is-peak {
+  scale: 1.06;
+}
+.player-veil {
+  transition: opacity 3.4s var(--ease-soft);
+}
+.player-veil.is-peak {
+  opacity: 0.84;
+}
+@media (min-width: 761px) {
+  .immersive-player:not(.with-video) .player-art-background.is-peak {
+    opacity: 0.66;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .player-art-background.is-peak {
+    scale: none;
+  }
+}
+.now-playing-art > .fading-cover {
+  background: #0d1110;
 }

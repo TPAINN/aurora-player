@@ -1,7 +1,7 @@
 // DJ transition engine. Everything here is pure and measured: no tempo is
 // better than an invented tempo, and no cue is guessed from nothing.
 
-// Beyond ±8% time-stretching becomes audible even with pitch preservation.
+// Beyond ±8% per song time-stretching becomes audible even with pitch preservation.
 export const MAX_TEMPO_SHIFT = .08;
 const TARGET_OVERLAP = 5;
 
@@ -52,24 +52,46 @@ function octaveTarget(outBpm, inBpm) {
   return [inBpm, inBpm / 2, inBpm * 2].reduce((best, bpm) => Math.abs(bpm / outBpm - 1) < Math.abs(best / outBpm - 1) ? bpm : best);
 }
 
+// Gaps above this share the stretch: song A speeds (or slows) halfway, song B
+// enters at that same tempo and eases back to its own after the blend.
+const SPLIT_ABOVE = .04;
+
 export function planTransition(outro, intro, target = TARGET_OVERLAP) {
   const known = outro?.bpm > 0 && intro?.bpm > 0;
   const targetBpm = known ? octaveTarget(outro.bpm, intro.bpm) : null;
   const ratio = targetBpm ? targetBpm / outro.bpm : 1;
-  const matched = Boolean(known && outro.confidence >= .7 && intro.confidence >= .7 && Math.abs(ratio - 1) <= MAX_TEMPO_SHIFT + 1e-9);
-  const beatBpm = matched ? targetBpm : outro?.confidence >= .7 && outro.bpm > 0 ? outro.bpm : null;
-  // Whole bars near five seconds: a tempo-sized overlap, not a claimed downbeat grid.
+  const split = Math.abs(ratio - 1) > SPLIT_ABOVE;
+  const matched = Boolean(known && outro.confidence >= .7 && intro.confidence >= .7 && Math.abs(ratio - 1) <= (split ? 2 * MAX_TEMPO_SHIFT : MAX_TEMPO_SHIFT) + 1e-9);
+  const rate = matched ? (split ? Math.sqrt(ratio) : ratio) : 1;
+  const inRate = matched && split ? 1 / Math.sqrt(ratio) : 1;
+  const blendBpm = matched ? outro.bpm * rate : outro?.confidence >= .7 && outro.bpm > 0 ? outro.bpm : null;
+  // Whole bars at the shared blend tempo, near the preferred length.
   let seconds = target;
-  if (beatBpm) {
-    const bar = 240 / beatBpm;
+  if (blendBpm) {
+    const bar = 240 / blendBpm;
     let bars = Math.max(1, Math.round(target / bar));
     while (bars * bar > target * 1.4 && bars > 1) bars--;
     while (bars * bar < target * .8) bars++;
     seconds = bars * bar;
   }
-  // Glide song A toward song B at roughly one percent per second before the blend.
-  const rampSeconds = matched && ratio !== 1 ? Math.min(8, Math.max(3, Math.abs(ratio - 1) * 120)) : 0;
-  return { rate: matched ? ratio : 1, matched, seconds, rampSeconds, targetBpm: matched ? targetBpm : null, beatSeconds: beatBpm ? 60 / beatBpm : null };
+  // Roughly one percent per second, never rushed and never dragged out.
+  const easeFor = value => value !== 1 ? Math.min(8, Math.max(3, Math.abs(value - 1) * 120)) : 0;
+  return { rate, inRate, matched, seconds, rampSeconds: easeFor(rate), recoverSeconds: easeFor(inRate), targetBpm: matched ? targetBpm : null, blendBpm, beatSeconds: blendBpm ? 60 / blendBpm : null };
+}
+
+// Song B's rate after the blend: from the shared tempo back to its own.
+export function recoverRate(elapsed, seconds, inRate) {
+  if (!(seconds > 0)) return 1;
+  return inRate + (1 - inRate) * smoothstep(elapsed / seconds);
+}
+
+// DJ-style overlap: the incoming song rises under a held outgoing song, then the
+// outgoing one gives way. Both follow equal-power quarter-sine laws on offset,
+// smoothed windows, so combined power never dips below one (no hole mid-blend).
+export function blendCurve(progress) {
+  const p = Math.max(0, Math.min(1, progress));
+  const incoming = smoothstep(p / .8), outgoing = smoothstep((p - .2) / .8);
+  return [Math.cos(outgoing * Math.PI / 2), Math.sin(incoming * Math.PI / 2)];
 }
 
 export function equalPower(progress) {
@@ -95,10 +117,11 @@ export function snapToBeat(time, grid) {
 }
 
 // Start the incoming deck so its next beat sounds when the outgoing deck's next beat does.
-export function beatAlignedEntry({ introStart, inGrid, outPosition, outGrid, rate = 1 }) {
+export function beatAlignedEntry({ introStart, inGrid, outPosition, outGrid, rate = 1, inRate = 1 }) {
   if (!inGrid?.period || !outGrid?.period) return introStart;
   const nextOut = outGrid.origin + Math.ceil((outPosition - outGrid.origin) / outGrid.period) * outGrid.period;
-  const wait = (nextOut - outPosition) / Math.max(.5, rate);
+  // Wall-clock wait for song A's next beat, expressed in song B's media time.
+  const wait = (nextOut - outPosition) / Math.max(.5, rate) * inRate;
   let beat = inGrid.origin + Math.ceil((introStart - inGrid.origin) / inGrid.period - 1e-9) * inGrid.period;
   while (beat - wait < Math.max(0, introStart - .15)) beat += inGrid.period;
   return beat - wait;
@@ -181,10 +204,10 @@ export function findIntroStart(samples, sampleRate) {
 
 // Jog-wheel style correction: a small, bounded rate offset that walks the incoming
 // beat onto the outgoing beat. Only applied when both decks share a beat period.
-export function phaseNudge({ inPosition, inGrid, outPosition, outGrid, outRate = 1 }) {
+export function phaseNudge({ inPosition, inGrid, outPosition, outGrid, outRate = 1, inRate = 1 }) {
   if (!inGrid?.period || !outGrid?.period) return 1;
   const outPeriod = outGrid.period / Math.max(.5, outRate);
-  if (Math.abs(inGrid.period / outPeriod - 1) > .03) return 1;
+  if (Math.abs(inGrid.period / Math.max(.5, inRate) / outPeriod - 1) > .03) return 1;
   const phase = (position, grid) => (((position - grid.origin) / grid.period) % 1 + 1) % 1;
   let error = phase(inPosition, inGrid) - phase(outPosition, outGrid);
   if (error >= .5) error -= 1;

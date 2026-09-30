@@ -40,3 +40,11 @@ export const crossfade = {
   animate: { opacity: 1, scale: 1, transition: { duration: 0.9, ease: EASE } },
   exit: { opacity: 0, scale: 0.985, transition: { duration: 0.7, ease: EASE_IN_OUT } },
 };
+
+// Now-playing artwork on Next/Previous: the new cover glides in from the side the
+// listener is travelling toward while the old one drifts out and softens.
+export const coverSwap = {
+  initial: direction => ({ opacity: 0, x: `${direction * 9}%`, scale: 0.94, filter: 'blur(12px)' }),
+  animate: { opacity: 1, x: '0%', scale: 1, filter: 'blur(0px)', transition: { duration: 1.05, ease: EASE, opacity: { duration: 0.8, ease: EASE } } },
+  exit: direction => ({ opacity: 0, x: `${direction * -7}%`, scale: 0.96, filter: 'blur(10px)', transition: { duration: 0.8, ease: EASE_IN_OUT } }),
+};

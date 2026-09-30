@@ -48,6 +48,7 @@ import { requestedVariant } from "../shared/audio-variants.js";
 import { artworkAt, artworkSrcSet } from "./lib/artwork";
 import { qualityLabel } from "./lib/audio-format";
 import { homeSeeds, recordLike, tasteFilter, topArtists } from "./lib/listening";
+import { isPeakAt, lineSpan, peakMoments, splitBackingVocals } from "./lib/lyrics";
 import Welcome from "./components/Welcome";
 import { shouldWelcome } from "./lib/welcome";
 import FluidText from "./components/FluidText";
@@ -57,6 +58,7 @@ import {
   EASE_IN_OUT,
   PILL_SPRING,
   SHEET_SPRING,
+  coverSwap,
   crossfade,
   listItem,
   page as pageMotion,
@@ -113,10 +115,12 @@ function Cover({ track, className = "", eager = false }) {
   );
 }
 // Artwork that crossfades when the track changes instead of swapping abruptly.
-function FadingCover({ track, className = "", eager = false, size = 600 }) {
+function FadingCover({ track, className = "", eager = false, size = 600, direction = null }) {
+  // A direction turns the crossfade into a travelling swap (the now-playing cover).
+  const motion = direction ? { variants: coverSwap, custom: direction, initial: "initial", animate: "animate", exit: "exit" } : crossfade;
   return (
     <div className={`cover fading-cover ${className}`}>
-      <AnimatePresence initial={false}>
+      <AnimatePresence initial={false} custom={direction}>
         {track?.artwork ? (
           <Motion.img
             key={track.artwork}
@@ -124,7 +128,7 @@ function FadingCover({ track, className = "", eager = false, size = 600 }) {
             alt={`${track.title} artwork`}
             loading={eager ? "eager" : "lazy"}
             decoding="async"
-            {...crossfade}
+            {...motion}
           />
         ) : (
           <Music2 key="placeholder" aria-hidden="true" />
@@ -306,7 +310,9 @@ function Transport({ player, large = false }) {
 
 // Lines are emphasised slightly before they are sung so the long transition
 // settles as the voice arrives; the word fill itself stays on genuine timing.
-const LINE_LEAD = 0.35;
+const LINE_LEAD = 0.5;
+// Words held at least this long glow as they fill.
+const HELD_WORD = 1;
 const lineEnd = (line) => line?.words?.at(-1)?.end ?? line?.end;
 
 function Interlude({ clock, offset, start, end }) {
@@ -332,6 +338,37 @@ function Interlude({ clock, offset, start, end }) {
   );
 }
 
+// The artwork backdrop opens up (a slow zoom and lift) through the song's peaks:
+// its refrain and long held notes, read from genuinely timed lyrics only.
+function ArtBackdrop({ player }) {
+  const peaks = useMemo(
+    () => (player.lyrics?.sync && player.lyrics.sync !== "plain" ? peakMoments(player.lyrics.lines) : []),
+    [player.lyrics],
+  );
+  const offset = player.lyricsOffset || 0;
+  const peak = useStore(player.clock, (value) => peaks.length > 0 && isPeakAt(peaks, value + offset));
+  const artwork = player.track?.artwork;
+  return (
+    <>
+      <div className={`player-art-background ${peak ? "is-peak" : ""}`}>
+        <AnimatePresence initial={false}>
+          {artwork && (
+            <Motion.div
+              key={artwork}
+              className="art-bg-layer"
+              style={{ backgroundImage: `url("${artworkAt(artwork, 1000)}")` }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1, transition: { duration: 1.6, ease: EASE } }}
+              exit={{ opacity: 0, transition: { duration: 1.4, ease: EASE_IN_OUT } }}
+            />
+          )}
+        </AnimatePresence>
+      </div>
+      <div className={`player-veil ${peak ? "is-peak" : ""}`} />
+    </>
+  );
+}
+
 function Lyrics({ player }) {
   const reduce = useReducedMotion();
   // State, not a ref: the list mounts after the loading state finishes exiting,
@@ -347,6 +384,7 @@ function Lyrics({ player }) {
         .split(/\r?\n/)
         .filter((line) => line.trim())
         .map((text) => ({ text })), [player.lyrics]);
+  const backing = useMemo(() => lines.map((line) => line.words?.length ? splitBackingVocals(line.words.map((word) => word.text)) : null), [lines]);
   const offset = player.lyricsOffset || 0;
   const timed = player.lyrics?.sync !== "plain";
   const lead = reduce ? 0 : LINE_LEAD;
@@ -388,8 +426,8 @@ function Lyrics({ player }) {
     }
     // A long, eased glide replaces the browser's short smooth-scroll jump.
     scrolling.current = animate(box.scrollTop, top, {
-      duration: 1.15,
-      ease: [0.33, 0, 0.15, 1],
+      duration: 1.6,
+      ease: [0.45, 0.05, 0.1, 1],
       onUpdate: (value) => {
         box.scrollTop = value;
       },
@@ -410,24 +448,27 @@ function Lyrics({ player }) {
   const { getPlaybackTime, lyricsOffset = 0, lyricsLoading } = player;
   useEffect(() => {
     if (!mountedList || !timed || lyricsLoading) return;
-    const words = Array.from(mountedList.querySelectorAll(".lyric-line"),
-      (line) => Array.from(line.querySelectorAll(".word-fill")));
+    const nodes = Array.from(mountedList.querySelectorAll(".lyric-line"));
+    const words = nodes.map((line) => Array.from(line.querySelectorAll(".word-fill")));
+    // Each line is painted for as long as any of its words is sung: backing
+    // vocals often run on after the next line has started.
+    const spans = lines.map(lineSpan);
     let frame;
     let previousTime = null;
-    let previousLine = -1;
     const paint = () => {
       const time = getPlaybackTime() + lyricsOffset;
       if (time !== previousTime) {
-        let currentLine = -1;
-        for (let i = 0; i < lines.length && lines[i].time <= time; i++) currentLine = i;
         const reset = previousTime === null || time < previousTime || time - previousTime > 0.5;
-        const start = reset ? 0 : Math.max(0, Math.min(previousLine, currentLine));
-        const end = reset ? lines.length - 1 : Math.min(lines.length - 1, currentLine + 1);
-        for (let i = start; i <= end; i++) {
-          words[i]?.forEach((fill, index) => {
+        for (let i = 0; i < lines.length; i++) {
+          const span = spans[i];
+          if (!words[i]?.length) continue;
+          if (!reset && (time < span.start - 0.25 || previousTime > span.end + 0.15)) continue;
+          const singing = time >= span.start - 0.1 && time <= span.end + 0.1;
+          if (nodes[i].classList.contains("is-singing") !== singing) nodes[i].classList.toggle("is-singing", singing);
+          words[i].forEach((fill, index) => {
             const word = lines[i].words[index];
-            // A feathered wipe leads the onset by at most 80ms and finishes on the word's end.
-            const lead = reduce ? 0 : Math.min(0.08, (word.end - word.start) * 0.2);
+            // A feathered wipe leads the onset by at most 90ms and finishes on the word's end.
+            const lead = reduce ? 0 : Math.min(0.09, (word.end - word.start) * 0.2);
             const progress = reduce
               ? Number(time >= word.start)
               : Math.min(1, Math.max(0, (time - word.start + lead) / Math.max(0.001, word.end - word.start + lead)));
@@ -447,7 +488,6 @@ function Lyrics({ player }) {
           });
         }
         previousTime = time;
-        previousLine = currentLine;
       }
       frame = requestAnimationFrame(paint);
     };
@@ -526,7 +566,10 @@ function Lyrics({ player }) {
               >
                 {line.words?.length
                   ? line.words.map((word, wi) => (
-                      <span key={wi} className="lyric-word">
+                      <span
+                        key={wi}
+                        className={`lyric-word${backing[i]?.[wi] ? " backing" : ""}${word.end - word.start >= HELD_WORD ? " held" : ""}`}
+                      >
                         <span>{word.text}</span>
                         <span aria-hidden="true" className="word-fill">
                           {word.text}
@@ -1989,21 +2032,7 @@ export default function App() {
                 className={`immersive-player ${showLyrics ? "with-lyrics" : ""} ${video ? "with-video" : ""}`}
                 aria-label="Now playing"
               >
-                <div className="player-art-background">
-                  <AnimatePresence initial={false}>
-                    {player.track.artwork && (
-                      <Motion.div
-                        key={player.track.artwork}
-                        className="art-bg-layer"
-                        style={{ backgroundImage: `url("${artworkAt(player.track.artwork, 1000)}")` }}
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1, transition: { duration: 1.4, ease: EASE } }}
-                        exit={{ opacity: 0, transition: { duration: 1.2, ease: EASE_IN_OUT } }}
-                      />
-                    )}
-                  </AnimatePresence>
-                </div>
-                <div className="player-veil" />
+                <ArtBackdrop player={player} />
                 <header className="player-topbar">
                   <IconButton
                     label="Back to music"
@@ -2058,7 +2087,7 @@ export default function App() {
                       else if (info.offset.x > 65) player.previous();
                     }}
                   >
-                    <FadingCover track={player.track} eager size={1200} />
+                    <FadingCover track={player.track} eager size={1200} direction={player.direction} />
                     <span className="art-caption">
                       <span
                         className={
@@ -2371,6 +2400,21 @@ export default function App() {
                   onClick={() =>
                     player.setLiveDjChanges?.(!player.liveDjChanges)
                   }
+                >
+                  <span />
+                </button>
+              </div>
+              <div className="setting-row">
+                <div>
+                  <strong>Hollow sweep</strong>
+                  <p>A deep, echoing sweep over online blends, whose audio YouTube keeps unfiltered.</p>
+                </div>
+                <button
+                  role="switch"
+                  aria-label="Hollow sweep"
+                  aria-checked={!!player.transitionFx}
+                  className="setting-switch"
+                  onClick={() => player.setTransitionFx?.(!player.transitionFx)}
                 >
                   <span />
                 </button>

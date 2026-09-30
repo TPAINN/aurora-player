@@ -2,7 +2,8 @@ import { startTransition, useCallback, useEffect, useRef, useState } from 'react
 import { buildApiUrl } from '../lib/api';
 import { getSimilarTracks, getTrackTempo } from '../lib/catalog';
 import { pickSeed, recordListening, tasteFilter } from '../lib/listening';
-import { analyzeLocalTempo, beatAlignedEntry, chooseEntry, equalPower, glideRate, phaseNudge, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, smoothstep } from '../lib/dj';
+import { analyzeLocalTempo, beatAlignedEntry, blendCurve, chooseEntry, equalPower, glideRate, phaseNudge, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
+import { playSweep } from '../lib/sweep';
 import { detectLanguage } from '../../shared/language.js';
 import { artworkAt } from '../lib/artwork';
 import { probeFile } from '../lib/audio-format';
@@ -75,9 +76,15 @@ export function usePlayer() {
   const [lyrics, setLyrics] = useState(null);
   const [lyricsLoading, setLyricsLoading] = useState(false);
   const [lyricsOffset, setLyricsOffset] = useState(0);
+  // 1 when the listener moves forward (next, blend, pick), -1 for Previous: drives the change animation.
+  const [direction, setDirection] = useState(1);
+  const travel = useRef(1);
   const [djEnabled, updateDjEnabled] = useState(() => readPreference('aurora-dj', false));
   const [liveDjChanges, updateLiveDjChanges] = useState(() => readPreference('aurora-live-dj', false));
   const [autoplay, updateAutoplay] = useState(() => readPreference('aurora-autoplay', true));
+  const [transitionFx, updateTransitionFx] = useState(() => readPreference('aurora-dj-fx', true));
+  // Whether this YouTube embed honours fine playback rates: learnt once, by asking and reading back.
+  const rateSupport = useRef('unknown');
   const [surround, updateSurround] = useState(() => readPreference('aurora-surround', true));
   const [blendLength, updateBlendLength] = useState(() => { try { return [3, 5, 8].includes(Number(localStorage.getItem('aurora-blend'))) ? Number(localStorage.getItem('aurora-blend')) : 5; } catch { return 5; } });
   const [sourceInfo, setSourceInfo] = useState(null);
@@ -97,7 +104,7 @@ export function usePlayer() {
   const mix = useRef(null);
   const analysis = useRef(new Map());
   const attemptedMix = useRef('');
-  const preferences = useRef({ djEnabled, autoplay, liveDjChanges, surround, blendLength });
+  const preferences = useRef({ djEnabled, autoplay, liveDjChanges, surround, blendLength, transitionFx });
   const manualChange = useRef(null);
   const pendingNext = useRef(null);
   const player = useRef(null);
@@ -150,6 +157,8 @@ export function usePlayer() {
     if (manualChange.current) { clearInterval(manualChange.current); manualChange.current = null; }
     const activeMix = mix.current;
     mix.current = null;
+    activeMix?.stopSweep?.();
+    if (activeMix?.frame) cancelAnimationFrame(activeMix.frame);
     for (const deck of decks.current) {
       // Media elements in refs are imperative resources, not React state.
       // eslint-disable-next-line react-hooks/immutability
@@ -158,7 +167,7 @@ export function usePlayer() {
       if (deck.gain) {
         const now = context.current.currentTime;
         const active = deck.element === audio.current;
-        for (const [param, value] of [[deck.gain.gain, active ? current.current.volume / 100 : 0], [deck.highpass.frequency, 20], [deck.lowpass.frequency, 20000], [deck.echoSend.gain, 0]]) {
+        for (const [param, value] of [[deck.gain.gain, active ? current.current.volume / 100 : 0], [deck.highpass.frequency, 20], [deck.lowpass.frequency, 20000], [deck.lowpass.Q, .8], [deck.echoSend.gain, 0]]) {
           param.cancelScheduledValues(now); param.setValueAtTime(value, now);
         }
         // Back to the direct route with a short, click-free handover.
@@ -169,7 +178,7 @@ export function usePlayer() {
     }
     const standby = yt.current[standbyIndex()].player;
     if (activeMix?.kind === 'online-blend') {
-      if (activeMix.stage === 'mixing') activeMix.outgoing?.pauseVideo?.();
+      if (activeMix.stage === 'mixing' || activeMix.stage === 'recover') activeMix.outgoing?.pauseVideo?.();
       else { standby?.pauseVideo?.(); standby?.mute?.(); }
     }
     player.current?.setPlaybackRate?.(1);
@@ -222,7 +231,16 @@ export function usePlayer() {
     return graph;
   }, []);
 
+  // The shared context alone (online blends only need it for the synthesized sweep).
+  const audioContext = useCallback(() => {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return null;
+    if (!context.current) context.current = new AudioContext({ latencyHint: 'playback' });
+    if (context.current.state !== 'running') void context.current.resume().catch(() => {});
+    return context.current;
+  }, []);
   const setDjEnabled = useCallback(value => { preferences.current.djEnabled = Boolean(value); updateDjEnabled(Boolean(value)); savePreference('aurora-dj', Boolean(value)); cancelMix(); attemptedMix.current = ''; }, [cancelMix]);
+  const setTransitionFx = useCallback(value => { preferences.current.transitionFx = Boolean(value); updateTransitionFx(Boolean(value)); savePreference('aurora-dj-fx', Boolean(value)); }, []);
   const setLiveDjChanges = useCallback(value => { preferences.current.liveDjChanges = Boolean(value); updateLiveDjChanges(Boolean(value)); savePreference('aurora-live-dj', Boolean(value)); cancelMix(); }, [cancelMix]);
   const setBlendLength = useCallback(value => {
     const seconds = [3, 5, 8].includes(Number(value)) ? Number(value) : 5;
@@ -323,6 +341,7 @@ export function usePlayer() {
     current.current.queue = nextQueue;
     updateQueue(nextQueue); setQueueIndex(nextQueue.findIndex(item => item.id === selected.id));
     setDjWindow(null);
+    setDirection(travel.current); travel.current = 1;
     setTrack(selected); clock.set(0); setDuration(selected.duration || 0); setPlaying(false); setLoading(true); setError(''); setLyrics(null); setLyricsOffset(0);
     setLyricsLoading(!selected.localUrl);
     const cached = prepared.current.get(selected.id);
@@ -388,7 +407,7 @@ export function usePlayer() {
     // The hand-over re-renders title, lyrics and queue while both songs play: as a
     // transition it yields to the browser instead of blocking a frame of the blend.
     startTransition(() => {
-      setDjWindow(null);
+      setDjWindow(null); setDirection(1);
       setTrack(selected); setDuration(length);
       setQueueIndex(current.current.queue.findIndex(item => item.id === selected.id));
       // Pre-loaded lyrics appear at once; no "finding the words" flash mid-blend.
@@ -421,11 +440,16 @@ export function usePlayer() {
   const beginOnlineBlend = useCallback((blend, seconds) => {
     const incoming = yt.current[blend.index].player;
     if (!incoming) return false;
-    incoming.setVolume(0); incoming.unMute?.(); incoming.playVideo();
+    incoming.setVolume(0); incoming.unMute?.();
+    // Song B starts at the shared tempo when the tempos meet in the middle.
+    blend.inRate = blend.verified && blend.plan?.inRate ? blend.plan.inRate : 1;
+    incoming.setPlaybackRate?.(blend.inRate);
+    incoming.playVideo();
+    if (preferences.current.djEnabled && preferences.current.transitionFx) audioContext();
     Object.assign(blend, { stage: 'starting', requested: performance.now(), seconds: seconds || blend.seconds });
     if (preferences.current.djEnabled) announce(previous => ({ ...previous, phase: 'mixing', label: 'Starting the next song', mode: 'online', progress: 0, fromBpm: blend.verified ? previous.fromBpm : undefined, toBpm: blend.verified ? previous.toBpm : undefined }));
     return true;
-  }, [announce]);
+  }, [announce, audioContext]);
 
   const next = useCallback((ended = false) => {
     const state = current.current;
@@ -469,6 +493,7 @@ export function usePlayer() {
     const state = current.current;
     if (!state.queue.length) return;
     const index = state.queue.findIndex(item => item.id === state.track?.id);
+    travel.current = -1;
     loadTrack(state.queue[(index - 1 + state.queue.length) % state.queue.length], state.queue);
   }, [loadTrack, seek]);
   const setVolume = useCallback(value => {
@@ -627,12 +652,12 @@ export function usePlayer() {
     const plan = planTransition(from?.outro, to?.intro, preferences.current.blendLength);
     try {
       if (incoming.element.src !== selected.localUrl) incoming.element.src = selected.localUrl;
-      incoming.element.playbackRate = 1; incoming.element.preservesPitch = true;
+      incoming.element.playbackRate = plan.inRate; incoming.element.preservesPitch = true;
       incoming.gain.gain.setValueAtTime(0, graph.currentTime);
       // Land the incoming first beat on the outgoing grid; a later nudge absorbs play() latency.
       // Song B enters at the section that best continues song A's exit energy, on its beat grid.
       const entry = chooseEntry({ levels: to?.levels, introStart: to?.introStart || 0, grid: to?.intro?.grid, targetLevel: from?.exitLevel });
-      incoming.element.currentTime = beatAlignedEntry({ introStart: entry, inGrid: to?.intro?.grid, outPosition: outgoing.element.currentTime, outGrid: from?.outro?.grid, rate: outgoing.element.playbackRate });
+      incoming.element.currentTime = beatAlignedEntry({ introStart: entry, inGrid: to?.intro?.grid, outPosition: outgoing.element.currentTime, outGrid: from?.outro?.grid, rate: outgoing.element.playbackRate, inRate: plan.inRate });
       await incoming.element.play();
       if (mix.current !== token) { incoming.element.pause(); return; }
       const seconds = Math.min(overrideSeconds || plan.seconds, Math.max(.5, remaining / Math.max(1, plan.rate)));
@@ -651,23 +676,33 @@ export function usePlayer() {
         deck.dry.gain.cancelScheduledValues(now); deck.dry.gain.setTargetAtTime(0, now, .015);
         deck.wet.gain.cancelScheduledValues(now); deck.wet.gain.setTargetAtTime(1, now, .015);
       }
-      // Hollow: the outgoing band narrows toward the mids and echoes out; the incoming opens up.
+      // Hollow and deep: the outgoing band narrows toward a resonant mid band and
+      // echoes out. Bass swap: song B enters without its low end, and on the beat
+      // at the middle of the blend the low end moves from song A to song B, so the
+      // two kick drums and bass lines never stack.
+      const mid = now + seconds / 2, swap = Math.max(.12, Math.min(.6, plan.beatSeconds || .25));
       outgoing.delay.delayTime.setValueAtTime(Math.min(1.5, (plan.beatSeconds || .5) * .75), now);
       outgoing.highpass.frequency.setValueAtTime(20, now);
-      outgoing.highpass.frequency.exponentialRampToValueAtTime(650, now + seconds);
+      outgoing.highpass.frequency.exponentialRampToValueAtTime(90, mid);
+      outgoing.highpass.frequency.exponentialRampToValueAtTime(380, mid + swap);
+      outgoing.highpass.frequency.exponentialRampToValueAtTime(850, now + seconds);
       outgoing.lowpass.frequency.setValueAtTime(20000, now);
-      outgoing.lowpass.frequency.exponentialRampToValueAtTime(3200, now + seconds);
+      outgoing.lowpass.frequency.exponentialRampToValueAtTime(5200, mid);
+      outgoing.lowpass.frequency.exponentialRampToValueAtTime(1200, now + seconds);
+      outgoing.lowpass.Q.setValueAtTime(.8, now);
+      outgoing.lowpass.Q.linearRampToValueAtTime(4, now + seconds);
       outgoing.echoSend.gain.setValueAtTime(0, now);
-      outgoing.echoSend.gain.linearRampToValueAtTime(.45 * volume, now + seconds * .6);
+      outgoing.echoSend.gain.linearRampToValueAtTime(.5 * volume, now + seconds * .65);
       outgoing.echoSend.gain.linearRampToValueAtTime(0, now + seconds * 1.1);
-      incoming.highpass.frequency.setValueAtTime(500, now);
-      incoming.highpass.frequency.exponentialRampToValueAtTime(20, now + seconds);
-      incoming.lowpass.frequency.setValueAtTime(4000, now);
+      incoming.highpass.frequency.setValueAtTime(320, now);
+      incoming.highpass.frequency.setValueAtTime(320, mid);
+      incoming.highpass.frequency.exponentialRampToValueAtTime(20, mid + swap);
+      incoming.lowpass.frequency.setValueAtTime(6000, now);
       incoming.lowpass.frequency.exponentialRampToValueAtTime(20000, now + seconds);
       Object.assign(token, { starting: false, started: now, seconds, plan, from, to, startRate: outgoing.element.playbackRate });
       audio.current = incoming.element;
       commitIncoming(selected, { duration: Number.isFinite(incoming.element.duration) ? incoming.element.duration : 0, position: incoming.element.currentTime });
-      announce({ phase: 'mixing', label: plan.matched ? 'Tempo matched · hollow blend' : 'Hollow blend', mode: 'local', progress: 0, entryAt: incoming.element.currentTime, fromBpm: plan.matched ? from.outro.bpm : undefined, toBpm: plan.targetBpm ?? undefined, effects: ['hollow', 'echo', ...(plan.matched ? ['tempo'] : [])] });
+      announce({ phase: 'mixing', label: plan.matched ? 'Tempo matched · hollow blend' : 'Hollow blend', mode: 'local', progress: 0, entryAt: incoming.element.currentTime, fromBpm: plan.matched ? from.outro.bpm : undefined, toBpm: plan.targetBpm ?? undefined, effects: ['hollow', 'echo', 'bass swap', ...(plan.matched ? ['tempo'] : [])] });
     } catch {
       if (mix.current === token) { cancelMix(); if (overrideSeconds) void loadTrack(selected, current.current.queue); }
       // The original track continues; normal advance retries the next file.
@@ -679,16 +714,25 @@ export function usePlayer() {
     const elapsed = context.current.currentTime - activeMix.started;
     const progress = Math.min(1, elapsed / activeMix.seconds);
     const { outgoing, incoming, plan, from, to } = activeMix;
-    // Finish any glide the pre-roll could not complete (for example after a late seek).
-    outgoing.element.playbackRate = activeMix.startRate + (plan.rate - activeMix.startRate) * smoothstep(progress * 2);
-    incoming.element.playbackRate = elapsed < 2.5 && plan.matched
-      ? phaseNudge({ inPosition: incoming.element.currentTime, inGrid: to?.intro?.grid, outPosition: outgoing.element.currentTime, outGrid: from?.outro?.grid, outRate: outgoing.element.playbackRate })
-      : 1;
     mixProgress.set(progress);
     if (progress >= 1) {
+      // Song A has faded out; song B eases from the shared tempo back to its own.
+      activeMix.finished ??= context.current.currentTime;
+      if (!outgoing.element.paused) outgoing.element.pause();
+      const after = context.current.currentTime - activeMix.finished;
+      if (plan.recoverSeconds > 0 && after < plan.recoverSeconds) {
+        incoming.element.playbackRate = recoverRate(after, plan.recoverSeconds, plan.inRate);
+        return;
+      }
       cancelMix();
       setIdle(plan.matched ? 'Tempo blend complete' : 'Blend complete');
+      return;
     }
+    // Finish any glide the pre-roll could not complete (for example after a late seek).
+    outgoing.element.playbackRate = activeMix.startRate + (plan.rate - activeMix.startRate) * smoothstep(progress * 2);
+    incoming.element.playbackRate = plan.inRate * (elapsed < 2.5 && plan.matched
+      ? phaseNudge({ inPosition: incoming.element.currentTime, inGrid: to?.intro?.grid, outPosition: outgoing.element.currentTime, outGrid: from?.outro?.grid, outRate: outgoing.element.playbackRate, inRate: plan.inRate })
+      : 1);
   }, [cancelMix, setIdle, mixProgress]);
 
   const tickOnlineBlend = useCallback(blend => {
@@ -701,6 +745,10 @@ export function usePlayer() {
       const loaded = incoming.getVideoData?.().video_id === blend.videoId;
       if (loaded && incoming.getPlayerState?.() === 1 && incoming.getCurrentTime?.() > (blend.entry || 0) + .15) {
         incoming.pauseVideo(); incoming.seekTo(blend.entry || 0, true);
+        if (blend.probeRate) {
+          rateSupport.current = Math.abs((incoming.getPlaybackRate?.() ?? 1) - blend.probeRate) < .005 ? 'fine' : 'coarse';
+          incoming.setPlaybackRate?.(1);
+        }
         blend.stage = 'primed';
       }
       return;
@@ -708,10 +756,13 @@ export function usePlayer() {
     if (blend.stage === 'starting') {
       if (incoming.getPlayerState?.() === 1 && incoming.getVideoData?.().video_id === blend.videoId) {
         blend.stage = 'mixing'; blend.started = performance.now(); blend.outgoing = player.current;
+        // YouTube audio cannot be filtered, so the hollow is a synthesized sweep laid over the blend.
+        const graph = preferences.current.djEnabled && preferences.current.transitionFx ? context.current : null;
+        if (graph?.state === 'running') blend.stopSweep = playSweep(graph, { seconds: blend.seconds, volume: volume / 100, beatSeconds: blend.plan?.beatSeconds });
         ytActive.current = blend.index; player.current = incoming; activeVideo.current = blend.videoId;
         showDeck(blend.index);
         commitIncoming(blend.selected, { videoId: blend.videoId, position: incoming.getCurrentTime?.() || 0 });
-        if (preferences.current.djEnabled) announce(previous => ({ ...previous, label: blend.verified ? 'Tempo matched · blending' : 'Blending into the next song', progress: 0 }));
+        if (preferences.current.djEnabled) announce(previous => ({ ...previous, label: `${blend.verified ? 'Tempo matched' : 'Blending'}${blend.stopSweep ? ' · hollow sweep' : ''}`, progress: 0, effects: [...(blend.stopSweep ? ['hollow sweep'] : []), ...(blend.verified ? ['tempo'] : [])] }));
       } else if (performance.now() - blend.requested > START_TIMEOUT) {
         // The standby deck could not start in time: keep the current song and fade normally.
         cancelMix(); attemptedMix.current = blend.key;
@@ -720,17 +771,35 @@ export function usePlayer() {
     }
     if (blend.stage === 'mixing') {
       const progress = Math.min(1, (performance.now() - blend.started) / (blend.seconds * 1000));
-      const [out, input] = equalPower(progress);
-      blend.outgoing?.setVolume?.(volume * out);
-      incoming.setVolume(volume * input);
+      const [out, input] = preferences.current.djEnabled ? blendCurve(progress) : equalPower(progress);
+      // YouTube volume is whole percent: send only real changes, at display rate.
+      const outLevel = Math.round(volume * out), inLevel = Math.round(volume * input);
+      if (outLevel !== blend.outLevel) { blend.outLevel = outLevel; blend.outgoing?.setVolume?.(outLevel); }
+      if (inLevel !== blend.inLevel) { blend.inLevel = inLevel; incoming.setVolume(inLevel); }
       mixProgress.set(progress);
       if (progress >= 1) {
         const outgoing = blend.outgoing;
-        mix.current = null;
         outgoing?.pauseVideo?.(); outgoing?.mute?.(); outgoing?.setPlaybackRate?.(1);
         incoming.setVolume(volume);
+        if (blend.inRate !== 1) { blend.stage = 'recover'; blend.finished = performance.now(); if (preferences.current.djEnabled) announce(previous => ({ ...previous, label: 'Settling into its own tempo', progress: 1 })); return; }
+        mix.current = null;
         setIdle(blend.verified ? 'Tempo blend complete' : 'Blend complete');
+        return;
       }
+      if (!blend.frame) blend.frame = requestAnimationFrame(() => { blend.frame = 0; if (mix.current === blend) actions.current.tickMix?.(); });
+      return;
+    }
+    if (blend.stage === 'recover') {
+      const after = (performance.now() - blend.finished) / 1000;
+      const seconds = blend.plan.recoverSeconds;
+      if (after >= seconds) {
+        incoming.setPlaybackRate?.(1);
+        mix.current = null;
+        setIdle('Tempo blend complete');
+        return;
+      }
+      const rate = Math.round(recoverRate(after, seconds, blend.inRate) * 200) / 200;
+      if (rate !== blend.rate) { blend.rate = rate; incoming.setPlaybackRate?.(rate); }
     }
   }, [cancelMix, commitIncoming, setIdle, announce, mixProgress]);
 
@@ -742,7 +811,7 @@ export function usePlayer() {
     const state = current.current;
     if (mix.current?.kind === 'local') { tickLocalMix(mix.current); return; }
     if (mix.current?.kind === 'online-blend') {
-      const running = mix.current.stage === 'starting' || mix.current.stage === 'mixing';
+      const running = mix.current.stage === 'starting' || mix.current.stage === 'mixing' || mix.current.stage === 'recover';
       // Priming promotion and failure recovery run here; the cue logic below still applies.
       tickOnlineBlend(mix.current);
       if (running) return;
@@ -800,8 +869,11 @@ export function usePlayer() {
     const tempoA = dj ? tempos.current.get(state.track?.id) : null, tempoB = dj ? tempos.current.get(selected.id) : null;
     let plan = planTransition(tempoA ? { bpm: tempoA, confidence: 1 } : null, tempoB ? { bpm: tempoB, confidence: 1 } : null, preferences.current.blendLength);
     const rates = active.getAvailablePlaybackRates?.();
-    // Only glide when this embed accepts rates fine enough to actually reach the target.
-    if (plan.matched && Math.abs(quantizeRate(rates, plan.rate) - plan.rate) > .01) plan = { ...plan, rate: 1, matched: false, rampSeconds: 0, targetBpm: null };
+    // Only glide when this embed actually plays the rates we need: either it lists
+    // them, or it confirmed a requested rate when we read it back while priming.
+    const listed = plan.matched && Math.abs(quantizeRate(rates, plan.rate) - plan.rate) <= .01;
+    const fine = listed || rateSupport.current === 'fine';
+    if (plan.matched && !fine) plan = { ...plan, rate: 1, inRate: 1, matched: false, rampSeconds: 0, recoverSeconds: 0, targetBpm: null };
     const blend = activeMix?.kind === 'online-blend' ? activeMix : null;
     // A prepared blend keeps the cue it was primed for.
     const seamless = { start: Math.max(0, length - .45), end: length, seconds: .35, source: 'seamless' };
@@ -819,26 +891,34 @@ export function usePlayer() {
       // Song B's entry: past a long instrumental intro when its timed lyrics show one.
       const nextLyrics = prepared.current.get(selected.id)?.lyrics;
       const entry = dj ? planOnlineEntry(nextLyrics?.sync !== 'plain' ? nextLyrics?.lines : [], cue.seconds) : 0;
-      const primed = { kind: 'online-blend', stage: 'priming', key, selected, videoId, index, cue, entry, seconds: cue.seconds, plan, verified: false };
+      // The unfiltered plan, so a probe can still discover fine rates on this embed.
+      const wanted = planTransition(tempoA ? { bpm: tempoA, confidence: 1 } : null, tempoB ? { bpm: tempoB, confidence: 1 } : null, preferences.current.blendLength);
+      const probeRate = dj && wanted.matched && rateSupport.current === 'unknown' ? (wanted.inRate !== 1 ? wanted.inRate : wanted.rate) : null;
+      const primed = { kind: 'online-blend', stage: 'priming', key, selected, videoId, index, cue, entry, seconds: cue.seconds, plan, probeRate, verified: false };
       mix.current = primed;
       if (dj) announce({ phase: 'priming', label: 'Getting the next song ready', mode: 'online', entryAt: entry });
+      if (dj && preferences.current.transitionFx) audioContext();
       void ensurePlayer(videoId, index).then(standby => {
         if (mix.current !== primed) return;
         standby.mute(); standby.setVolume(0); standby.setPlaybackRate?.(1);
         standby.loadVideoById(videoId, primed.entry);
+        // Ask the muted standby for the rate song B will enter at; the read-back decides.
+        if (primed.probeRate) standby.setPlaybackRate?.(primed.probeRate);
       }).catch(() => { if (mix.current === primed) primed.stage = 'failed'; });
       return;
     }
     if (blend?.stage === 'priming' && position >= cue.start) { cancelMix(); attemptedMix.current = key; return; }
     if (blend?.stage === 'primed') {
       if (plan.matched && position >= rampStart) {
-        const rate = quantizeRate(rates, glideRate(position, rampStart, plan.rampSeconds, plan.rate));
+        const target = glideRate(position, rampStart, plan.rampSeconds, plan.rate);
+        const rate = listed ? quantizeRate(rates, target) : Math.round(target * 200) / 200;
         if (active.getPlaybackRate?.() !== rate) active.setPlaybackRate(rate);
         // The mixer owns this imperative state; only the confirmed rate may be claimed in the UI.
         // eslint-disable-next-line react-hooks/immutability
         blend.verified = Math.abs((active.getPlaybackRate?.() ?? 1) - plan.rate) <= .01;
         if (position < cue.start) announce({ phase: 'gliding', label: 'Matching the next tempo', mode: 'online', progress: (position - rampStart) / Math.max(1, plan.rampSeconds), fromBpm: tempoA, toBpm: plan.targetBpm });
       }
+      blend.plan = plan;
       if (position >= cue.start - START_LEAD) { attemptedMix.current = key; beginOnlineBlend(blend); }
       return;
     }
@@ -852,7 +932,7 @@ export function usePlayer() {
       active.setVolume(state.volume * Math.cos(progress * Math.PI / 2));
       announce({ phase: 'mixing', label: 'Gentle fade out', mode: 'online', progress });
     }
-  }, [cancelMix, startLocalMix, tickLocalMix, tickOnlineBlend, ensurePlayer, beginOnlineBlend, announce, mixProgress]);
+  }, [cancelMix, startLocalMix, tickLocalMix, tickOnlineBlend, ensurePlayer, beginOnlineBlend, announce, mixProgress, audioContext]);
 
   useEffect(() => { actions.current.manualMix = startLocalMix; }, [startLocalMix]);
   useEffect(() => { actions.current.ended = () => next(true); }, [next]);
@@ -908,6 +988,6 @@ export function usePlayer() {
     return Number.isFinite(value) ? value : 0;
   }, []);
 
-  return { blendLength, setBlendLength, sourceInfo, surround, setSurround, audioOutput, track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, setLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime };
+  return { direction, transitionFx, setTransitionFx, blendLength, setBlendLength, sourceInfo, surround, setSurround, audioOutput, track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, setLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime };
 }
 export default usePlayer;
