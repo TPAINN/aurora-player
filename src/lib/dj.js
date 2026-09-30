@@ -52,19 +52,19 @@ function octaveTarget(outBpm, inBpm) {
   return [inBpm, inBpm / 2, inBpm * 2].reduce((best, bpm) => Math.abs(bpm / outBpm - 1) < Math.abs(best / outBpm - 1) ? bpm : best);
 }
 
-export function planTransition(outro, intro) {
+export function planTransition(outro, intro, target = TARGET_OVERLAP) {
   const known = outro?.bpm > 0 && intro?.bpm > 0;
   const targetBpm = known ? octaveTarget(outro.bpm, intro.bpm) : null;
   const ratio = targetBpm ? targetBpm / outro.bpm : 1;
   const matched = Boolean(known && outro.confidence >= .7 && intro.confidence >= .7 && Math.abs(ratio - 1) <= MAX_TEMPO_SHIFT + 1e-9);
   const beatBpm = matched ? targetBpm : outro?.confidence >= .7 && outro.bpm > 0 ? outro.bpm : null;
   // Whole bars near five seconds: a tempo-sized overlap, not a claimed downbeat grid.
-  let seconds = TARGET_OVERLAP;
+  let seconds = target;
   if (beatBpm) {
     const bar = 240 / beatBpm;
-    let bars = Math.max(1, Math.round(TARGET_OVERLAP / bar));
-    while (bars * bar > 7 && bars > 1) bars--;
-    while (bars * bar < 4) bars++;
+    let bars = Math.max(1, Math.round(target / bar));
+    while (bars * bar > target * 1.4 && bars > 1) bars--;
+    while (bars * bar < target * .8) bars++;
     seconds = bars * bar;
   }
   // Glide song A toward song B at roughly one percent per second before the blend.

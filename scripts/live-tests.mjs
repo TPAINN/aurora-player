@@ -53,12 +53,24 @@ function fakeYouTube() {
   window.YT = { Player };
 }
 
-async function newSession(browser, { viewport = { width: 1440, height: 900 }, prefs = {}, reducedMotion = 'no-preference', searchDelay = 120, failSearch = () => false } = {}) {
+const videos = [
+  { videoId: 'VVVVVVVVVV1', title: 'Night Drive (slowed + reverb)', artist: 'Band', channel: 'edits', duration: 214, artwork: 'https://img.test/b/v1.jpg', views: '1.2M views' },
+  { videoId: 'VVVVVVVVVV2', title: 'Night Drive x Morning Light (mashup)', artist: 'mashups', channel: 'mashups', duration: 190, artwork: 'https://img.test/c/v2.jpg', views: '40K views' },
+];
+const categories = term => ({
+  results: /ελ|φω/i.test(term) ? catalogue.slice(4) : catalogue.slice(0, 4),
+  videos,
+  albums: [{ id: 9, title: 'Roads', artist: 'Band', artwork: 'https://img.test/a/600x600bb.jpg', count: 3, year: '2024' }],
+  artists: [{ id: 7, name: 'Band Of Night', artwork: 'https://img.test/d/artist.jpg', fans: 120000 }],
+  playlists: [{ id: 'PLroads', title: 'Road trip', owner: 'Aurora fan', count: 2, artwork: 'https://img.test/c/pl.jpg' }],
+  top: /^band of night$/i.test(term.trim()) ? { kind: 'artist', id: 7 } : /slowed|mashup/i.test(term) ? { kind: 'video', id: 'VVVVVVVVVV1' } : { kind: 'song', id: 1 },
+});
+async function newSession(browser, { viewport = { width: 1440, height: 900 }, prefs = {}, reducedMotion = 'no-preference', searchDelay = 120, failSearch = () => false, recommendations = [], welcome = false } = {}) {
   const context = await browser.newContext({ viewport, reducedMotion, hasTouch: viewport.width < 700 });
   await context.addInitScript(values => {
     if (!sessionStorage.getItem('seeded')) { for (const [key, value] of Object.entries(values)) localStorage.setItem(key, value); sessionStorage.setItem('seeded', '1'); }
-    sessionStorage.setItem('aurora:welcome-seen', '1');
-  }, { 'aurora-autoplay': 'false', ...prefs });
+    if (!values.__welcome) sessionStorage.setItem('aurora:welcome-seen', '1');
+  }, { 'aurora-autoplay': 'false', ...prefs, __welcome: welcome ? '1' : '' });
   await context.addInitScript(fakeYouTube);
   const page = await context.newPage();
   const errors = []; const requests = [];
@@ -75,11 +87,20 @@ async function newSession(browser, { viewport = { width: 1440, height: 900 }, pr
     const term = new URL(route.request().url()).searchParams.get('term');
     await wait(typeof searchDelay === 'function' ? searchDelay(term) : searchDelay);
     if (failSearch(term, searchCount)) return route.fulfill({ status: 502, json: { error: 'down' } }).catch(() => {});
-    return route.fulfill({ json: { results: /ελ|φω/i.test(term) ? catalogue.slice(4) : catalogue.slice(0, 4) } }).catch(() => {});
+    const type = new URL(route.request().url()).searchParams.get('type') || 'songs';
+    const all = categories(term);
+    const body = type === 'all' ? all : type === 'songs' ? { results: all.results } : { [type]: all[type] };
+    return route.fulfill({ json: body }).catch(() => {});
+  });
+  await page.route('**/api/collection?*', route => {
+    const type = new URL(route.request().url()).searchParams.get('type');
+    const tracks = type === 'playlist' ? videos.map(v => ({ id: `yt:${v.videoId}`, videoId: v.videoId, title: v.title, artist: v.artist, artwork: v.artwork, duration: v.duration, source: 'video' }))
+      : catalogue.slice(0, 3).map(item => ({ id: String(item.trackId), title: item.trackName, artist: item.artistName, album: item.collectionName, artwork: item.artworkUrl100.replace('100x100bb', '600x600bb'), duration: 60 }));
+    return route.fulfill({ json: { title: type === 'artist' ? 'Band Of Night' : type === 'album' ? 'Roads' : '', subtitle: 'Stub', artwork: 'https://img.test/a/600x600bb.jpg', tracks } });
   });
   await page.route('**/api/video/search?*', route => {
     const title = new URL(route.request().url()).searchParams.get('title');
-    return route.fulfill({ json: { videoId: { 'Night Drive': 'AAAAAAAAAAA', 'Morning Light': 'BBBBBBBBBBB', 'Slow Tide': 'CCCCCCCCCCC' }[title] || 'DDDDDDDDDDD' } });
+    return route.fulfill({ json: { videoId: { 'Night Drive': 'AAAAAAAAAAA', 'Morning Light': 'BBBBBBBBBBB', 'Slow Tide': 'CCCCCCCCCCC' }[title] || 'DDDDDDDDDDD', channel: title === 'Night Drive' ? 'Band - Topic' : 'Band Uploads', title } });
   });
   await page.route('**/api/lyrics/structured?*', async route => {
     const title = new URL(route.request().url()).searchParams.get('title');
@@ -87,7 +108,7 @@ async function newSession(browser, { viewport = { width: 1440, height: 900 }, pr
     return route.fulfill({ json: title === 'Night Drive' ? wordLyrics : title === 'Morning Light' ? lineLyrics : { source: null, sync: 'plain', lines: [] } }).catch(() => {});
   });
   await page.route('**/api/tempo?*', route => route.fulfill({ json: { bpm: new URL(route.request().url()).searchParams.get('title') === 'Night Drive' ? 120 : 124 } }));
-  await page.route('**/api/recommendations?*', route => route.fulfill({ json: { tracks: [] } }));
+  await page.route('**/api/recommendations?*', route => route.fulfill({ json: { tracks: recommendations } }));
   await page.route('https://www.youtube.com/**', route => route.abort());
   return { context, page, errors, requests };
 }
@@ -117,7 +138,7 @@ async function startQueue(page, extra = ['Morning Light']) {
   await page.click('.top-result-play'); await wait(900);
 }
 
-const browser = await chromium.launch({ ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}) });
+const browser = await chromium.launch({ ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}), args: ['--autoplay-policy=no-user-gesture-required'] });
 
 // ── A. Home & navigation ───────────────────────────────────────────────────
 if (!only || only === 'A') {
@@ -335,6 +356,137 @@ if (!only || only === 'E') {
   await check('E', 'reduced motion removes lyric transforms', async () => { await page.locator('body').press('l'); await wait(900); const transform = await page.evaluate(() => getComputedStyle(document.querySelector('.lyric-line')).transform); ok(transform === 'none', transform); });
   await check('E', 'reduced motion still plays and navigates', async () => { await page.locator('body').press('Escape'); await wait(500); ok(await page.locator('.immersive-player').count() === 0); });
   await check('E', 'no runtime errors with reduced motion', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+
+// ── F. Discovery, navigation, adaptive radio, audio honesty, polish ────────
+if (!only || only === 'F') {
+  const { context, page, errors } = await newSession(browser);
+  await page.goto(BASE); await wait(600); await goSearch(page); await wait(600);
+  await check('F', 'category tabs appear with a query', async () => { await searchFor(page, 'night drive'); ok(await page.locator('.search-tabs [role=tab]').count() === 6); ok(await page.getAttribute('.search-tabs [role=tab] >> nth=0', 'aria-selected') === 'true'); });
+  await check('F', '"All" shows every section', async () => { await wait(500); for (const title of ['Songs', 'Videos', 'Artists', 'Albums', 'Playlists']) ok(await page.locator(`.result-section h2:has-text("${title}")`).count() === 1, title); });
+  await check('F', 'Videos tab lists remixes and edits', async () => { await page.click('.search-tabs [role=tab]:has-text("Videos")'); await wait(900); ok((await page.textContent('.search-results')).includes('slowed')); ok(await page.locator('.video-card').count() === 2); });
+  await check('F', 'tab indicator follows the selection', async () => ok(await page.locator('.search-tabs [role=tab][aria-selected=true] .nav-pill').count() === 1));
+  await check('F', 'edit words make a video the top result', async () => { await page.click('.search-tabs [role=tab]:has-text("All")'); await searchFor(page, 'night drive slowed'); await wait(500); ok((await page.textContent('.top-result')).includes('Video')); });
+  await check('F', 'playing a video uses its own source directly', async () => { await page.click('.top-result-play'); await wait(1200); ok((await title(page)).includes('slowed')); ok(await page.locator('.quality-chip:has-text("YouTube video")').count() >= 1); });
+  await check('F', 'Back closes the player', async () => { await page.goBack(); await wait(900); ok(await page.locator('.immersive-player').count() === 0); ok((await page.textContent('.breadcrumb')).includes('Search')); });
+  await check('F', 'artist query puts the artist on top', async () => { await searchFor(page, 'band of night'); await wait(400); ok((await page.textContent('.top-result')).includes('Artist')); });
+  await check('F', 'Open artist shows top songs', async () => { await page.click('.top-result-play'); await wait(1300); ok((await page.textContent('.collection-head')).includes('Band Of Night')); ok(await page.locator('.search-results .track-row').count() === 3); });
+  await check('F', 'Back returns to the search with its query', async () => { await page.goBack(); await wait(1000); ok(await page.inputValue('input[aria-label="Search songs or artists"]') === 'band of night'); });
+  await check('F', 'album card opens the album', async () => { await page.click('.collection-card >> nth=0'); await wait(1300); ok((await page.textContent('.collection-head h1')).includes('Roads')); });
+  await check('F', 'Play plays the album in order', async () => { await page.click('.collection-head .primary-button'); await wait(1300); ok((await title(page)).startsWith('Night Drive')); ok((await page.textContent('.collection-link[aria-label="Play queue"] small')).startsWith('3')); });
+  await check('F', 'official source is labelled honestly', async () => ok(await page.locator('.quality-chip:has-text("Official audio")').count() >= 1));
+  await check('F', 'quality chip opens the audio sheet', async () => { await page.click('.immersive-track-meta .quality-chip'); await wait(900); ok((await page.textContent('dialog[aria-label="Audio quality"]')).includes('Signal path')); });
+  await check('F', 'audio sheet never claims lossless streaming', async () => { const text = await page.textContent('dialog[aria-label="Audio quality"] .audio-facts'); ok(!/lossless|atmos/i.test(text), text); });
+  await check('F', 'Back closes the sheet, not the player', async () => { await page.goBack(); await wait(900); ok(await page.locator('dialog.sheet').count() === 0); ok(await page.locator('.immersive-player').count() === 1); });
+  await check('F', 'settings → DJ → Back returns to settings', async () => { await page.click('button[aria-label="Player settings"]'); await wait(700); await page.click('.dj-settings-link >> nth=0'); await wait(800); await page.goBack(); await wait(800); ok(await page.locator('dialog[aria-label="Make it yours"]').count() === 1); });
+  await check('F', 'closing a stacked sheet closes it completely', async () => { await page.click('.dj-settings-link >> nth=0'); await wait(700); await page.click('dialog[aria-label="DJ transition"] button[aria-label="Close DJ transition"]'); await wait(900); ok(await page.locator('dialog.sheet').count() === 0); await page.goBack(); await wait(900); ok(await page.locator('dialog.sheet').count() === 0, 'back reopened a sheet'); });
+  await check('F', 'blend length choice persists', async () => { await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(700); await page.click('.segmented [role=radio]:has-text("Long")'); ok(await page.evaluate(() => localStorage.getItem('aurora-blend')) === '8'); ok(await page.getAttribute('.segmented [role=radio]:has-text("Long")', 'aria-checked') === 'true'); await page.keyboard.press('Escape'); await wait(700); });
+  await check('F', 'motion backdrop shows the blurred video behind the artwork', async () => { if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(900); } await page.click('button[aria-label="Player settings"]'); await wait(700); await page.click('button[aria-label="Motion backdrop"]'); await page.keyboard.press('Escape'); await wait(800); ok(await page.locator('.aurora-app.motion-art .video-surface.is-visible').count() === 1); ok(await page.locator('.now-playing-art').isVisible()); });
+  await check('F', 'no runtime errors in discovery and navigation', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'F') {
+  const radio = [1, 2, 3, 4, 5, 6, 7, 8].map(i => ({ id: `deezer:${i}`, title: `Radio ${i}`, artist: i === 2 ? 'Skipped artist' : `Artist ${i}`, album: 'LP', artwork: 'https://img.test/c/r.jpg', duration: 60, recommended: true, recommendationReason: 'Same vibe as Band' }));
+  const history = [0, 1, 2].map(i => ({ key: `skipped artist|nope ${i}`, artist: 'skipped artist', affinity: -1, at: Date.now() - 3600000, type: 'play', track: { id: `n${i}`, title: `Nope ${i}`, artist: 'Skipped artist' } }))
+    .concat([{ key: 'band|night drive', artist: 'band', affinity: 2, at: Date.now() - 7200000, type: 'play', track: { id: '1', title: 'Night Drive', artist: 'Band', artwork: 'https://img.test/a/600x600bb.jpg', duration: 60 } }]);
+  const { context, page, errors } = await newSession(browser, { prefs: { 'aurora-autoplay': 'true', 'aurora-listening': JSON.stringify(history) }, recommendations: radio });
+  await page.goto(BASE); await wait(1500);
+  await check('F', 'home adapts with a "Because you listened" row', async () => ok((await page.textContent('.for-you h2')).includes('Night Drive')));
+  await check('F', 'home rows leave out artists the listener skips', async () => ok(!(await page.textContent('.for-you')).includes('Skipped artist')));
+  await check('F', 'greeting follows the time of day', async () => ok(/Good (morning|afternoon|evening)|Late night/.test(await page.textContent('.page-heading p'))));
+  await goSearch(page); await wait(500); await searchFor(page, 'band song');
+  await page.click('.search-results .track-row >> nth=0 >> .track-main'); await wait(2500);
+  await check('F', 'radio adds a small batch, not an endless list', async () => { const count = Number((await page.textContent('.collection-link[aria-label="Play queue"] small')).split(' ')[0]); ok(count >= 3 && count <= 6, String(count)); });
+  await check('F', 'radio additions skip the artist the listener skips', async () => { await page.click('.dock-actions button[aria-label="Open queue"]'); await wait(800); ok(!(await page.textContent('dialog.sheet')).includes('Skipped artist')); await page.keyboard.press('Escape'); await wait(600); });
+  await check('F', 'queue grows again as it runs low', async () => {
+    for (let i = 0; i < 3; i++) { await page.click('.dock-transport button[aria-label="Next track"]'); await wait(1400); }
+    const count = Number((await page.textContent('.collection-link[aria-label="Play queue"] small')).split(' ')[0]);
+    ok(count > 6, String(count));
+  });
+  await check('F', 'no runtime errors in adaptive radio', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'F') {
+  const { context, page } = await newSession(browser);
+  await page.goto(BASE); await wait(1000);
+  await check('F', 'Back on a fresh home screen stays and asks first', async () => {
+    await page.evaluate(() => history.back()); await wait(800);
+    ok(page.url().startsWith(BASE), page.url());
+    ok((await page.textContent('.toast')).includes('back again'));
+  });
+  await check('F', 'Back from a deeper page goes home first, not away', async () => {
+    await goSearch(page); await wait(600); await page.evaluate(() => history.back()); await wait(700);
+    ok((await page.textContent('.breadcrumb')).includes('Listen now'));
+  });
+  await context.close();
+}
+if (!only || only === 'F') {
+  const { context, page, errors } = await newSession(browser, { welcome: true });
+  await page.goto(BASE);
+  await check('F', 'opening overlay shows the wordmark', async () => { await wait(400); ok(await page.locator('.aurora-welcome img').count() === 1); });
+  await check('F', 'app is veiled while the opening plays', async () => ok(await page.locator('.aurora-app.is-veiled').count() === 1));
+  await check('F', 'opening lifts on its own and reveals the app', async () => { await wait(3000); ok(await page.locator('.aurora-welcome').count() === 0); ok(await page.locator('.aurora-app.is-veiled').count() === 0); ok(Number(await page.evaluate(() => getComputedStyle(document.querySelector('.aurora-app')).opacity)) > .95); });
+  await check('F', 'favicons are declared and served as images', async () => {
+    const icons = await page.evaluate(() => [...document.querySelectorAll('link[rel~=icon]')].map(link => link.getAttribute('href')));
+    ok(icons.length >= 3, icons.join());
+    for (const href of icons) { const response = await page.request.get(new URL(href, BASE).href); ok(/image/.test(response.headers()['content-type'] || ''), `${href}: ${response.headers()['content-type']}`); }
+  });
+  await check('F', 'local FLAC shows its real hi-res format', async () => {
+    const bytes = Buffer.alloc(4096); bytes.write('fLaC', 0, 'latin1'); bytes.set([0, 0, 0, 34], 4);
+    const o = 18, rate = 96000, bits = 24, channels = 2;
+    bytes[o] = (rate >> 12) & 0xff; bytes[o + 1] = (rate >> 4) & 0xff; bytes[o + 2] = ((rate & 0xf) << 4) | ((channels - 1) << 1) | (((bits - 1) >> 4) & 1); bytes[o + 3] = ((bits - 1) & 0xf) << 4;
+    await page.setInputFiles('input[type=file]', { name: 'Studio master.flac', mimeType: 'audio/flac', buffer: bytes });
+    await wait(1500);
+    ok(await page.locator('.quality-chip:has-text("24-bit/96 kHz · Hi-Res Lossless")').count() >= 1, await page.textContent('.immersive-player').catch(() => ''));
+  });
+  await check('F', 'no runtime errors in opening and local files', async () => ok(!errors.filter(e => !/decode|NotSupported|no supported source/i.test(e)).length, errors.join(' | ')));
+  await context.close();
+}
+
+// ── G. Local DJ transition with real decoded audio ─────────────────────────
+function clickTrack(bpm, seconds = 40, rate = 22050) {
+  const samples = rate * seconds;
+  const data = Buffer.alloc(44 + samples * 2);
+  data.write('RIFF', 0, 'latin1'); data.writeUInt32LE(36 + samples * 2, 4); data.write('WAVEfmt ', 8, 'latin1');
+  data.writeUInt32LE(16, 16); data.writeUInt16LE(1, 20); data.writeUInt16LE(1, 22); data.writeUInt32LE(rate, 24); data.writeUInt32LE(rate * 2, 28); data.writeUInt16LE(2, 32); data.writeUInt16LE(16, 34);
+  data.write('data', 36, 'latin1'); data.writeUInt32LE(samples * 2, 40);
+  const step = rate * 60 / bpm;
+  for (let beat = 0; beat * step < samples; beat++) {
+    const start = Math.floor(beat * step);
+    for (let j = 0; j < rate / 40 && start + j < samples; j++) data.writeInt16LE(Math.round(Math.exp(-j / (rate / 400)) * Math.sin(j / 3) * 20000), 44 + (start + j) * 2);
+  }
+  return data;
+}
+if (!only || only === 'G') {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  await context.addInitScript(() => {
+    sessionStorage.setItem('aurora:welcome-seen', '1');
+    if (!sessionStorage.getItem('seeded')) { localStorage.setItem('aurora-dj', 'true'); localStorage.setItem('aurora-autoplay', 'false'); sessionStorage.setItem('seeded', '1'); }
+    window.__rates = [];
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'playbackRate');
+    Object.defineProperty(HTMLMediaElement.prototype, 'playbackRate', { get() { return descriptor.get.call(this); }, set(value) { if (value !== 1) window.__rates.push(Math.round(value * 1000) / 1000); descriptor.set.call(this, value); } });
+  });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(String(error)));
+  await page.goto(BASE); await wait(800);
+  await page.setInputFiles('input[type=file]', [
+    { name: 'Outgoing 120.wav', mimeType: 'audio/wav', buffer: clickTrack(120) },
+    { name: 'Incoming 126.wav', mimeType: 'audio/wav', buffer: clickTrack(126) },
+  ]);
+  await wait(3500);
+  await check('G', 'local files play and report their real format', async () => { ok((await title(page)).startsWith('Outgoing 120')); ok(await page.locator('.quality-chip:has-text("WAV · 16-bit/22.1 kHz · Lossless")').count() >= 1); });
+  await check('G', 'the timeline shows the glide and blend region', async () => ok(await page.locator('.dj-seek-zone.glide').count() >= 1));
+  await setSeek(page, 26);
+  const states = new Set();
+  for (let i = 0; i < 30 && !(await title(page)).startsWith('Incoming'); i++) { states.add(await page.textContent('.dock-actions button[aria-label="DJ transition settings"]').catch(() => '')); states.add(await page.evaluate(() => document.querySelector('.dj-pill small')?.textContent || '')); await wait(400); }
+  await check('G', 'the outgoing song glides toward the incoming tempo', async () => { const rates = await page.evaluate(() => window.__rates); ok(rates.some(r => r > 1.01 && r <= 1.051), rates.slice(0, 12).join(',')); });
+  await check('G', 'the glide never exceeds the ±8% bound', async () => ok((await page.evaluate(() => window.__rates)).every(r => r >= .9 && r <= 1.09)));
+  await check('G', 'the blend hands over to the incoming song', async () => ok((await title(page)).startsWith('Incoming'), await title(page)));
+  await wait(7000);
+  await check('G', 'the blend completes and the DJ returns to idle', async () => { await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(700); const text = await page.textContent('.dj-now'); ok(/complete|Ready/i.test(text), text); await page.keyboard.press('Escape'); await wait(500); });
+  await check('G', 'no runtime errors in the local DJ blend', async () => ok(!errors.length, errors.join(' | ')));
   await context.close();
 }
 

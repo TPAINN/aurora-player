@@ -1,4 +1,5 @@
 import { XMLParser } from 'fast-xml-parser';
+import { inflateSync } from 'node:zlib';
 const MAX_TEXT = 400000;
 const decode = value => String(value).replace(/&(?:amp|lt|gt|quot|apos|#\d+|#x[\da-f]+);/gi, entity => {
   const named = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'" };
@@ -98,4 +99,34 @@ export function parseTrack(data, source, duration) {
   if (data.instrumental === true) return { source, sync: 'plain', lines: [], instrumental: true };
   if (typeof data.plainLyrics === 'string' && data.plainLyrics.trim() && data.plainLyrics.length <= MAX_TEXT) return { source, sync: 'plain', lines: [], plainLyrics: data.plainLyrics };
   return null;
+}
+
+// KuGou KRC: "krc1" + XOR-obfuscated zlib stream (a published, fixed key).
+const KRC_KEY = [64, 71, 97, 119, 94, 50, 116, 71, 81, 54, 49, 45, 206, 210, 110, 105];
+export function decodeKrc(base64) {
+  try {
+    const bytes = Buffer.from(String(base64 || ''), 'base64');
+    if (bytes.length < 5 || bytes.length > MAX_TEXT || bytes.subarray(0, 4).toString('latin1') !== 'krc1') return null;
+    const body = Buffer.from(bytes.subarray(4));
+    for (let i = 0; i < body.length; i++) body[i] ^= KRC_KEY[i % KRC_KEY.length];
+    const text = inflateSync(body, { maxOutputLength: MAX_TEXT }).toString('utf8');
+    return text.length <= MAX_TEXT ? text : null;
+  } catch { return null; }
+}
+
+// "[lineStartMs,lineDurMs]<offsetMs,durMs,0>word…" with offsets relative to the line.
+export function parseKrc(text, source, duration) {
+  if (typeof text !== 'string' || text.length > MAX_TEXT) return null;
+  const lines = [];
+  for (const row of text.split(/\r?\n/).slice(0, 4000)) {
+    const head = row.match(/^\[(\d+),(\d+)\](.*)$/);
+    if (!head) continue;
+    const start = Number(head[1]) / 1000, length = Number(head[2]) / 1000;
+    const words = [...head[3].matchAll(/<(\d+),(\d+),\d+>([^<]*)/g)].slice(0, 1000)
+      .map(([, offset, span, word]) => ({ text: word, start: start + Number(offset) / 1000, end: start + (Number(offset) + Number(span)) / 1000 }))
+      .filter(word => word.text);
+    const plain = words.length ? words.map(word => word.text).join('') : head[3];
+    lines.push({ time: start, end: start + length, text: plain, ...(words.length ? { words } : {}) });
+  }
+  return finish(lines, source, duration);
 }

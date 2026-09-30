@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { buildApiUrl } from '../lib/api';
 import { getSimilarTracks, getTrackTempo } from '../lib/catalog';
-import { recordListening } from '../lib/listening';
+import { pickSeed, recordListening, tasteFilter } from '../lib/listening';
 import { analyzeLocalTempo, beatAlignedEntry, equalPower, glideRate, phaseNudge, planOnlineCue, planTransition, quantizeRate, smoothstep } from '../lib/dj';
 import { detectLanguage } from '../../shared/language.js';
 import { artworkAt } from '../lib/artwork';
+import { probeFile } from '../lib/audio-format';
 
 let youtubeApi;
 function readPreference(key, fallback) {
@@ -37,6 +38,8 @@ function deckHost(index) {
 function showDeck(index) {
   for (const deck of [0, 1]) deckHost(deck)?.classList.toggle('is-active', deck === index);
 }
+// What actually plays: an official audio upload (Topic channel or "Official Audio") or another upload.
+const describeSource = (data, fallbackChannel = '') => ({ kind: 'youtube', official: /-\s*topic$/i.test(data?.channel || '') || /official audio/i.test(data?.title || ''), channel: String(data?.channel || fallbackChannel).replace(/\s*-\s*Topic$/i, '') });
 const lyricsText = lyrics => (lyrics?.lines?.length ? lyrics.lines.map(line => line.text).join('\n') : lyrics?.plainLyrics) || '';
 const IDLE = { phase: 'idle', label: 'Ready for your next track' };
 // High-frequency values live outside React state so a clock tick re-renders only
@@ -75,6 +78,9 @@ export function usePlayer() {
   const [djEnabled, updateDjEnabled] = useState(() => readPreference('aurora-dj', false));
   const [liveDjChanges, updateLiveDjChanges] = useState(() => readPreference('aurora-live-dj', false));
   const [autoplay, updateAutoplay] = useState(() => readPreference('aurora-autoplay', true));
+  const [surround, updateSurround] = useState(() => readPreference('aurora-surround', true));
+  const [blendLength, updateBlendLength] = useState(() => { try { return [3, 5, 8].includes(Number(localStorage.getItem('aurora-blend'))) ? Number(localStorage.getItem('aurora-blend')) : 5; } catch { return 5; } });
+  const [sourceInfo, setSourceInfo] = useState(null);
   const [djState, setDjState] = useState({ ...IDLE, mode: 'online' });
   const announced = useRef({ ...IDLE, mode: 'online' });
   const [recommendationsLoading, setRecommendationsLoading] = useState(false);
@@ -91,7 +97,7 @@ export function usePlayer() {
   const mix = useRef(null);
   const analysis = useRef(new Map());
   const attemptedMix = useRef('');
-  const preferences = useRef({ djEnabled, autoplay, liveDjChanges });
+  const preferences = useRef({ djEnabled, autoplay, liveDjChanges, surround, blendLength });
   const manualChange = useRef(null);
   const pendingNext = useRef(null);
   const player = useRef(null);
@@ -155,6 +161,10 @@ export function usePlayer() {
         for (const [param, value] of [[deck.gain.gain, active ? current.current.volume / 100 : 0], [deck.highpass.frequency, 20], [deck.lowpass.frequency, 20000], [deck.echoSend.gain, 0]]) {
           param.cancelScheduledValues(now); param.setValueAtTime(value, now);
         }
+        // Back to the direct route with a short, click-free handover.
+        for (const [param, value] of [[deck.dry.gain, 1], [deck.wet.gain, 0]]) {
+          param.cancelScheduledValues(now); param.setTargetAtTime(value, now, .02);
+        }
       }
     }
     const standby = yt.current[standbyIndex()].player;
@@ -172,8 +182,14 @@ export function usePlayer() {
   const ensureAudioGraph = useCallback(() => {
     const AudioContext = window.AudioContext || window.webkitAudioContext;
     if (!AudioContext) return null;
-    if (!context.current) context.current = new AudioContext();
+    if (!context.current) context.current = new AudioContext({ latencyHint: 'playback' });
     const graph = context.current;
+    // Multichannel files reach every speaker the output offers; stereo stays stereo.
+    const channels = preferences.current.surround ? graph.destination.maxChannelCount : 2;
+    if (graph.destination.channelCount !== channels) {
+      graph.destination.channelCount = Math.max(2, channels);
+      graph.destination.channelInterpretation = 'speakers';
+    }
     for (const deck of decks.current) {
       if (deck.gain) continue;
       // input → high-pass → low-pass → gain → out, with a tempo-synced echo send
@@ -186,7 +202,13 @@ export function usePlayer() {
       const delay = graph.createDelay(2); delay.delayTime.value = .375;
       const feedback = graph.createGain(); feedback.gain.value = .42;
       const tone = graph.createBiquadFilter(); tone.type = 'lowpass'; tone.frequency.value = 2400;
-      input.connect(highpass).connect(lowpass).connect(gain).connect(graph.destination);
+      // Two routes into the deck gain: a direct one that is bit-transparent apart
+      // from volume, and the filter route that exists only for DJ blends.
+      const dry = graph.createGain(); dry.gain.value = 1;
+      const wet = graph.createGain(); wet.gain.value = 0;
+      input.connect(dry).connect(gain);
+      input.connect(highpass).connect(lowpass).connect(wet).connect(gain);
+      gain.connect(graph.destination);
       lowpass.connect(echoSend).connect(delay).connect(tone).connect(feedback).connect(delay);
       tone.connect(graph.destination);
       const element = deck.element;
@@ -194,7 +216,7 @@ export function usePlayer() {
       // eslint-disable-next-line react-hooks/immutability
       element.volume = 1;
       element.preservesPitch = true;
-      Object.assign(deck, { input, highpass, lowpass, gain, echoSend, delay });
+      Object.assign(deck, { input, highpass, lowpass, gain, echoSend, delay, dry, wet });
     }
     void graph.resume().catch(() => {});
     return graph;
@@ -202,6 +224,20 @@ export function usePlayer() {
 
   const setDjEnabled = useCallback(value => { preferences.current.djEnabled = Boolean(value); updateDjEnabled(Boolean(value)); savePreference('aurora-dj', Boolean(value)); cancelMix(); attemptedMix.current = ''; }, [cancelMix]);
   const setLiveDjChanges = useCallback(value => { preferences.current.liveDjChanges = Boolean(value); updateLiveDjChanges(Boolean(value)); savePreference('aurora-live-dj', Boolean(value)); cancelMix(); }, [cancelMix]);
+  const setBlendLength = useCallback(value => {
+    const seconds = [3, 5, 8].includes(Number(value)) ? Number(value) : 5;
+    preferences.current.blendLength = seconds; updateBlendLength(seconds);
+    try { localStorage.setItem('aurora-blend', String(seconds)); } catch { /* Preference lasts this session. */ }
+    cancelMix(); attemptedMix.current = '';
+  }, [cancelMix]);
+  const setSurround = useCallback(value => {
+    preferences.current.surround = Boolean(value); updateSurround(Boolean(value)); savePreference('aurora-surround', Boolean(value));
+    if (context.current) {
+      const destination = context.current.destination;
+      destination.channelCount = value ? Math.max(2, destination.maxChannelCount) : 2;
+    }
+  }, []);
+  const audioOutput = useCallback(() => context.current ? { sampleRate: context.current.sampleRate, channels: context.current.destination.channelCount, maxChannels: context.current.destination.maxChannelCount } : null, []);
   const setAutoplay = useCallback(value => {
     preferences.current.autoplay = Boolean(value); updateAutoplay(Boolean(value));
     savePreference('aurora-autoplay', Boolean(value));
@@ -293,6 +329,7 @@ export function usePlayer() {
     const lyricsRequest = showLyricsFor(selected, token, controller);
     try {
       if (selected.localUrl) {
+        setSourceInfo({ kind: 'local', format: selected.format || null });
         if (!audio.current) throw new Error('Audio is not ready. Please retry.');
         audio.current.src = selected.localUrl;
         const graph = ensureAudioGraph();
@@ -300,11 +337,13 @@ export function usePlayer() {
         await audio.current.play();
       } else {
         let videoId = selected.videoId || cached?.videoId;
+        let source = selected.videoId ? { kind: 'youtube', official: false, video: true, channel: selected.artist } : cached?.source;
         if (!videoId) {
           const response = await fetch(buildApiUrl('/api/video/search', { artist: selected.artist, title: selected.title, duration: selected.duration, variant: selected.variant }), { signal: controller.signal });
           if (!response.ok) throw new Error('The music source could not connect. Please retry.');
-          const data = await response.json(); videoId = data.videoId;
+          const data = await response.json(); videoId = data.videoId; source = describeSource(data);
         }
+        if (mounted.current && token === generation.current) setSourceInfo(source || { kind: 'youtube', official: false });
         if (!mounted.current || token !== generation.current) return;
         if (!videoId) throw new Error('No playable video found for this track. Try another song.');
         if (!selected.videoId && !cached?.lyrics) {
@@ -349,6 +388,7 @@ export function usePlayer() {
     setQueueIndex(current.current.queue.findIndex(item => item.id === selected.id));
     setLyrics(null); setLyricsOffset(0); setLyricsLoading(!selected.localUrl); setPlaying(true); setError('');
     if (!selected.localUrl) showLyricsFor(selected, token, controller, videoId);
+    setSourceInfo(selected.localUrl ? { kind: 'local', format: selected.format || null } : prepared.current.get(selected.id)?.source || { kind: 'youtube', official: false });
   }, [flushListening, showLyricsFor, clock]);
 
   const seek = useCallback(value => {
@@ -454,12 +494,15 @@ export function usePlayer() {
       return [...rest.slice(0, index + 1), item, ...rest.slice(index + 1)];
     });
   }, [setQueue]);
-  const loadLocalFiles = useCallback(files => {
-    const valid = Array.from(files || []).filter(file => file.type.startsWith('audio/') || /\.(mp3|m4a|aac|wav|ogg|flac|opus)$/i.test(file.name));
+  const loadLocalFiles = useCallback(async files => {
+    const valid = Array.from(files || []).filter(file => file.type.startsWith('audio/') || /\.(mp3|m4a|aac|wav|ogg|oga|flac|opus|aif|aiff|webm|caf)$/i.test(file.name));
     if (!valid.length) { setError('Choose an audio file.'); return; }
-    const tracks = valid.map(file => {
+    // Header probes are tiny reads; they let the player state the real format.
+    const formats = await Promise.all(valid.map(file => probeFile(file).catch(() => null)));
+    if (!mounted.current) return;
+    const tracks = valid.map((file, index) => {
       const url = URL.createObjectURL(file); localUrls.current.add(url);
-      return { id: `local-${crypto.randomUUID()}`, title: file.name.replace(/\.[^.]+$/, ''), artist: 'On this device', album: 'Local audio', artwork: '', duration: 0, localUrl: url };
+      return { id: `local-${crypto.randomUUID()}`, title: file.name.replace(/\.[^.]+$/, ''), artist: 'On this device', album: 'Local audio', artwork: '', duration: 0, localUrl: url, format: formats[index] };
     });
     void loadTrack(tracks[0], tracks);
     const graph = ensureAudioGraph();
@@ -472,7 +515,9 @@ export function usePlayer() {
   const loadLocalFile = useCallback(file => loadLocalFiles(file ? [file] : []), [loadLocalFiles]);
 
   useEffect(() => {
-    if (!autoplay || !track || track.localUrl || queue.length - queueIndex > 3 || recommendedFor.current === track.id) return;
+    // The queue never runs dry, but grows progressively: a small batch whenever
+    // two or fewer songs remain, shaped by what the listener finishes and skips.
+    if (!autoplay || !track || track.localUrl || queue.length - queueIndex - 1 > 2 || recommendedFor.current === track.id) return;
     // Wait briefly for lyrics: their language keeps the radio in the same language.
     if (lyricsLoading && !waitingForRadio.current) return;
     const controller = new AbortController(); recommendationRequest.current = controller;
@@ -481,10 +526,11 @@ export function usePlayer() {
       if (controller.signal.aborted) return;
       setRecommendationsLoading(true); setRecommendationError('');
       try {
-        const lang = detectLanguage(lyricsText(current.current.lyrics))?.lang;
+        const seed = pickSeed(track);
+        const lang = seed.track === track ? detectLanguage(lyricsText(current.current.lyrics))?.lang : undefined;
         let suggestions = [];
         for (let attempt = 0; attempt < 3; attempt++) {
-          try { suggestions = await getSimilarTracks(track, controller.signal, { lang }); if (suggestions.length) break; }
+          try { suggestions = tasteFilter(await getSimilarTracks(seed.track, controller.signal, { lang })).map(item => seed.reason ? { ...item, recommendationReason: seed.reason } : item); if (suggestions.length) break; }
           catch (err) { if (controller.signal.aborted || attempt === 2) throw err; }
           if (attempt < 2) await new Promise(resolve => {
             const timer = setTimeout(done, (attempt + 1) * 1500);
@@ -501,7 +547,7 @@ export function usePlayer() {
           const key = identity(candidate);
           if (seen.has(key) || items.some(item => item.id === candidate.id)) return false;
           seen.add(key); return true;
-        });
+        }).slice(0, 5);
         if (!additions.length) { setRecommendationError('No new similar songs found. Try another track.'); return; }
         // Retain recent history and every future/manual selection without an unbounded radio queue.
         const index = items.findIndex(item => item.id === track.id);
@@ -542,13 +588,15 @@ export function usePlayer() {
       void (async () => {
         try {
           let videoId = selected.videoId;
+          let source = videoId ? { kind: 'youtube', official: false, video: true, channel: selected.artist } : null;
           if (!videoId) {
             const response = await fetch(buildApiUrl('/api/video/search', { artist: selected.artist, title: selected.title, duration: selected.duration, variant: selected.variant }), { signal: controller.signal });
             if (!response.ok) return;
-            videoId = (await response.json()).videoId;
+            const data = await response.json();
+            videoId = data.videoId; source = describeSource(data);
           }
           if (!videoId || controller.signal.aborted) return;
-          const entry = { videoId }; prepared.current.set(selected.id, entry);
+          const entry = { videoId, source }; prepared.current.set(selected.id, entry);
           while (prepared.current.size > 3) prepared.current.delete(prepared.current.keys().next().value);
           const response = await fetch(buildApiUrl('/api/lyrics/structured', { artist: selected.artist, title: selected.title, album: selected.album, duration: selected.duration, videoId }), { signal: controller.signal });
           if (response.ok && !controller.signal.aborted) entry.lyrics = await response.json();
@@ -569,7 +617,7 @@ export function usePlayer() {
     mix.current = token;
     const from = analysis.current.get(current.current.track?.id);
     const to = analysis.current.get(selected.id);
-    const plan = planTransition(from?.outro, to?.intro);
+    const plan = planTransition(from?.outro, to?.intro, preferences.current.blendLength);
     try {
       if (incoming.element.src !== selected.localUrl) incoming.element.src = selected.localUrl;
       incoming.element.playbackRate = 1; incoming.element.preservesPitch = true;
@@ -589,6 +637,11 @@ export function usePlayer() {
       outgoing.gain.gain.cancelScheduledValues(now); incoming.gain.gain.cancelScheduledValues(now);
       outgoing.gain.gain.setValueCurveAtTime(outCurve, now, seconds);
       incoming.gain.gain.setValueCurveAtTime(inCurve, now, seconds);
+      // Both decks move onto the filter route (filters start neutral, so this is silent).
+      for (const deck of [outgoing, incoming]) {
+        deck.dry.gain.cancelScheduledValues(now); deck.dry.gain.setTargetAtTime(0, now, .015);
+        deck.wet.gain.cancelScheduledValues(now); deck.wet.gain.setTargetAtTime(1, now, .015);
+      }
       // Hollow: the outgoing band narrows toward the mids and echoes out; the incoming opens up.
       outgoing.delay.delayTime.setValueAtTime(Math.min(1.5, (plan.beatSeconds || .5) * .75), now);
       outgoing.highpass.frequency.setValueAtTime(20, now);
@@ -713,7 +766,7 @@ export function usePlayer() {
       if (!element || element.paused || !selected.localUrl || !Number.isFinite(element.duration)) return;
       const remaining = element.duration - element.currentTime;
       const from = analysis.current.get(state.track?.id);
-      const plan = planTransition(from?.outro, analysis.current.get(selected.id)?.intro);
+      const plan = planTransition(from?.outro, analysis.current.get(selected.id)?.intro, preferences.current.blendLength);
       const start = Math.min(element.duration - plan.seconds, from?.mixStart ?? element.duration - plan.seconds);
       const rampStart = start - plan.rampSeconds;
       const standby = decks.current.find(deck => deck.element !== element);
@@ -736,7 +789,7 @@ export function usePlayer() {
     const position = active.getCurrentTime();
     const videoId = prepared.current.get(selected.id)?.videoId || selected.videoId;
     const tempoA = dj ? tempos.current.get(state.track?.id) : null, tempoB = dj ? tempos.current.get(selected.id) : null;
-    let plan = planTransition(tempoA ? { bpm: tempoA, confidence: 1 } : null, tempoB ? { bpm: tempoB, confidence: 1 } : null);
+    let plan = planTransition(tempoA ? { bpm: tempoA, confidence: 1 } : null, tempoB ? { bpm: tempoB, confidence: 1 } : null, preferences.current.blendLength);
     const rates = active.getAvailablePlaybackRates?.();
     // Only glide when this embed accepts rates fine enough to actually reach the target.
     if (plan.matched && Math.abs(quantizeRate(rates, plan.rate) - plan.rate) > .01) plan = { ...plan, rate: 1, matched: false, rampSeconds: 0, targetBpm: null };
@@ -843,6 +896,6 @@ export function usePlayer() {
     return Number.isFinite(value) ? value : 0;
   }, []);
 
-  return { track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, setLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime };
+  return { blendLength, setBlendLength, sourceInfo, surround, setSurround, audioOutput, track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, setLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime };
 }
 export default usePlayer;
