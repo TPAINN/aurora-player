@@ -42,5 +42,5 @@ For opt-in diagnostics open `/?audit=1` and inspect the `#aurora-audit` output. 
 
 MIT for Aurora source; third-party packages retain their own licenses.
 
-DJ mode supports preloaded local crossfades with measured tempo adjustment and a hollow filter sweep; online playback uses source-limited volume fades. See [DJ transition details](docs/DJ-TRANSITION.md). Search runs through the same-origin `/api/search` endpoint. Recommendations and listening preferences remain account-free.
+DJ mode glides the ending song into the next song's tempo before a beat-aligned, five-second blend. Local audio adds a hollow filter sweep and echo tail. Online playback overlaps two YouTube decks, and changes tempo only when catalogue BPM and the player allow it. See [DJ transition details](docs/DJ-TRANSITION.md). Radio stays in the seed's language and a compatible genre. Search runs through the same-origin `/api/search` endpoint, and `/api/tempo` returns catalogue BPM. Recommendations and listening preferences remain account-free.
 
