@@ -1,59 +1,46 @@
 # Aurora Player
 
-> Music you can feel — word-level karaoke, beat-reactive visuals, YouTube integration.
+A music-first React PWA with an artwork-led player, responsive discovery, local favorites, a queue, and synchronized lyrics. No account is required. The former marketing site redirects straight into the app.
 
-[![Live](https://img.shields.io/badge/live-demo-blueviolet?style=flat-square)](https://aurora-player-tpainn.vercel.app/)
-[![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-[![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react)](https://react.dev)
+## Run
 
-![Aurora Player screenshot](docs/screenshot.jpg)
-
----
-
-## What it does
-
-Aurora syncs every lyric word-by-word as the song plays, extracts the album's live color palette, and reacts to every beat — free, no account required.
-
-| Feature | Detail |
-|---|---|
-| Word-level karaoke | Enhanced LRC + Rich Sync — each word highlights on beat |
-| Beat-reactive canvas | Background animations that pulse with the music |
-| YouTube integration | Official video/audio plays behind the lyrics |
-| Adaptive palette | Material You colors extracted from every album cover |
-| Section detection | Verse / chorus / bridge each trigger different visuals |
-| Zen mode | Distraction-free full-screen lyrics |
-| PWA | Installable on mobile, offline shell |
-
-## Stack
-
-| Layer | Tech |
-|---|---|
-| Frontend | React 19 · Framer Motion · Vite 8 |
-| Backend | Node 22 · Express · TypeScript |
-| Lyrics | LRCLib · Genius · Musixmatch (RapidAPI) |
-| Music meta | iTunes Search API |
-| Video | YouTube IFrame API |
-| Deploy | Vercel · Render |
-
-## Quick start
-
-```bash
-git clone https://github.com/TPAINN/aurora-player.git
-cd aurora-player
-npm install && npm install --prefix server
-cp server/.env.example server/.env
-npm run dev
+```sh
+npm ci
+npm run dev -- --port 5187
 ```
 
-Open **http://localhost:5173**
+Vite serves the same `/api/video/search` and `/api/lyrics/structured` handlers used on Vercel. The separate `server/` folder is a legacy optional backend; it is not required for the web app.
 
-**`server/.env`**
+```sh
+npm run lint
+npm test
+npm run build
+npm run preview -- --port 5188
 ```
-GENIUS_ACCESS_TOKEN=
-RAPIDAPI_KEY=
-PORT=3001
-```
+
+## Listening
+
+Search uses the iTunes music catalogue. Online playback uses the YouTube IFrame player; availability, advertisements and audio quality are controlled by that source. Aurora adds no application advertisements. Device audio plays directly with the browser's supported codecs. Favorites and history stay in local storage; local audio files are never uploaded.
+
+Lyrics race BetterLyrics, Bini Lyrics, LyricsPlus and LRCLib, with SimpMusic available when a YouTube ID resolves. Genuine word timing is preferred, followed by line timing and plain text. Timing is never fabricated. Provider outages and missing lyrics do not stop audio.
+
+## Design and motion
+
+One responsive visual system connects discovery, search, library, queue and the full-screen player. Motion handles carousel springs and view transitions. [Calligraph](https://calligraph.raphaelsalaja.com/) animates changing track titles. [Tegaki](https://github.com/gkurt/tegaki) generated the welcome handwriting SVG at build time; its generator is not included in the runtime bundle. Reduced-motion preferences are respected.
+
+[BitChord](https://github.com/kushagrasinghx/BitChord) informed the lyrics-provider research. Aurora's JavaScript adapters and renderer were independently implemented; no GPL implementation was copied. Music, cover art and lyrics remain the property of their respective rights holders.
+
+## Deployment
+
+The repository root is the Vercel Vite application (`npm run build`, output `dist`). `web/` only holds the redirect for the former `aurora-player-tpainn.vercel.app` landing deployment. Both projects follow the production branch.
+
+The installable PWA caches its visited application shell and assets. Online catalogue, YouTube and lyric requests still require connectivity; it does not download music for offline use.
+
+For opt-in diagnostics open `/?audit=1` and inspect the `#aurora-audit` output. Measurements stay in the page and are never sent elsewhere. See [performance audit](docs/PERFORMANCE-AUDIT.md), [design](DESIGN.md), and [product scope](PRODUCT.md).
 
 ## License
 
-MIT
+MIT for Aurora source; third-party packages retain their own licenses.
+
+DJ mode supports preloaded local crossfades with measured tempo adjustment and a hollow filter sweep; online playback uses source-limited volume fades. See [DJ transition details](docs/DJ-TRANSITION.md). Search runs through the same-origin `/api/search` endpoint. Recommendations and listening preferences remain account-free.
+

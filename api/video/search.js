@@ -12,6 +12,7 @@ const readCache = (key) => {
   return c.value;
 };
 const writeCache = (key, value, ttlMs = 1000 * 60 * 30) => {
+  if (videoSearchCache.size >= 300) videoSearchCache.delete(videoSearchCache.keys().next().value);
   videoSearchCache.set(key, { value, expiresAt: Date.now() + ttlMs });
 };
 
@@ -20,10 +21,9 @@ const videoQueriesFor = (artist, title) => {
   const dash = `${artist} - ${title}`.replace(/\s+/g, ' ').trim();
   return [
     `${base} topic`,
+    `${base} official audio`,
     `${dash} topic`,
     `${artist} - topic ${title}`,
-    `${base} vevo`,
-    `${base} official audio`,
     `${dash} official audio`,
     `${base} audio`,
     `${base} visualizer`,
@@ -69,7 +69,7 @@ const parseDurationText = (value) => {
 
 const HARD_REJECT = -99999;
 
-const scoreVideoCandidate = (candidateTitle, candidateChannel, duration = 0, desiredDuration = 0, artist = '', track = '') => {
+export const scoreVideoCandidate = (candidateTitle, candidateChannel, duration = 0, desiredDuration = 0, artist = '', track = '') => {
   const t = cleanMatchText(candidateTitle);
   const ch = cleanMatchText(candidateChannel);
   const trackTokens = tokenize(track);
@@ -99,14 +99,13 @@ const scoreVideoCandidate = (candidateTitle, candidateChannel, duration = 0, des
   score += trackCov * 80;
   if (t.includes(cleanMatchText(track))) score += 35;
   if (t.includes(cleanMatchText(artist))) score += 20;
-  if (/\btopic\b/.test(ch) || /\btopic\b/.test(t)) score += 50;
-  if (/vevo$/.test(ch) || /\bvevo\b/.test(t)) score += 35;
-  if (/\bofficial audio\b/.test(t)) score += 30;
+  if (/\btopic\b/.test(ch)) score += 100;
+  if (/\bofficial audio\b/.test(t)) score += 75;
   else if (/\bofficial\b/.test(t) && !/\bmusic video\b/.test(t)) score += 12;
   if (/\baudio\b/.test(t)) score += 18;
   if (/\bvisualizer\b/.test(t)) score += 10;
   if (/\blyrics?\b/.test(t)) score -= 12;
-  if (/\bmusic video\b/.test(t)) score -= 5;
+  if (/\b(?:music|official) video\b/.test(t)) score -= 75;
   if (/\blive\b|\bcover\b|\bsped up\b|\bslowed\b/.test(t)) score -= 50;
   if (/\btranslat/.test(t) || /\bremix\b/.test(t)) score -= 20;
 
@@ -281,9 +280,15 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
 
+  if (req.method !== 'GET') { res.setHeader('Allow', 'GET, OPTIONS'); res.status(405).json({ error: 'Method not allowed' }); return; }
+  if (![req.query.artist, req.query.title].every(value => typeof value === 'string' && value.trim().length > 0 && value.length <= 200)) {
+    res.status(400).json({ error: 'Valid artist and title are required' }); return;
+  }
+
   const artist = String(req.query.artist || '').trim();
   const title = String(req.query.title || '').trim();
   const desiredDuration = Number(req.query.duration || 0);
+  if (!Number.isFinite(desiredDuration) || desiredDuration < 0 || desiredDuration > 86400) { res.status(400).json({ error: 'Invalid duration' }); return; }
   const exclude = String(req.query.exclude || '').split(',').map((v) => v.trim()).filter(Boolean);
 
   if (!artist || !title) { res.status(400).json({ error: 'Missing artist or title' }); return; }
@@ -325,7 +330,7 @@ export default async function handler(req, res) {
       for (const c of ranked) if (c.confidence > bestConfidenceSoFar) bestConfidenceSoFar = c.confidence;
       // Fast path: a near-perfect match is good enough — stop early to keep
       // latency low and stay well under the serverless timeout.
-      if (bestConfidenceSoFar >= 0.90) break;
+      if (bestConfidenceSoFar >= 0.90 && ranked.some(c => /topic/i.test(c.channel) || /official audio/i.test(c.title))) break;
     }
 
     const deduped = Array.from(
@@ -338,7 +343,7 @@ export default async function handler(req, res) {
         }, new Map())
         .values(),
     )
-      .sort((a, b) => (b.confidence !== a.confidence ? b.confidence - a.confidence : b.score - a.score))
+      .sort((a, b) => b.score - a.score)
       .slice(0, 8);
 
     const best = deduped[0];
