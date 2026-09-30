@@ -3189,3 +3189,44 @@ button {
     height: calc(100dvh - 330px);
   }
 }
+.shortcut-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px 16px;
+  padding: 20px 0 4px;
+  font-size: 11px;
+  color: #c3cec6;
+}
+.shortcut-list span {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.shortcut-list kbd {
+  margin: 0;
+  opacity: 1;
+  min-width: 34px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: #ffffff12;
+  color: var(--accent);
+  text-align: center;
+  font: 600 10px system-ui;
+}
+@media (hover: none) {
+  .shortcut-list {
+    display: none;
+  }
+}
+/* Performance: fade lines at the list edges instead of masking the scroller. */
+.lyrics-scroll {
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+.lyric-line.at-edge:not(.current) {
+  opacity: 0.1;
+}
+.lyric-word.singing .word-fill,
+.word-fill {
+  text-shadow: none;
+}

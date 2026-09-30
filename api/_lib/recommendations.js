@@ -100,7 +100,7 @@ function diversify(candidates, limit) {
 export async function fetchRecommendations(current, { fetcher = fetch, signal = AbortSignal.timeout(8000), lang = null, genre = null, limit = 10 } = {}) {
   const deezer = async path => readJson(new URL(path, 'https://api.deezer.com'), AbortSignal.any([signal, AbortSignal.timeout(2200)]), fetcher);
   const optional = promise => promise.catch(error => { if (signal.aborted) throw error; return null; });
-  const convert = (item, reason, source) => ({ id: `deezer:${item.id}`, title: item.title, artist: item.artist?.name, artistId: item.artist?.id, album: item.album?.title || '', albumId: item.album?.id, artwork: safeImage(item.album?.cover_big), duration: Number(item.duration), recommendationReason: reason, source });
+  const convert = (item, reason, source) => ({ id: `deezer:${item.id}`, title: item.title, artist: item.artist?.name, artistId: item.artist?.id, album: item.album?.title || '', albumId: item.album?.id, artwork: safeImage(item.album?.cover_xl || item.album?.cover_big), duration: Number(item.duration), recommendationReason: reason, source });
   const tracksOf = (value, reason, source) => (value?.data || []).filter(item => Number.isSafeInteger(item.id)).map(item => convert(item, reason, source));
   const genresOf = async id => {
     if (!Number.isSafeInteger(id) || id <= 0) return null;

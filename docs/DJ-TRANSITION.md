@@ -14,10 +14,19 @@ A transition has three parts: **choose the cue**, **glide the tempo**, **blend**
 YouTube exposes no PCM, so there are no filters, echo or measured beats online.
 
 - **Cue.** After the last genuinely timed vocal line inside the final 30 seconds, otherwise just before the natural ending. Seeking past the vocal cue falls back to the ending cue.
-- **Preparation.** About 22 seconds before the cue, the next song loads muted on the standby deck, buffers, and pauses at its start.
+- **Preparation.** The standby deck is created as soon as the next song is known. Up to 90 seconds before the cue (never in the first 6 seconds of a song) the next song loads muted, buffers, and pauses at its start; lyrics, catalogue tempo and full-size artwork are fetched at the same time, so nothing loads during the blend.
+- **No start gap.** The standby deck is started 0.35 s before the cue to absorb YouTube's start latency.
 - **Blend.** At the cue the standby deck starts and both decks follow equal-power volume curves for about five seconds; the video surface crossfades between decks. Metadata, lyrics and the queue position follow the incoming song from its first moment.
 - **Tempo.** Only when the catalogue (Deezer) knows both BPMs *and* this embed accepts playback rates fine enough to reach the target. The UI claims tempo matching only after the player confirms the rate.
 - **Fallbacks.** If the standby deck cannot start within 3 seconds (for example a mobile autoplay block), the current song continues and fades out; the next song fades in.
+
+## Seamless playback (DJ off)
+
+Online songs still use the standby deck: the next song buffers early and takes over in a 0.35 s equal-power hand-off at the natural ending, instead of stopping and loading.
+
+## Altered uploads
+
+The resolver rejects 8D/16D/3D-audio, slowed/reverb, sped-up, nightcore, bass-boosted and hour-long loop uploads unless the catalogue title itself is that version or the listener searched for it (for example “blinding lights 8d”), in which case that version is preferred.
 
 ## Controls
 
