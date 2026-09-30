@@ -59,6 +59,11 @@ const PRIME_LEAD = 90;
 // YouTube needs a few hundred milliseconds to become audible after playVideo().
 const START_LEAD = .35;
 const START_TIMEOUT = 3000;
+// Blend lengths offered: 5–10 s, the range a DJ would ride two songs together.
+const BLENDS = [5, 8, 10];
+// Some embeds only play whole 0.05 speed steps; tempo plans then use that grid.
+const RATE_STEP = .05;
+const snapRate = (value, quantum) => Number((Math.round(value / quantum) * quantum).toFixed(3));
 
 export function usePlayer() {
   const [track, setTrack] = useState(null);
@@ -86,7 +91,7 @@ export function usePlayer() {
   // Whether this YouTube embed honours fine playback rates: learnt once, by asking and reading back.
   const rateSupport = useRef('unknown');
   const [surround, updateSurround] = useState(() => readPreference('aurora-surround', true));
-  const [blendLength, updateBlendLength] = useState(() => { try { return [3, 5, 8].includes(Number(localStorage.getItem('aurora-blend'))) ? Number(localStorage.getItem('aurora-blend')) : 5; } catch { return 5; } });
+  const [blendLength, updateBlendLength] = useState(() => { try { return BLENDS.includes(Number(localStorage.getItem('aurora-blend'))) ? Number(localStorage.getItem('aurora-blend')) : 8; } catch { return 8; } });
   const [sourceInfo, setSourceInfo] = useState(null);
   const [djState, setDjState] = useState({ ...IDLE, mode: 'online' });
   const announced = useRef({ ...IDLE, mode: 'online' });
@@ -243,7 +248,7 @@ export function usePlayer() {
   const setTransitionFx = useCallback(value => { preferences.current.transitionFx = Boolean(value); updateTransitionFx(Boolean(value)); savePreference('aurora-dj-fx', Boolean(value)); }, []);
   const setLiveDjChanges = useCallback(value => { preferences.current.liveDjChanges = Boolean(value); updateLiveDjChanges(Boolean(value)); savePreference('aurora-live-dj', Boolean(value)); cancelMix(); }, [cancelMix]);
   const setBlendLength = useCallback(value => {
-    const seconds = [3, 5, 8].includes(Number(value)) ? Number(value) : 5;
+    const seconds = BLENDS.includes(Number(value)) ? Number(value) : 8;
     preferences.current.blendLength = seconds; updateBlendLength(seconds);
     try { localStorage.setItem('aurora-blend', String(seconds)); } catch { /* Preference lasts this session. */ }
     cancelMix(); attemptedMix.current = '';
@@ -665,7 +670,8 @@ export function usePlayer() {
       const volume = current.current.volume / 100;
       const outCurve = new Float32Array(65), inCurve = new Float32Array(65);
       for (let i = 0; i < outCurve.length; i++) {
-        const [out, input] = equalPower(i / 64);
+        // Song B rises under a held song A, then song A gives way: no loudness hole.
+        const [out, input] = blendCurve(i / 64);
         outCurve[i] = out * volume; inCurve[i] = input * volume;
       }
       outgoing.gain.gain.cancelScheduledValues(now); incoming.gain.gain.cancelScheduledValues(now);
@@ -682,14 +688,16 @@ export function usePlayer() {
       // two kick drums and bass lines never stack.
       const mid = now + seconds / 2, swap = Math.max(.12, Math.min(.6, plan.beatSeconds || .25));
       outgoing.delay.delayTime.setValueAtTime(Math.min(1.5, (plan.beatSeconds || .5) * .75), now);
+      // Song A keeps its full range (and the only bass) until the swap, so the mix
+      // never thins out; after it, song A narrows into the hollow band and echoes out.
       outgoing.highpass.frequency.setValueAtTime(20, now);
-      outgoing.highpass.frequency.exponentialRampToValueAtTime(90, mid);
+      outgoing.highpass.frequency.setValueAtTime(20, mid);
       outgoing.highpass.frequency.exponentialRampToValueAtTime(380, mid + swap);
       outgoing.highpass.frequency.exponentialRampToValueAtTime(850, now + seconds);
       outgoing.lowpass.frequency.setValueAtTime(20000, now);
-      outgoing.lowpass.frequency.exponentialRampToValueAtTime(5200, mid);
+      outgoing.lowpass.frequency.setValueAtTime(20000, mid);
       outgoing.lowpass.frequency.exponentialRampToValueAtTime(1200, now + seconds);
-      outgoing.lowpass.Q.setValueAtTime(.8, now);
+      outgoing.lowpass.Q.setValueAtTime(.8, mid);
       outgoing.lowpass.Q.linearRampToValueAtTime(4, now + seconds);
       outgoing.echoSend.gain.setValueAtTime(0, now);
       outgoing.echoSend.gain.linearRampToValueAtTime(.5 * volume, now + seconds * .65);
@@ -697,7 +705,7 @@ export function usePlayer() {
       incoming.highpass.frequency.setValueAtTime(320, now);
       incoming.highpass.frequency.setValueAtTime(320, mid);
       incoming.highpass.frequency.exponentialRampToValueAtTime(20, mid + swap);
-      incoming.lowpass.frequency.setValueAtTime(6000, now);
+      incoming.lowpass.frequency.setValueAtTime(9000, now);
       incoming.lowpass.frequency.exponentialRampToValueAtTime(20000, now + seconds);
       Object.assign(token, { starting: false, started: now, seconds, plan, from, to, startRate: outgoing.element.playbackRate });
       audio.current = incoming.element;
@@ -745,13 +753,21 @@ export function usePlayer() {
       const loaded = incoming.getVideoData?.().video_id === blend.videoId;
       if (loaded && incoming.getPlayerState?.() === 1 && incoming.getCurrentTime?.() > (blend.entry || 0) + .15) {
         incoming.pauseVideo(); incoming.seekTo(blend.entry || 0, true);
-        if (blend.probeRate) {
-          rateSupport.current = Math.abs((incoming.getPlaybackRate?.() ?? 1) - blend.probeRate) < .005 ? 'fine' : 'coarse';
-          incoming.setPlaybackRate?.(1);
+        if (blend.probe) {
+          // First read-back: does the embed take a 0.05 step at all?
+          if (Math.abs((incoming.getPlaybackRate?.() ?? 1) - 1.05) < .005) {
+            rateSupport.current = 'step';
+            // Second: does it also take an off-grid rate? Read back while primed.
+            incoming.setPlaybackRate?.(1.04); blend.probe = { asked: performance.now() };
+          } else { rateSupport.current = 'coarse'; blend.probe = null; incoming.setPlaybackRate?.(1); }
         }
         blend.stage = 'primed';
       }
       return;
+    }
+    if (blend.stage === 'primed' && blend.probe?.asked && performance.now() - blend.probe.asked > 400) {
+      if (Math.abs((incoming.getPlaybackRate?.() ?? 1) - 1.04) < .005) rateSupport.current = 'fine';
+      blend.probe = null; incoming.setPlaybackRate?.(1);
     }
     if (blend.stage === 'starting') {
       if (incoming.getPlayerState?.() === 1 && incoming.getVideoData?.().video_id === blend.videoId) {
@@ -798,7 +814,7 @@ export function usePlayer() {
         setIdle('Tempo blend complete');
         return;
       }
-      const rate = Math.round(recoverRate(after, seconds, blend.inRate) * 200) / 200;
+      const rate = snapRate(recoverRate(after, seconds, blend.inRate), blend.quantum || .005);
       if (rate !== blend.rate) { blend.rate = rate; incoming.setPlaybackRate?.(rate); }
     }
   }, [cancelMix, commitIncoming, setIdle, announce, mixProgress]);
@@ -867,13 +883,17 @@ export function usePlayer() {
     const position = active.getCurrentTime();
     const videoId = prepared.current.get(selected.id)?.videoId || selected.videoId;
     const tempoA = dj ? tempos.current.get(state.track?.id) : null, tempoB = dj ? tempos.current.get(selected.id) : null;
-    let plan = planTransition(tempoA ? { bpm: tempoA, confidence: 1 } : null, tempoB ? { bpm: tempoB, confidence: 1 } : null, preferences.current.blendLength);
+    const tempoPlan = options => planTransition(tempoA ? { bpm: tempoA, confidence: 1 } : null, tempoB ? { bpm: tempoB, confidence: 1 } : null, preferences.current.blendLength, options);
+    let plan = tempoPlan();
     const rates = active.getAvailablePlaybackRates?.();
-    // Only glide when this embed actually plays the rates we need: either it lists
-    // them, or it confirmed a requested rate when we read it back while priming.
+    // Only glide when this embed actually plays the rates we need: it lists them,
+    // or a requested rate read back correctly while priming. Embeds that only take
+    // 0.05 steps get the best pair of rates on that grid.
     const listed = plan.matched && Math.abs(quantizeRate(rates, plan.rate) - plan.rate) <= .01;
-    const fine = listed || rateSupport.current === 'fine';
-    if (plan.matched && !fine) plan = { ...plan, rate: 1, inRate: 1, matched: false, rampSeconds: 0, recoverSeconds: 0, targetBpm: null };
+    const stepped = !listed && rateSupport.current === 'step';
+    if (stepped) plan = tempoPlan({ step: RATE_STEP });
+    else if (plan.matched && !listed && rateSupport.current !== 'fine') plan = { ...plan, rate: 1, inRate: 1, matched: false, rampSeconds: 0, recoverSeconds: 0, targetBpm: null };
+    const quantum = stepped ? RATE_STEP : .005;
     const blend = activeMix?.kind === 'online-blend' ? activeMix : null;
     // A prepared blend keeps the cue it was primed for.
     const seamless = { start: Math.max(0, length - .45), end: length, seconds: .35, source: 'seamless' };
@@ -891,10 +911,9 @@ export function usePlayer() {
       // Song B's entry: past a long instrumental intro when its timed lyrics show one.
       const nextLyrics = prepared.current.get(selected.id)?.lyrics;
       const entry = dj ? planOnlineEntry(nextLyrics?.sync !== 'plain' ? nextLyrics?.lines : [], cue.seconds) : 0;
-      // The unfiltered plan, so a probe can still discover fine rates on this embed.
-      const wanted = planTransition(tempoA ? { bpm: tempoA, confidence: 1 } : null, tempoB ? { bpm: tempoB, confidence: 1 } : null, preferences.current.blendLength);
-      const probeRate = dj && wanted.matched && rateSupport.current === 'unknown' ? (wanted.inRate !== 1 ? wanted.inRate : wanted.rate) : null;
-      const primed = { kind: 'online-blend', stage: 'priming', key, selected, videoId, index, cue, entry, seconds: cue.seconds, plan, probeRate, verified: false };
+      // Learn once which rates this embed really plays, by asking the muted standby.
+      const probe = dj && tempoA > 0 && tempoB > 0 && rateSupport.current === 'unknown';
+      const primed = { kind: 'online-blend', stage: 'priming', key, selected, videoId, index, cue, entry, seconds: cue.seconds, plan, probe, quantum, verified: false };
       mix.current = primed;
       if (dj) announce({ phase: 'priming', label: 'Getting the next song ready', mode: 'online', entryAt: entry });
       if (dj && preferences.current.transitionFx) audioContext();
@@ -902,8 +921,7 @@ export function usePlayer() {
         if (mix.current !== primed) return;
         standby.mute(); standby.setVolume(0); standby.setPlaybackRate?.(1);
         standby.loadVideoById(videoId, primed.entry);
-        // Ask the muted standby for the rate song B will enter at; the read-back decides.
-        if (primed.probeRate) standby.setPlaybackRate?.(primed.probeRate);
+        if (primed.probe) standby.setPlaybackRate?.(1.05);
       }).catch(() => { if (mix.current === primed) primed.stage = 'failed'; });
       return;
     }
@@ -911,14 +929,14 @@ export function usePlayer() {
     if (blend?.stage === 'primed') {
       if (plan.matched && position >= rampStart) {
         const target = glideRate(position, rampStart, plan.rampSeconds, plan.rate);
-        const rate = listed ? quantizeRate(rates, target) : Math.round(target * 200) / 200;
+        const rate = listed ? quantizeRate(rates, target) : snapRate(target, quantum);
         if (active.getPlaybackRate?.() !== rate) active.setPlaybackRate(rate);
         // The mixer owns this imperative state; only the confirmed rate may be claimed in the UI.
         // eslint-disable-next-line react-hooks/immutability
         blend.verified = Math.abs((active.getPlaybackRate?.() ?? 1) - plan.rate) <= .01;
         if (position < cue.start) announce({ phase: 'gliding', label: 'Matching the next tempo', mode: 'online', progress: (position - rampStart) / Math.max(1, plan.rampSeconds), fromBpm: tempoA, toBpm: plan.targetBpm });
       }
-      blend.plan = plan;
+      blend.plan = plan; blend.quantum = quantum;
       if (position >= cue.start - START_LEAD) { attemptedMix.current = key; beginOnlineBlend(blend); }
       return;
     }

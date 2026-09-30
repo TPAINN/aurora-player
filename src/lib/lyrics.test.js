@@ -44,3 +44,10 @@ test('parenthesised backing vocals are marked word by word', () => {
   assert.deepEqual(splitBackingVocals(['(Oh) ', 'yeah']), [true, false]);
   assert.deepEqual(splitBackingVocals(['no ', 'brackets']), [false, false]);
 });
+
+test('the best part is the longest peak, the earliest one on ties', async () => {
+  const { bestPart } = await import('./lyrics.js');
+  assert.equal(bestPart([]), null);
+  assert.deepEqual(bestPart([{ start: 30, end: 42 }, { start: 90, end: 110 }, { start: 150, end: 166 }]), { start: 90, end: 110 });
+  assert.deepEqual(bestPart([{ start: 30, end: 40 }, { start: 90, end: 100 }]), { start: 30, end: 40 });
+});

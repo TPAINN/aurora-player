@@ -4,7 +4,7 @@ A transition has three parts: **choose the cue**, **glide the tempo**, **blend**
 
 ## Local audio (two Web Audio decks)
 
-- **Cue selection.** Each file is decoded once (≤ 32 MB). The outgoing cue is the quietest phrase in the final 30 seconds (after 72 % of the song), snapped to the measured beat grid; steady music keeps its natural ending. The incoming cue skips silence and noise floors relative to the song's own intro loudness (about −24 dB below its loud passages, at most 12 s); soft musical intros are kept.
+- **Cue selection.** Each file is decoded once (≤ 32 MB). Within the final 30 seconds, song A leaves where its last full-energy section ends (after the last chorus, before any fade), on a 4-bar phrase when the beat is known, and early enough that the blend plays over music rather than the silent tail. Steady music keeps its natural ending. The incoming cue skips silence and noise floors relative to the song's own intro loudness (about −24 dB below its loud passages, at most 12 s); soft musical intros are kept.
 - **Tempo.** An onset-envelope autocorrelation measures BPM with sub-frame refinement and beat phase, and refuses low-confidence results. Pitch is always preserved, and no song is stretched more than ±8 %.
   - Gaps up to 4 %: song A glides to song B's tempo *before* the overlap (smoothstep, roughly 1 % per second, 3–8 s).
   - Wider gaps, up to 16 % (octave-equivalent): the tempos **meet in the middle**. Song A glides halfway, song B enters at that same tempo, and after the blend song B eases back to its own tempo. Both songs share one beat throughout the overlap.
@@ -36,7 +36,11 @@ The resolver rejects 8D/16D/3D-audio, slowed/reverb, sped-up, nightcore, bass-bo
 
 ## Controls
 
-Blend length can be Quick (about 3 s), Natural (about 5 s) or Long (about 8 s); when the beat is known it is rounded to whole bars.
+Blend length is Tight (5 s), Natural (8 s, the default) or Long (10 s); when the beat is known it is rounded to whole bars that stay within 5–10 s.
+
+Tempo reading uses a log-compressed onset envelope and confirms a beat by its bar repeat, so sparse patterns (breakbeats) are read too. Embeds that only play whole 0.05 speed steps are detected by read-back; Aurora then picks the pair of rates on that grid that lines the tempos up within 1 %, or claims no match.
+
+`scripts/render-transitions.mjs` records five transitions through the real engine (synthesized test songs) as WAV files for listening.
 
 Live DJ changes (optional) makes a manual Next overlap too: a primed online deck blends in 3 seconds, local audio in 3 seconds, otherwise a short fade. Pause, seek, disabling DJ and queue edits that change the next song cancel scheduled work and restore levels and tempo; a seek or resume re-arms the transition. Radio additions that do not change the next song leave a prepared transition alone. The timeline highlights the planned region, including the glide.
 

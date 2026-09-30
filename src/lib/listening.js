@@ -105,3 +105,26 @@ export function rankForTaste(tracks) {
   return tracks.map((track, index) => ({ track, score: score(track), index }))
     .sort((a, b) => b.score - a.score || a.index - b.index).map(item => item.track);
 }
+
+// Songs finished most often (two or more by default), most plays first, then newest.
+export function onRepeat(count = 8, minimum = 2) {
+  const songs = new Map();
+  for (const item of readHistory()) {
+    if (item.type === 'like' || item.affinity < 2 || !item.track?.title) continue;
+    const entry = songs.get(item.key) || { plays: 0, at: 0, track: null };
+    entry.plays++;
+    if (item.at >= entry.at) { entry.at = item.at; entry.track = item.track; }
+    songs.set(item.key, entry);
+  }
+  return [...songs.values()].filter(entry => entry.plays >= minimum)
+    .sort((a, b) => b.plays - a.plays || b.at - a.at).slice(0, count).map(entry => entry.track);
+}
+
+// A different starting point each day, stable within the day: home feels fresh
+// without shuffling on every visit.
+export function rotateForDay(list, date = new Date()) {
+  if (!list.length) return [];
+  const day = Math.floor((date.getTime() - date.getTimezoneOffset() * 60000) / 86400000);
+  const shift = (day * 7) % list.length;
+  return [...list.slice(shift), ...list.slice(0, shift)];
+}
