@@ -3,6 +3,10 @@
 // Returns the best-matching YouTube videoId to use as the audio source.
 // Ported from the original Fly.dev backend so audio no longer depends on it.
 
+import { VARIANTS, requestedVariant } from '../../shared/audio-variants.js';
+
+export { requestedVariant };
+
 const videoSearchCache = new Map(); // warm-instance cache
 
 const readCache = (key) => {
@@ -69,7 +73,7 @@ const parseDurationText = (value) => {
 
 const HARD_REJECT = -99999;
 
-export const scoreVideoCandidate = (candidateTitle, candidateChannel, duration = 0, desiredDuration = 0, artist = '', track = '') => {
+export const scoreVideoCandidate = (candidateTitle, candidateChannel, duration = 0, desiredDuration = 0, artist = '', track = '', variant = '') => {
   const t = cleanMatchText(candidateTitle);
   const ch = cleanMatchText(candidateChannel);
   const trackTokens = tokenize(track);
@@ -93,6 +97,12 @@ export const scoreVideoCandidate = (candidateTitle, candidateChannel, duration =
   if (/\bkaraoke\b|\bnightcore\b|\breaction\b|\bpitch shift\b/.test(t)) return HARD_REJECT;
 
   let score = 0;
+  const requestedTrack = cleanMatchText(track);
+  for (const [name, pattern] of VARIANTS) {
+    if (!pattern.test(t)) continue;
+    if (variant !== name && !pattern.test(requestedTrack)) return HARD_REJECT;
+    if (variant === name) score += 160;
+  }
   const artistCov = tokenCoverage(artist, candidateTitle);
   const trackCov = tokenCoverage(track, candidateTitle);
   score += artistCov * 45;
@@ -106,7 +116,7 @@ export const scoreVideoCandidate = (candidateTitle, candidateChannel, duration =
   if (/\bvisualizer\b/.test(t)) score += 10;
   if (/\blyrics?\b/.test(t)) score -= 12;
   if (/\b(?:music|official) video\b/.test(t)) score -= 75;
-  if (/\blive\b|\bcover\b|\bsped up\b|\bslowed\b/.test(t)) score -= 50;
+  if (/\blive\b|\bcover\b/.test(t) && !/\blive\b|\bcover\b/.test(requestedTrack)) score -= 50;
   if (/\btranslat/.test(t) || /\bremix\b/.test(t)) score -= 20;
 
   if (desiredDuration > 0 && duration > 0) {
@@ -290,15 +300,16 @@ export default async function handler(req, res) {
   const desiredDuration = Number(req.query.duration || 0);
   if (!Number.isFinite(desiredDuration) || desiredDuration < 0 || desiredDuration > 86400) { res.status(400).json({ error: 'Invalid duration' }); return; }
   const exclude = String(req.query.exclude || '').split(',').map((v) => v.trim()).filter(Boolean);
+  const variant = VARIANTS.some(([name]) => name === req.query.variant) ? req.query.variant : '';
 
   if (!artist || !title) { res.status(400).json({ error: 'Missing artist or title' }); return; }
 
-  const cacheKey = `${artist}::${title}::${desiredDuration || 0}::${exclude.join(',')}`;
+  const cacheKey = `${artist}::${title}::${desiredDuration || 0}::${exclude.join(',')}::${variant}`;
   const cached = readCache(cacheKey);
   if (cached) { res.json(cached); return; }
 
   const seen = new Set(exclude);
-  const queries = videoQueriesFor(artist, title);
+  const queries = variant ? [`${artist} ${title} ${variant}`, ...videoQueriesFor(artist, title)] : videoQueriesFor(artist, title);
   const allCandidates = [];
   let bestConfidenceSoFar = 0;
   const deadline = Date.now() + 9000; // stay under the default serverless timeout
@@ -318,7 +329,7 @@ export default async function handler(req, res) {
           const vTitle = c.title || queries[qi];
           const vChannel = c.channel || '';
           const vDur = c.duration || 0;
-          const sc = scoreVideoCandidate(vTitle, vChannel, vDur, desiredDuration, artist, title);
+          const sc = scoreVideoCandidate(vTitle, vChannel, vDur, desiredDuration, artist, title, variant);
           const conf = sc === HARD_REJECT ? 0 : toVideoConfidence(sc, vTitle, vChannel, artist, title, vDur, desiredDuration);
           return { videoId: c.videoId, title: vTitle, channel: vChannel, duration: vDur, score: sc, confidence: conf, query: queries[qi] };
         })
@@ -330,7 +341,7 @@ export default async function handler(req, res) {
       for (const c of ranked) if (c.confidence > bestConfidenceSoFar) bestConfidenceSoFar = c.confidence;
       // Fast path: a near-perfect match is good enough — stop early to keep
       // latency low and stay well under the serverless timeout.
-      if (bestConfidenceSoFar >= 0.90 && ranked.some(c => /topic/i.test(c.channel) || /official audio/i.test(c.title))) break;
+      if (!variant && bestConfidenceSoFar >= 0.90 && ranked.some(c => /topic/i.test(c.channel) || /official audio/i.test(c.title))) break;
     }
 
     const deduped = Array.from(
