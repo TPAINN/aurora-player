@@ -497,3 +497,10 @@ export function splitBackingVocals(words) {
     return backing;
   });
 }
+
+// The song's best part: its longest peak (usually the fullest refrain), earliest on ties.
+export function bestPart(ranges) {
+  let best = null;
+  for (const range of ranges || []) if (!best || range.end - range.start > best.end - best.start + 1e-9) best = range;
+  return best;
+}

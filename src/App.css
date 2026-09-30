@@ -3590,8 +3590,8 @@ button {
   inset: 0;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .5 0 0 0 0 .5 0 0 0 0 .5 0 0 0 1 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   background-size: 180px 180px;
-  opacity: 0.07;
-  mix-blend-mode: overlay;
+  opacity: 0.035;
+  /* Plain alpha, not a blend mode: animated layers beneath stay cheap to composite. */
   pointer-events: none;
 }
 @media (max-width: 760px) {
@@ -3609,7 +3609,7 @@ button {
     );
   }
   .player-veil::after {
-    opacity: 0.1;
+    opacity: 0.05;
   }
   .mobile-player-info h1,
   .mobile-player-info > p {
@@ -3845,32 +3845,182 @@ button {
   }
 }
 
-/* Peak moments (refrain, held notes): the backdrop slowly opens up and brightens.
-   Only scale and opacity move, so the blurred artwork is never re-rasterised. */
+/* A living backdrop: the artwork drifts very slowly and a soft light breathes over
+   it; through the song's peaks (refrain, held notes) it opens up and brightens.
+   Only transform and opacity move, so the blurred artwork is never re-rasterised. */
 .player-art-background {
   transition:
     scale 3.4s var(--ease-soft),
     opacity 3.4s var(--ease-soft);
 }
+/* The drift runs where the artwork is unblurred (phones); moving a large blur
+   would cost every frame on low-end desktops. */
+@media (max-width: 760px) {
+  .player-art-background {
+    animation: backdrop-drift 38s ease-in-out infinite alternate;
+  }
+}
+@keyframes backdrop-drift {
+  from {
+    translate: -1.6% -1%;
+  }
+  to {
+    translate: 1.6% 1.2%;
+  }
+}
 .player-art-background.is-peak {
-  scale: 1.06;
+  scale: 1.07;
 }
 .player-veil {
   transition: opacity 3.4s var(--ease-soft);
 }
+.player-veil::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse 70% 55% at 30% 35%, #fff2 0%, transparent 70%);
+  opacity: 0.35;
+  transition: opacity 3.4s var(--ease-soft);
+}
+
+@keyframes backdrop-breathe {
+  to {
+    opacity: 0.75;
+  }
+}
 .player-veil.is-peak {
-  opacity: 0.84;
+  opacity: 0.8;
 }
 @media (min-width: 761px) {
+  .immersive-player:not(.with-video) .player-art-background {
+    opacity: 0.6;
+  }
   .immersive-player:not(.with-video) .player-art-background.is-peak {
-    opacity: 0.66;
+    opacity: 0.76;
+  }
+}
+@media (max-width: 760px) {
+  .player-art-background .art-bg-layer {
+    filter: brightness(0.86) saturate(1.1);
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .player-art-background,
+  .player-veil::before {
+    animation: none;
+  }
   .player-art-background.is-peak {
     scale: none;
   }
 }
 .now-playing-art > .fading-cover {
   background: #0d1110;
+}
+
+/* Sheets own the scroll while open: the page behind never moves, and the sheet's
+   own scrolling stops at its edges instead of chaining to the document. */
+html.scroll-locked {
+  overflow: hidden;
+  scrollbar-gutter: stable;
+}
+.sheet {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #ffffff26 transparent;
+}
+@media (max-width: 760px) {
+  /* The title row stays in reach while long sheets scroll beneath it. */
+  .sheet header {
+    position: sticky;
+    top: -18px;
+    z-index: 2;
+    margin: 0 -22px 14px;
+    padding: 14px 22px 12px;
+    background: #232925;
+  }
+  /* A soft edge below the header, so scrolled rows fade under it instead of cutting. */
+  .sheet header::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 100%;
+    height: 14px;
+    background: linear-gradient(#232925, #23292500);
+    pointer-events: none;
+  }
+}
+
+/* The song's refrain and best part: faint marks under the timeline, and a chip to jump there. */
+.peak-mark {
+  position: absolute;
+  bottom: -5px;
+  height: 2px;
+  border-radius: 2px;
+  background: #ffffff38;
+  pointer-events: none;
+}
+.meta-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.meta-chips > .quality-chip,
+.meta-chips > .best-part-chip {
+  margin-top: 0;
+}
+.mobile-player-info .meta-chips {
+  justify-content: inherit;
+}
+.best-part-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 6px 11px;
+  border-radius: 999px;
+  border: 1px solid #c3ebcf33;
+  background: #c3ebcf14;
+  color: #d8f3e0;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.1px;
+  transition:
+    background-color 0.4s var(--ease-soft),
+    border-color 0.4s var(--ease-soft);
+}
+.best-part-chip:hover {
+  background: #c3ebcf26;
+  border-color: #c3ebcf59;
+}
+.best-part-chip:focus-visible {
+  outline: 2px solid #c3ebcf;
+  outline-offset: 2px;
+}
+
+/* The listener's name: a quiet inline field, not a form. */
+.name-row input {
+  width: min(180px, 44vw);
+  padding: 9px 12px;
+  border-radius: 11px;
+  border: 1px solid #ffffff1c;
+  background: #ffffff0d;
+  color: #f2f5ef;
+  font: inherit;
+  font-size: 14px;
+  transition:
+    border-color 0.4s var(--ease-soft),
+    background-color 0.4s var(--ease-soft);
+}
+.name-row input::placeholder {
+  color: #93a196;
+}
+.name-row input:focus-visible {
+  outline: none;
+  border-color: #c3ebcf80;
+  background: #ffffff14;
 }

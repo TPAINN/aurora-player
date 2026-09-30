@@ -10,6 +10,7 @@
 | D | DJ priming, overlap, blend curve, hollow sweep, tempo glide bounds, rate read-back, tempos meeting in the middle, manual blend, song B entry past a long intro, seamless mode, main-thread load | 37 |
 | E | Mobile (390 px), tablet (900 px), reduced motion | 15 |
 | F | Search categories, collections, Back gestures, adaptive radio and home (spotlight, Made for you, Daily rotation), quality chip and audio sheet, blend length, motion backdrop, opening, favicons, local file format | 39 |
+| H | Scroll lock behind sheets (desktop and phone, stacked sheets), name greeting, On repeat, Your artists, More like…, refrain marks and Best part, 5–10 s blend options | 12 |
 | G | Local DJ transition with real decoded WAV audio (120 → 126 BPM): glide, bound, shared tempo, entry at B's first full section, hand-over, easing back, completion | 10 |
 
 Result on the production build (`npm run preview`): **195 / 195 passed**. The hand-over now renders as a React transition, so the long-task check at the blend also passes in development mode.
