@@ -97,6 +97,14 @@ function diversify(candidates, limit) {
   return chosen;
 }
 
+// "A & B", "A x B", "A feat. B", "A, B": the full credit first (real duos such as
+// "Simon & Garfunkel" match as they are), then each credited artist on its own.
+export function artistCredits(name) {
+  const full = String(name || '').trim();
+  const parts = full.split(/\s*(?:,|;|\/|&|\+|\bx\b|\band\b|\bfeat\.?|\bft\.?|\bfeaturing\b|\bwith\b|\bvs\.?)\s*/i).map(part => part.trim()).filter(Boolean);
+  return [...new Set([full, ...(parts.length > 1 ? parts : [])])].filter(Boolean);
+}
+
 export async function fetchRecommendations(current, { fetcher = fetch, signal = AbortSignal.timeout(8000), lang = null, genre = null, limit = 10 } = {}) {
   const deezer = async path => readJson(new URL(path, 'https://api.deezer.com'), AbortSignal.any([signal, AbortSignal.timeout(2200)]), fetcher);
   const optional = promise => promise.catch(error => { if (signal.aborted) throw error; return null; });
@@ -113,14 +121,25 @@ export async function fetchRecommendations(current, { fetcher = fetch, signal = 
   let seedLang = lang || detectLanguage(`${current.title} ${current.album || ''}`)?.lang || null;
   const seedFamilies = new Set([genreFamily(genre)].filter(Boolean));
   let pool = [];
+  const credits = artistCredits(current.artist);
+  const searchNames = credits.slice(0, 3);
+  const credited = name => credits.some(credit => fold(credit) === fold(name));
   try {
     const seedQuery = `artist:"${current.artist}" track:"${current.title}"`;
-    const [artists, seeds] = await Promise.all([
-      deezer(`/search/artist?q=${encodeURIComponent(current.artist)}&limit=5`),
+    const [artistLists, seeds] = await Promise.all([
+      Promise.all(searchNames.map(name => optional(deezer(`/search/artist?q=${encodeURIComponent(name)}&limit=5`)))),
       optional(deezer(`/search?q=${encodeURIComponent(seedQuery)}&limit=5`)),
     ]);
-    const artist = (artists.data || []).find(item => fold(item.name) === fold(current.artist) && Number.isSafeInteger(item.id) && item.id > 0);
-    const seed = (seeds?.data || []).find(item => fold(item.artist?.name) === fold(current.artist) && titleKey(item.title) === titleKey(current.title));
+    const validArtist = item => Number.isSafeInteger(item?.id) && item.id > 0;
+    let artist = null;
+    searchNames.forEach((name, index) => { artist ||= (artistLists[index]?.data || []).find(item => fold(item.name) === fold(name) && validArtist(item)) || null; });
+    let seed = (seeds?.data || []).find(item => credited(item.artist?.name) && titleKey(item.title) === titleKey(current.title));
+    if (!artist) {
+      // No credited name is an artist on its own: the song itself names its main artist.
+      const found = seed || (await optional(deezer(`/search?q=${encodeURIComponent(`${current.title} ${searchNames[1] || current.artist}`)}&limit=10`)))?.data
+        ?.find(item => titleKey(item.title) === titleKey(current.title) && validArtist(item.artist));
+      if (found && validArtist(found.artist)) { seed ||= found; artist = { id: found.artist.id, name: found.artist.name }; }
+    }
     if (artist) {
       const [top, related, radio, seedGenres, seedLyrics] = await Promise.all([
         optional(deezer(`/artist/${artist.id}/top?limit=10`)),
@@ -164,10 +183,10 @@ export async function fetchRecommendations(current, { fetcher = fetch, signal = 
   const recommendations = diversify([...coherent, ...rest], limit).map(clean);
   if (recommendations.length >= 4) return recommendations;
   const url = new URL('https://itunes.apple.com/search');
-  url.search = new URLSearchParams({ term: current.artist, entity: 'song', attribute: 'artistTerm', limit: '30' });
+  url.search = new URLSearchParams({ term: credits[1] || current.artist, entity: 'song', attribute: 'artistTerm', limit: '30' });
   try {
     const data = await readJson(url, signal, fetcher);
-    const fallback = (data.results || []).filter(item => item.trackId && fold(item.artistName) === fold(current.artist)).map(item => ({ id: String(item.trackId), title: item.trackName, artist: item.artistName, artistId: item.artistId, album: item.collectionName || '', artwork: safeImage(item.artworkUrl100).replace(/100x100bb/, '600x600bb'), duration: Number(item.trackTimeMillis) / 1000, recommendationReason: `More from ${current.artist}` }));
+    const fallback = (data.results || []).filter(item => item.trackId && (credited(item.artistName) || artistCredits(item.artistName).some(credited))).map(item => ({ id: String(item.trackId), title: item.trackName, artist: item.artistName, artistId: item.artistId, album: item.collectionName || '', artwork: safeImage(item.artworkUrl100).replace(/100x100bb/, '600x600bb'), duration: Number(item.trackTimeMillis) / 1000, recommendationReason: `More from ${current.artist}` }));
     return selectRecommendations([...recommendations, ...fallback], current, limit);
   } catch (error) {
     if (recommendations.length) return recommendations;

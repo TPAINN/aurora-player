@@ -132,3 +132,50 @@ test('endpoint rejects arrays, control characters, excessive input and non-GET m
 test('oversized catalogue responses fail instead of consuming unbounded memory', async () => {
   await assert.rejects(fetchRecommendations(current, { fetcher: async () => new Response(' '.repeat(500001)) }), /too large/);
 });
+
+// ── Songs credited to several artists ("A & B", "A x B", "A feat. B", "A, B") ──
+test('artist credits split into individual artists, the full credit first', async () => {
+  const { artistCredits } = await import('./recommendations.js');
+  assert.deepEqual(artistCredits('Kali Mija & Da Africa Deep'), ['Kali Mija & Da Africa Deep', 'Kali Mija', 'Da Africa Deep']);
+  assert.deepEqual(artistCredits('Calvin Harris feat. Dua Lipa'), ['Calvin Harris feat. Dua Lipa', 'Calvin Harris', 'Dua Lipa']);
+  assert.deepEqual(artistCredits('Rema, Selena Gomez'), ['Rema, Selena Gomez', 'Rema', 'Selena Gomez']);
+  assert.deepEqual(artistCredits('Travis Scott x Drake'), ['Travis Scott x Drake', 'Travis Scott', 'Drake']);
+  assert.deepEqual(artistCredits('Simon & Garfunkel'), ['Simon & Garfunkel', 'Simon', 'Garfunkel']);
+  assert.deepEqual(artistCredits('Adele'), ['Adele']);
+});
+
+const radioOf = artistId => ({ data: [1, 2, 3, 4, 5, 6].map(i => ({ id: artistId * 100 + i, title: `Radio ${i}`, duration: 200, artist: { id: 1000 + i, name: `Radio artist ${i}` }, album: { id: 1, title: 'LP', cover_big: 'https://example.com/c.jpg' } })) });
+const collab = { artist: 'Kali Mija & Da Africa Deep', title: 'Personal' };
+
+test('a song by "A & B" still gets a radio queue from one of its artists', async () => {
+  const result = await fetchRecommendations(collab, { fetcher: async url => {
+    if (url.hostname === 'lrclib.net') return new Response('{}', { status: 404 });
+    if (url.pathname === '/search/artist') return json({ data: url.searchParams.get('q') === 'Kali Mija' ? [{ id: 5, name: 'Kali Mija' }] : [] });
+    if (url.pathname === '/search') return json({ data: [] });
+    if (url.pathname === '/artist/5/radio') return json(radioOf(5));
+    if (url.pathname.startsWith('/artist/5/')) return json({ data: [] });
+    return json({ data: [] });
+  } });
+  assert.ok(result.length >= 4, `only ${result.length}`);
+});
+
+test('when no credited name matches an artist, the song itself leads to its artist', async () => {
+  const result = await fetchRecommendations(collab, { fetcher: async url => {
+    if (url.hostname === 'lrclib.net') return new Response('{}', { status: 404 });
+    if (url.pathname === '/search/artist') return json({ data: [{ id: 77, name: 'Someone else' }] });
+    if (url.pathname === '/search') return json({ data: [{ id: 42, title: 'Personal', duration: 292, artist: { id: 8, name: 'Kali Mija' }, album: { id: 9, title: 'Personal' } }] });
+    if (url.pathname === '/artist/8/radio') return json(radioOf(8));
+    if (url.pathname.startsWith('/artist/8/')) return json({ data: [] });
+    return json({ data: [] });
+  } });
+  assert.ok(result.length >= 4, `only ${result.length}`);
+});
+
+test('the iTunes fallback accepts songs by any credited artist', async () => {
+  const result = await fetchRecommendations(collab, { fetcher: async url => {
+    if (url.hostname === 'lrclib.net') return new Response('{}', { status: 404 });
+    if (url.hostname === 'itunes.apple.com') return json({ results: [1, 2, 3, 4, 5].map(i => ({ trackId: i, trackName: `Song ${i}`, artistName: i % 2 ? 'Kali Mija' : 'Da Africa Deep', collectionName: 'LP', artworkUrl100: 'https://example.com/100x100bb.jpg', trackTimeMillis: 200000 })) });
+    return json({ data: [] });
+  } });
+  assert.ok(result.length >= 4, `only ${result.length}`);
+});

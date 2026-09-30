@@ -51,5 +51,6 @@ Recommendations combine Deezer artist radio, related artists and the artist's ow
 - **Language.** The seed language comes from the loaded lyrics (sent by the client), otherwise the title's script or the seed's own lyrics (LRCLib), otherwise a regional catalogue genre. Candidates whose lyrics or script show a different language are dropped; confirmed matches rank above unknowns.
 - **Vibe.** Album genres are grouped into families; a candidate from an incompatible family is dropped when both are known.
 - **Variety.** At most two songs per artist, avoiding back-to-back repeats.
+- **Shared credits.** Songs credited to several artists ("A & B", "A x B", "A feat. B", "A, B") try the full credit first, then each artist on its own; when no credited name is an artist, the song itself names its main artist. The iTunes fallback accepts songs by any credited artist, so every catalogue song can seed the queue.
 
 On-device listening history reorders candidates; no listening data is uploaded.

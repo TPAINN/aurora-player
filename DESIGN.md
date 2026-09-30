@@ -6,4 +6,4 @@ Mobile: full-height artwork, dark readable bottom veil, title/artist, favorite/l
 
 Desktop: five-cover perspective carousel above a floating translucent transport dock. Lyrics replace the carousel with a split artwork/lyrics composition. Home has real music recommendations, search, local library and recent listening.
 
-Motion: interruptible 300–400ms springs for sheets/carousel, artwork crossfades, restrained active-word rise and timed fill. Respect reduced motion. Native ranges, visible focus, 44px targets, accessible dialogs. Every displayed control must function.
+Motion: interruptible 300–400ms springs for sheets/carousel, artwork crossfades, restrained active-word rise and timed fill. Respect reduced motion. Micro-interactions (scroll reveals, word-by-word headline, pointer spotlight, focus cards, magnetic play, icon morphs, heart pop) animate transform and opacity only; the lyric frame rate is guarded by the live suite. Native ranges, visible focus, 44px targets, accessible dialogs. Every displayed control must function.
