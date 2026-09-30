@@ -28,6 +28,7 @@ function installApi(server) {
       "/api/recommendations": "./api/recommendations.js",
       "/api/tempo": "./api/tempo.js",
       "/api/collection": "./api/collection.js",
+      "/api/mood": "./api/mood.js",
     };
     if (!routes[url.pathname]) return next();
     req.query = Object.fromEntries(url.searchParams);

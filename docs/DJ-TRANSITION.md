@@ -36,7 +36,7 @@ The resolver rejects 8D/16D/3D-audio, slowed/reverb, sped-up, nightcore, bass-bo
 
 ## Controls
 
-Blend length is Tight (5 s), Natural (8 s, the default) or Long (10 s); when the beat is known it is rounded to whole bars that stay within 5–10 s.
+Blend length is **Auto** (the default), Tight (5 s), Natural (8 s) or Long (10 s). Auto picks the longest blend, up to 10 s, that fits between song A's last sung word and song B's first (from timed lyrics online; from the measured outro locally), so two voices never overlap; never shorter than 5 s. When the beat is known the length is rounded to whole bars within 5–10 s.
 
 Tempo reading uses a log-compressed onset envelope and confirms a beat by its bar repeat, so sparse patterns (breakbeats) are read too. Embeds that only play whole 0.05 speed steps are detected by read-back; Aurora then picks the pair of rates on that grid that lines the tempos up within 1 %, or claims no match.
 
@@ -54,3 +54,13 @@ Recommendations combine Deezer artist radio, related artists and the artist's ow
 - **Shared credits.** Songs credited to several artists ("A & B", "A x B", "A feat. B", "A, B") try the full credit first, then each artist on its own; when no credited name is an artist, the song itself names its main artist. The iTunes fallback accepts songs by any credited artist, so every catalogue song can seed the queue.
 
 On-device listening history reorders candidates; no listening data is uploaded.
+
+## Songs that cannot play
+
+The resolver ignores neutral catalogue descriptors when matching uploads ("(Original Mix)", "- Radio Edit", "(2011 Remaster)", "(feat. X)"), also searches the plain title, and, only when nothing passes the strict rules, accepts a close upload (core title present, artist named, length within 12 %). Instrumental, karaoke, backing-track and a cappella uploads are never chosen unless the song or the search asks for them.
+
+When YouTube refuses an upload (removed, private, embedding disabled), the player tries the resolver's runner-up uploads. A song with no playable upload is marked unavailable and skipped with a short notice: queue advances, DJ blends and preparation move to the next playable song instead of stopping. With shuffle on, the next song is picked ahead of time so it is prepared and blended like any other.
+
+## Hand-over visuals
+
+A DJ blend hands over as a slow dissolve: the new cover sharpens out of a soft blur, the backdrop crossfades over about three seconds, and the lyrics drift up and out while the new ones rise in after a beat. A skip keeps the quicker, direction-aware slide.
