@@ -290,4 +290,6 @@ test('online outro and intro spans come from genuinely timed lyrics only', async
   assert.deepEqual(vocalSpans({ duration: 200, outLines: a, inLines: [{ time: 8.5 }], entry: 0 }), { outroSpan: 9.5, introSpan: 8.5 });
   assert.deepEqual(vocalSpans({ duration: 200, outLines: [], inLines: [], entry: 0 }), { outroSpan: Infinity, introSpan: Infinity });
   assert.deepEqual(vocalSpans({ duration: 200, outLines: [], inLines: [{ time: 40 }], entry: 25 }), { outroSpan: Infinity, introSpan: 15 });
+  const lead = [{ time: 8, words: [{ start: 11.2, end: 11.6 }] }];
+  assert.equal(vocalSpans({ duration: 200, inLines: lead, entry: 0 }).introSpan, 11.2, 'the first sung word, not the line start');
 });
