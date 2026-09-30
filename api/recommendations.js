@@ -1,4 +1,4 @@
-import { fetchRecommendations, preferAvailableLyrics } from './_lib/recommendations.js';
+import { fetchRecommendations } from './_lib/recommendations.js';
 
 const cache = new Map();
 const pending = new Map();
@@ -8,12 +8,17 @@ export default async function handler(req, res) {
     res.setHeader('Allow', 'GET');
     return res.status(405).json({ error: 'Method not allowed' });
   }
-  const { artist, title } = req.query || {};
-  if (![artist, title].every(value => typeof value === 'string' && value.trim() && value.length <= 200 && !Array.from(value).some(character => character.charCodeAt(0) < 32))) {
+  const { artist, title, album = '', lang = '', genre = '', duration = '' } = req.query || {};
+  const text = (value, max) => typeof value === 'string' && value.length <= max && !Array.from(value).some(character => character.charCodeAt(0) < 32);
+  const seconds = duration === '' ? NaN : Number(duration);
+  if (![artist, title].every(value => text(value, 200) && value.trim()) || !text(album, 200) || !text(genre, 60)
+    || typeof lang !== 'string' || (lang && !/^[a-z]{2,4}$/.test(lang))
+    || typeof duration !== 'string' || (duration !== '' && !(seconds > 0 && seconds <= 86400))) {
     return res.status(400).json({ error: 'Valid artist and title are required.' });
   }
-  const track = { artist: artist.trim(), title: title.trim() };
-  const key = JSON.stringify(track);
+  const track = { artist: artist.trim(), title: title.trim(), album: album.trim(), ...(duration ? { duration: seconds } : {}) };
+  const options = { lang: lang || null, genre: genre.trim() || null };
+  const key = JSON.stringify([track, options]);
   res.setHeader('Cache-Control', 'public, s-maxage=1800, stale-while-revalidate=3600');
   const cached = cache.get(key);
   if (cached?.until > Date.now()) return res.json({ tracks: cached.tracks });
@@ -21,7 +26,7 @@ export default async function handler(req, res) {
     res.setHeader('Cache-Control', 'no-store');
     return res.status(503).json({ error: 'Recommendations are busy. Please retry.' });
   }
-  if (!pending.has(key)) pending.set(key, fetchRecommendations(track).then(tracks => preferAvailableLyrics(tracks)));
+  if (!pending.has(key)) pending.set(key, fetchRecommendations(track, options));
   try {
     const tracks = await pending.get(key);
     if (cache.size >= 200) cache.delete(cache.keys().next().value);

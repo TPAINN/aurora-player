@@ -454,3 +454,53 @@ export function detectChorusFromGeniusLyrics(lyrics, geniusLyrics) {
 
   return mergeRanges(ranges).filter((range) => range.end - range.start >= 5);
 }
+
+// ── Peak moments ─────────────────────────────────────────────────────────────
+// Where the song opens up, read only from genuinely timed lyrics: the refrain
+// (repeated sections) and long held notes. Nothing is inferred without timing.
+const HELD_NOTE = 1.5;
+
+export function peakMoments(lines) {
+  if (!Array.isArray(lines) || !lines.length || !lines.every((line) => Number.isFinite(line?.time))) return [];
+  const refrain = weightChorusRangesByIntensity(lines, detectChorusRanges(lines));
+  const held = [];
+  for (const line of lines)
+    for (const word of line.words || [])
+      if (word.end - word.start >= HELD_NOTE) held.push({ start: Math.max(0, word.start - 0.5), end: word.end + 1.2 });
+  return mergeRanges([...refrain, ...held].map((range) => ({ ...range })), 2);
+}
+
+export const isPeakAt = (ranges, time) => ranges.some((range) => time >= range.start && time < range.end);
+
+// A line is sung from its first to its last word; backing vocals can run past
+// the start of the next line, so the next line's start is not its end.
+export function lineSpan(line) {
+  const words = line?.words;
+  if (words?.length) {
+    let end = -Infinity;
+    for (const word of words) if (word.end > end) end = word.end;
+    return { start: Math.min(line.time ?? words[0].start, words[0].start), end };
+  }
+  return { start: line?.time, end: line?.end ?? line?.time };
+}
+
+// Words inside parentheses are backing vocals, e.g. "Usually I like to (I like to)".
+export function splitBackingVocals(words) {
+  let depth = 0;
+  return words.map((word) => {
+    const text = String(word).trim();
+    const backing = depth > 0 || text.startsWith('(');
+    for (const character of text) {
+      if (character === '(') depth++;
+      else if (character === ')') depth = Math.max(0, depth - 1);
+    }
+    return backing;
+  });
+}
+
+// The song's best part: its longest peak (usually the fullest refrain), earliest on ties.
+export function bestPart(ranges) {
+  let best = null;
+  for (const range of ranges || []) if (!best || range.end - range.start > best.end - best.start + 1e-9) best = range;
+  return best;
+}

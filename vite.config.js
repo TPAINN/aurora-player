@@ -26,6 +26,8 @@ function installApi(server) {
       "/api/lyrics/structured": "./api/lyrics/structured.js",
       "/api/health": "./api/health.js",
       "/api/recommendations": "./api/recommendations.js",
+      "/api/tempo": "./api/tempo.js",
+      "/api/collection": "./api/collection.js",
     };
     if (!routes[url.pathname]) return next();
     req.query = Object.fromEntries(url.searchParams);
