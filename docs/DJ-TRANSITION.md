@@ -6,6 +6,7 @@ A transition has three parts: **choose the cue**, **glide the tempo**, **blend**
 
 - **Cue selection.** Each file is decoded once (≤ 32 MB). The outgoing cue is the quietest phrase in the final 30 seconds (after 72 % of the song), snapped to the measured beat grid; steady music keeps its natural ending. The incoming cue skips silence and noise floors relative to the song's own intro loudness (about −24 dB below its loud passages, at most 12 s); soft musical intros are kept.
 - **Tempo.** An onset-envelope autocorrelation measures BPM with sub-frame refinement and beat phase, and refuses low-confidence results. When both songs are confident and within ±8 % (octave-equivalent), song A glides to song B's tempo *before* the overlap (smoothstep, roughly 1 % per second, 3–8 s). Pitch is preserved.
+- **Entry.** Song B's entry is chosen from its first 30 seconds: on a 4-bar phrase boundary, the section whose loudness best continues song A's exit energy wins. A quiet fade meets B's soft intro; a driving outro meets B's first full section. Earlier points are preferred, so intros are never skipped for a marginal gain.
 - **Blend.** A bar-quantised overlap of about five seconds (4–7 s). The incoming deck starts so its first beat lands on the outgoing beat grid, and a bounded phase nudge (≤ 4 %) absorbs `play()` latency. Gains follow equal-power curves.
 - **Hollow.** The outgoing band narrows (high-pass 20 → 650 Hz, low-pass 20 k → 3.2 kHz) while a tempo-synced echo (¾ beat, lowpassed feedback) swells and rings out after the deck fades. The incoming song opens from the same hollow band to full range.
 
@@ -14,6 +15,7 @@ A transition has three parts: **choose the cue**, **glide the tempo**, **blend**
 YouTube exposes no PCM, so there are no filters, echo or measured beats online.
 
 - **Cue.** After the last genuinely timed vocal line inside the final 30 seconds, otherwise just before the natural ending. Seeking past the vocal cue falls back to the ending cue.
+- **Entry.** When song B's timed lyrics show a long instrumental intro, B starts so the blend completes a few seconds before its first sung line (at most 45 s in); otherwise it starts at 0:00. The DJ panel shows the chosen entry.
 - **Preparation.** The standby deck is created as soon as the next song is known. Up to 90 seconds before the cue (never in the first 6 seconds of a song) the next song loads muted, buffers, and pauses at its start; lyrics, catalogue tempo and full-size artwork are fetched at the same time, so nothing loads during the blend.
 - **No start gap.** The standby deck is started 0.35 s before the cue to absorb YouTube's start latency.
 - **Blend.** At the cue the standby deck starts and both decks follow equal-power volume curves for about five seconds; the video surface crossfades between decks. Metadata, lyrics and the queue position follow the incoming song from its first moment.

@@ -40,7 +40,7 @@ function fakeYouTube() {
       this.clock = setInterval(() => { if (this.state === 1) { this.t += .05 * this.rate; if (this.t >= this.dur) { this.t = this.dur; this.set(0); } } }, 50);
     }
     set(state) { this.state = state; this.o.events.onStateChange?.({ target: this, data: state }); }
-    loadVideoById(id, start = 0) { this.vid = id; this.t = start; this.dur = Number(JSON.parse(localStorage.getItem('durations') || '{}')[id] || 60); log('load', id, this.muted); this.set(3); setTimeout(() => this.set(1), 250); }
+    loadVideoById(id, start = 0) { this.vid = id; this.t = start; this.dur = Number(JSON.parse(localStorage.getItem('durations') || '{}')[id] || 60); log('load', id, this.muted, start); this.set(3); setTimeout(() => this.set(1), 250); }
     playVideo() { log('play', this.vid, this.muted); setTimeout(() => this.set(1), 150); }
     pauseVideo() { log('pause', this.vid); this.set(2); }
     stopVideo() { this.set(5); } seekTo(t) { log('seek', this.vid, Math.round(t * 10) / 10); this.t = t; }
@@ -65,7 +65,7 @@ const categories = term => ({
   playlists: [{ id: 'PLroads', title: 'Road trip', owner: 'Aurora fan', count: 2, artwork: 'https://img.test/c/pl.jpg' }],
   top: /^band of night$/i.test(term.trim()) ? { kind: 'artist', id: 7 } : /slowed|mashup/i.test(term) ? { kind: 'video', id: 'VVVVVVVVVV1' } : { kind: 'song', id: 1 },
 });
-async function newSession(browser, { viewport = { width: 1440, height: 900 }, prefs = {}, reducedMotion = 'no-preference', searchDelay = 120, failSearch = () => false, recommendations = [], welcome = false } = {}) {
+async function newSession(browser, { viewport = { width: 1440, height: 900 }, prefs = {}, reducedMotion = 'no-preference', searchDelay = 120, failSearch = () => false, recommendations = [], welcome = false, longIntro = false } = {}) {
   const context = await browser.newContext({ viewport, reducedMotion, hasTouch: viewport.width < 700 });
   await context.addInitScript(values => {
     if (!sessionStorage.getItem('seeded')) { for (const [key, value] of Object.entries(values)) localStorage.setItem(key, value); sessionStorage.setItem('seeded', '1'); }
@@ -105,7 +105,8 @@ async function newSession(browser, { viewport = { width: 1440, height: 900 }, pr
   await page.route('**/api/lyrics/structured?*', async route => {
     const title = new URL(route.request().url()).searchParams.get('title');
     await wait(title === 'Slow Tide' ? 900 : 150);
-    return route.fulfill({ json: title === 'Night Drive' ? wordLyrics : title === 'Morning Light' ? lineLyrics : { source: null, sync: 'plain', lines: [] } }).catch(() => {});
+    const incoming = longIntro ? { ...lineLyrics, lines: lineLyrics.lines.map(line => ({ ...line, time: line.time + 37, end: line.end + 37 })) } : lineLyrics;
+    return route.fulfill({ json: title === 'Night Drive' ? wordLyrics : title === 'Morning Light' ? incoming : { source: null, sync: 'plain', lines: [] } }).catch(() => {});
   });
   await page.route('**/api/tempo?*', route => route.fulfill({ json: { bpm: new URL(route.request().url()).searchParams.get('title') === 'Night Drive' ? 120 : 124 } }));
   await page.route('**/api/recommendations?*', route => route.fulfill({ json: { tracks: recommendations } }));
@@ -263,8 +264,8 @@ if (!only || only === 'C') {
 }
 
 // ── D. DJ transition and seamless hand-over ────────────────────────────────
-async function djSession(prefs) {
-  const session = await newSession(browser, { viewport: { width: 1280, height: 800 }, prefs: { 'aurora-dj': 'true', ...prefs } });
+async function djSession(prefs, options = {}) {
+  const session = await newSession(browser, { viewport: { width: 1280, height: 800 }, prefs: { 'aurora-dj': 'true', ...prefs }, ...options });
   await session.page.goto(BASE); await wait(500); await startQueue(session.page);
   return session;
 }
@@ -311,6 +312,15 @@ if (!only || only === 'D') {
   await check('D', 'manual blend lands on the next title', async () => { await wait(2500); ok((await title(page)).startsWith('Morning Light')); });
   await check('D', 'pausing mid-session keeps the new song', async () => { await page.click('.dock-transport button[aria-label="Pause"]'); await wait(400); ok((await title(page)).startsWith('Morning Light')); });
   await check('D', 'no runtime errors in manual blend', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'D') {
+  const { context, page, errors } = await djSession({}, { longIntro: true });
+  await wait(7500);
+  await check('D', 'song B with a long intro is buffered from its chosen entry', async () => { const load = (await events(page)).find(row => row[1] === 'load' && row[2] === 'BBBBBBBBBBB' && row[3] === true); ok(load && load[4] >= 25 && load[4] <= 33, JSON.stringify(load)); });
+  await setSeek(page, 31); await wait(9000);
+  await check('D', 'song B enters past its intro and its vocals follow the blend', async () => { ok((await title(page)).startsWith('Morning Light')); const t = await playerTime(page); ok(t >= 30 && t < 38, String(t)); });
+  await check('D', 'no runtime errors with a chosen entry', async () => ok(!errors.length, errors.join(' | ')));
   await context.close();
 }
 if (!only || only === 'D') {
@@ -394,6 +404,9 @@ if (!only || only === 'F') {
   await page.goto(BASE); await wait(1500);
   await check('F', 'home adapts with a "Because you listened" row', async () => ok((await page.textContent('.for-you h2')).includes('Night Drive')));
   await check('F', 'home rows leave out artists the listener skips', async () => ok(!(await page.textContent('.for-you')).includes('Skipped artist')));
+  await check('F', 'the spotlight becomes "Picked for you"', async () => { ok((await page.textContent('.stage-copy .feature-label')).includes('Picked for you')); ok(!(await page.textContent('.stage-copy h2')).includes('The Weeknd')); });
+  await check('F', '"Made for a good listen" becomes "Made for you"', async () => ok((await page.textContent('.music-section:not(.for-you) h2')).includes('Made for you')));
+  await check('F', 'Daily rotation searches the listener\'s own artists', async () => { await page.click('.mood-card >> nth=0'); await wait(900); const value = await page.inputValue('input[aria-label="Search songs or artists"]'); ok(/Band/.test(value), value); await page.click('nav[aria-label="Main navigation"] button[aria-label="Listen now"]'); await wait(900); });
   await check('F', 'greeting follows the time of day', async () => ok(/Good (morning|afternoon|evening)|Late night/.test(await page.textContent('.page-heading p'))));
   await goSearch(page); await wait(500); await searchFor(page, 'band song');
   await page.click('.search-results .track-row >> nth=0 >> .track-main'); await wait(2500);
@@ -445,7 +458,7 @@ if (!only || only === 'F') {
 }
 
 // ── G. Local DJ transition with real decoded audio ─────────────────────────
-function clickTrack(bpm, seconds = 40, rate = 22050) {
+function clickTrack(bpm, seconds = 40, rate = 22050, quietUntil = 0) {
   const samples = rate * seconds;
   const data = Buffer.alloc(44 + samples * 2);
   data.write('RIFF', 0, 'latin1'); data.writeUInt32LE(36 + samples * 2, 4); data.write('WAVEfmt ', 8, 'latin1');
@@ -454,7 +467,8 @@ function clickTrack(bpm, seconds = 40, rate = 22050) {
   const step = rate * 60 / bpm;
   for (let beat = 0; beat * step < samples; beat++) {
     const start = Math.floor(beat * step);
-    for (let j = 0; j < rate / 40 && start + j < samples; j++) data.writeInt16LE(Math.round(Math.exp(-j / (rate / 400)) * Math.sin(j / 3) * 20000), 44 + (start + j) * 2);
+    const gain = start < quietUntil * rate ? .06 : 1;
+    for (let j = 0; j < rate / 40 && start + j < samples; j++) data.writeInt16LE(Math.round(Math.exp(-j / (rate / 400)) * Math.sin(j / 3) * 20000 * gain), 44 + (start + j) * 2);
   }
   return data;
 }
@@ -473,7 +487,7 @@ if (!only || only === 'G') {
   await page.goto(BASE); await wait(800);
   await page.setInputFiles('input[type=file]', [
     { name: 'Outgoing 120.wav', mimeType: 'audio/wav', buffer: clickTrack(120) },
-    { name: 'Incoming 126.wav', mimeType: 'audio/wav', buffer: clickTrack(126) },
+    { name: 'Incoming 126.wav', mimeType: 'audio/wav', buffer: clickTrack(126, 48, 22050, 16) },
   ]);
   await wait(3500);
   await check('G', 'local files play and report their real format', async () => { ok((await title(page)).startsWith('Outgoing 120')); ok(await page.locator('.quality-chip:has-text("WAV · 16-bit/22.1 kHz · Lossless")').count() >= 1); });
@@ -484,6 +498,7 @@ if (!only || only === 'G') {
   await check('G', 'the outgoing song glides toward the incoming tempo', async () => { const rates = await page.evaluate(() => window.__rates); ok(rates.some(r => r > 1.01 && r <= 1.051), rates.slice(0, 12).join(',')); });
   await check('G', 'the glide never exceeds the ±8% bound', async () => ok((await page.evaluate(() => window.__rates)).every(r => r >= .9 && r <= 1.09)));
   await check('G', 'the blend hands over to the incoming song', async () => ok((await title(page)).startsWith('Incoming'), await title(page)));
+  await check('G', 'song B enters at its first full section, not its quiet intro', async () => { const t = await playerTime(page); ok(t >= 15 && t <= 24, String(t)); });
   await wait(7000);
   await check('G', 'the blend completes and the DJ returns to idle', async () => { await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(700); const text = await page.textContent('.dj-now'); ok(/complete|Ready/i.test(text), text); await page.keyboard.press('Escape'); await wait(500); });
   await check('G', 'no runtime errors in the local DJ blend', async () => ok(!errors.length, errors.join(' | ')));
