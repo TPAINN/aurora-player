@@ -1,19 +1,19 @@
 # Live interaction tests
 
-`scripts/live-tests.mjs` drives the real app in Chromium. The catalogue, lyrics and tempo APIs are stubbed (some deliberately slow or failing), and a simulated YouTube player records loads, plays, pauses, seeks, volumes and playback rates. Group G decodes real generated WAV audio. 195 checks in seven groups:
+`scripts/live-tests.mjs` drives the real app in Chromium. The catalogue, lyrics and tempo APIs are stubbed (some deliberately slow or failing), and a simulated YouTube player records loads, plays, pauses, seeks, volumes and playback rates. Group G decodes real generated WAV audio. 216 checks in eight groups:
 
 | Group | Covers | Checks |
 | --- | --- | --- |
 | A | Home, carousel, navigation, sidebar, shortcuts | 16 |
 | B | Search: ideas, dedupe, stale results, skeletons, keys, retry, recents, Play next, 8D variant | 23 |
 | C | Playback, keyboard, seek, volume, likes, lyrics sync/scroll/interlude, backing vocals past the next line, peak backdrop, cover direction on Next/Previous, queue and sheets, a11y names | 55 |
-| D | DJ priming, overlap, blend curve, hollow sweep, tempo glide bounds, rate read-back, tempos meeting in the middle, manual blend, song B entry past a long intro, seamless mode, main-thread load | 37 |
+| D | DJ priming, overlap, blend curve, hollow sweep, tempo glide bounds, rate read-back, tempos meeting in the middle, manual blend, song B entry past a long intro, 0.05-step embeds, seamless mode, main-thread load | 41 |
 | E | Mobile (390 px), tablet (900 px), reduced motion | 15 |
 | F | Search categories, collections, Back gestures, adaptive radio and home (spotlight, Made for you, Daily rotation), quality chip and audio sheet, blend length, motion backdrop, opening, favicons, local file format | 39 |
-| H | Scroll lock behind sheets (desktop and phone, stacked sheets), name greeting, On repeat, Your artists, More like…, refrain marks and Best part, 5–10 s blend options | 12 |
 | G | Local DJ transition with real decoded WAV audio (120 → 126 BPM): glide, bound, shared tempo, entry at B's first full section, hand-over, easing back, completion | 10 |
+| H | Scroll lock behind sheets (desktop and phone, stacked sheets), name greeting, On repeat, Your artists, More like…, refrain marks and Best part, scroll reveal, word-by-word headline, spotlight, heart pop, play/pause morph, 5–10 s blend options | 17 |
 
-Result on the production build (`npm run preview`): **195 / 195 passed**. The hand-over now renders as a React transition, so the long-task check at the blend also passes in development mode.
+Result on the production build (`npm run preview`): **216 / 216 passed** (on the merged `main`). The hand-over now renders as a React transition, so the long-task check at the blend also passes in development mode.
 
 A separate responsive sweep drives home, search, album, player and lyrics at 13 viewports (320×568 to 2560×1440, including landscape phones). It fails on any element that spills off-screen, then checks that the player never runs under the dock.
 
