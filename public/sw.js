@@ -1,6 +1,6 @@
-const CACHE = 'aurora-shell-v2';
+const CACHE = 'aurora-shell-v3';
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(['/', '/favicon.svg', '/manifest.webmanifest'])));
+  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(['/', '/favicon.svg', '/favicon-32.png', '/favicon.ico', '/apple-touch-icon.png', '/manifest.webmanifest'])));
   self.skipWaiting();
 });
 self.addEventListener('activate', event => {

@@ -1,7 +1,7 @@
 import { rankForTaste } from './listening';
 
 export function normalizeTrack(item) {
-  return { id: String(item.id || item.trackId), title: item.title || item.trackName || 'Untitled', artist: item.artist || item.artistName || 'Unknown artist', album: item.album || item.collectionName || '', artwork: (item.artwork || item.artworkUrl100 || '').replace(/100x100bb/, '600x600bb'), duration: item.duration ?? (item.trackTimeMillis || 0) / 1000, previewUrl: item.previewUrl, videoId: item.videoId, localUrl: item.localUrl, artistId: item.artistId, genre: item.genre || item.primaryGenreName, recommended: item.recommended === true, recommendationReason: item.recommendationReason };
+  return { id: String(item.id || item.trackId), title: item.title || item.trackName || 'Untitled', artist: item.artist || item.artistName || 'Unknown artist', album: item.album || item.collectionName || '', artwork: (item.artwork || item.artworkUrl100 || '').replace(/100x100bb/, '600x600bb'), duration: item.duration ?? (item.trackTimeMillis || 0) / 1000, previewUrl: item.previewUrl, videoId: item.videoId, source: item.source, localUrl: item.localUrl, artistId: item.artistId, genre: item.genre || item.primaryGenreName, recommended: item.recommended === true, recommendationReason: item.recommendationReason };
 }
 
 // Real catalogue snapshot, refreshed from iTunes on 2026-09-25; keeps discovery available offline.
@@ -63,25 +63,66 @@ const snapshot =[
 ]
 ;
 export const SEED_TRACKS = snapshot.map(normalizeTrack);
-export async function searchTracks(query, signal) {
-  if (!query.trim()) return [];
-  const params = new URLSearchParams({ term: query.trim() });
-  const response = await fetch(`/api/search?${params}`, { signal });
+export const videoToTrack = video => ({ id: `yt:${video.videoId}`, videoId: video.videoId, title: video.title, artist: video.artist, album: '', artwork: video.artwork, duration: video.duration, source: 'video', views: video.views });
+
+// Small in-memory caches make switching search tabs and reopening pages instant.
+const searchCache = new Map();
+const collectionCache = new Map();
+const remember = (map, key, value) => { if (map.size >= 30) map.delete(map.keys().next().value); map.set(key, value); return value; };
+
+export async function searchCatalog(query, type = 'all', signal) {
+  const term = query.trim();
+  if (!term) return { top: null, songs: [], videos: [], albums: [], artists: [], playlists: [] };
+  const key = `${type}\u0000${term.toLowerCase()}`;
+  if (searchCache.has(key)) return searchCache.get(key);
+  const response = await fetch(`/api/search?${new URLSearchParams({ term, type })}`, { signal });
   if (!response.ok) throw new Error('The music catalogue is unavailable.');
   const data = await response.json();
-  if (!Array.isArray(data.results)) throw new Error('The music catalogue returned an invalid response.');
-  return data.results.filter(item => item?.trackId && item.trackName).map(normalizeTrack);
+  return remember(searchCache, key, {
+    top: data.top || null,
+    songs: (Array.isArray(data.results) ? data.results : []).filter(item => item?.trackId && item.trackName).map(normalizeTrack),
+    videos: (Array.isArray(data.videos) ? data.videos : []).filter(item => item?.videoId).map(videoToTrack),
+    albums: Array.isArray(data.albums) ? data.albums : [],
+    artists: Array.isArray(data.artists) ? data.artists : [],
+    playlists: Array.isArray(data.playlists) ? data.playlists : [],
+  });
+}
+
+export async function searchTracks(query, signal) {
+  return (await searchCatalog(query, 'songs', signal)).songs;
+}
+
+export async function getCollection(type, id, signal) {
+  const key = `${type}:${id}`;
+  if (collectionCache.has(key)) return collectionCache.get(key);
+  const response = await fetch(`/api/collection?${new URLSearchParams({ type, id: String(id) })}`, { signal });
+  if (!response.ok) throw new Error('This collection could not be opened.');
+  const data = await response.json();
+  return remember(collectionCache, key, { ...data, tracks: (Array.isArray(data.tracks) ? data.tracks : []).filter(item => item?.id && item.title).map(normalizeTrack) });
 }
 export async function getFeaturedTracks(signal) {
   signal?.throwIfAborted();
   return SEED_TRACKS;
 }
 
-export async function getSimilarTracks(track, signal) {
+export async function getSimilarTracks(track, signal, { lang } = {}) {
   if (!track?.artist || !track?.title || track.localUrl) return [];
   const query = new URLSearchParams({ artist: track.artist, title: track.title });
+  if (track.album) query.set('album', track.album);
+  if (track.genre) query.set('genre', String(track.genre).slice(0, 60));
+  if (track.duration > 0) query.set('duration', String(Math.round(track.duration)));
+  if (lang) query.set('lang', lang);
   const response = await fetch(`/api/recommendations?${query}`, { signal });
   if (!response.ok) throw new Error('Similar songs are temporarily unavailable.');
   const data = await response.json();
   return rankForTaste((Array.isArray(data.tracks) ? data.tracks : []).filter(item => item.id && item.title && item.artist).map(item => ({ ...normalizeTrack(item), lyricsAvailable: item.lyricsAvailable })));
+}
+
+// Catalogue tempo for online DJ blends; null when the catalogue does not know it.
+export async function getTrackTempo(track, signal) {
+  const query = new URLSearchParams({ artist: track.artist, title: track.title });
+  const response = await fetch(`/api/tempo?${query}`, { signal });
+  if (!response.ok) throw new Error('Tempo metadata is unavailable.');
+  const { bpm } = await response.json();
+  return Number.isFinite(bpm) && bpm > 0 ? bpm : null;
 }

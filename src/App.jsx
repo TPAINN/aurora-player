@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import {
   AnimatePresence,
   MotionConfig,
+  animate,
   motion as Motion,
+  useSpring,
   useReducedMotion,
   usePresence,
 } from "framer-motion";
@@ -28,31 +30,59 @@ import {
   Repeat1,
   Search,
   Settings2,
+  Sparkles,
   Shuffle,
   SkipBack,
   SkipForward,
   SlidersHorizontal,
   Upload,
+  UserRound,
   Video,
   Volume2,
   X,
 } from "lucide-react";
 import { usePlayer } from "./hooks/usePlayer";
-import { getFeaturedTracks, searchTracks } from "./lib/catalog";
+import { useStore } from "./hooks/useStore";
+import { useNavigation } from "./hooks/useNavigation";
+import { getCollection, getFeaturedTracks, getSimilarTracks, searchCatalog } from "./lib/catalog";
 import { extractColors } from "../shared/palette";
+import { requestedVariant } from "../shared/audio-variants.js";
+import { artworkAt, artworkSrcSet } from "./lib/artwork";
+import { qualityLabel } from "./lib/audio-format";
+import { homeSeeds, onRepeat, recordLike, rotateForDay, tasteFilter, topArtists } from "./lib/listening";
+import { bestPart, isPeakAt, lineSpan, peakMoments, splitBackingVocals } from "./lib/lyrics";
 import Welcome from "./components/Welcome";
+import { shouldWelcome } from "./lib/welcome";
 import FluidText from "./components/FluidText";
+import {
+  EASE,
+  EASE_EXIT,
+  EASE_IN_OUT,
+  PILL_SPRING,
+  SHEET_SPRING,
+  coverSwap,
+  crossfade,
+  HEART_SPRING,
+  MAGNET_SPRING,
+  iconSwap,
+  revealCard,
+  revealSection,
+  listItem,
+  page as pageMotion,
+  player as playerMotion,
+  section as sectionMotion,
+} from "./lib/motion";
 import "./App.css";
 
 const formatTime = (value) => {
   const n = Math.max(0, Math.floor(value || 0));
   return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, "0")}`;
 };
-function readSaved(key) {
+function readSaved(key, valid = (t) => t && t.id && t.title) {
   try {
     const value = JSON.parse(localStorage.getItem(key) || "[]");
     return Array.isArray(value)
-      ? value.filter((t) => t && t.id && t.title)
+      ? value.filter(valid)
       : [];
   } catch {
     return [];
@@ -76,16 +106,7 @@ function Cover({ track, className = "", eager = false }) {
       {track?.artwork ? (
         <img
           src={track.artwork}
-          srcSet={
-            track.artwork.includes("mzstatic.com")
-              ? [160, 320, 600]
-                  .map(
-                    (size) =>
-                      `${track.artwork.replace(/600x600bb/, `${size}x${size}bb`)} ${size}w`,
-                  )
-                  .join(", ")
-              : undefined
-          }
+          srcSet={artworkSrcSet(track.artwork)}
           sizes={className === "" ? "(max-width:760px) 45vw, 300px" : "300px"}
           alt={`${track.title} artwork`}
           loading={eager ? "eager" : "lazy"}
@@ -100,6 +121,75 @@ function Cover({ track, className = "", eager = false }) {
     </div>
   );
 }
+// Artwork that crossfades when the track changes instead of swapping abruptly.
+function FadingCover({ track, className = "", eager = false, size = 600, direction = null }) {
+  // A direction turns the crossfade into a travelling swap (the now-playing cover).
+  const motion = direction ? { variants: coverSwap, custom: direction, initial: "initial", animate: "animate", exit: "exit" } : crossfade;
+  return (
+    <div className={`cover fading-cover ${className}`}>
+      <AnimatePresence initial={false} custom={direction}>
+        {track?.artwork ? (
+          <Motion.img
+            key={track.artwork}
+            src={artworkAt(track.artwork, size)}
+            alt={`${track.title} artwork`}
+            loading={eager ? "eager" : "lazy"}
+            decoding="async"
+            {...motion}
+          />
+        ) : (
+          <Music2 key="placeholder" aria-hidden="true" />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+const foldText = (value) =>
+  String(value || "")
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]/gu, "");
+// The catalogue lists one recording per single, album and compilation; keep the first.
+function uniqueTracks(tracks) {
+  const seen = new Set();
+  return tracks.filter((track) => {
+    const key = `${foldText(track.artist)}|${foldText(track.title)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+const EMPTY_SEARCH = { top: null, songs: [], videos: [], albums: [], artists: [], playlists: [] };
+const SEARCH_TABS = [
+  ["all", "All"],
+  ["songs", "Songs"],
+  ["videos", "Videos"],
+  ["albums", "Albums"],
+  ["artists", "Artists"],
+  ["playlists", "Playlists"],
+];
+const formatCount = (value) =>
+  value >= 1e6 ? `${(value / 1e6).toFixed(1).replace(/\.0$/, "")}M` : value >= 1e3 ? `${Math.round(value / 1e3)}K` : String(value || 0);
+const daypart = () => {
+  const hour = new Date().getHours();
+  return hour < 5 ? "night" : hour < 12 ? "morning" : hour < 18 ? "afternoon" : "evening";
+};
+// A name is optional, kept on this device, and only used to greet the listener.
+const greeting = (name) => {
+  const part = daypart();
+  const hello = part === "night" ? "Late night listening" : `Good ${part}`;
+  return `${hello}${name ? `, ${name}` : ""}.`;
+};
+const readName = () => {
+  try {
+    return (localStorage.getItem("aurora-name") || "").slice(0, 24);
+  } catch {
+    return "";
+  }
+};
+const SEARCH_IDEAS = ["Greek pop", "Late night R&B", "Synthwave", "Acoustic", "Reggaeton", "Lo-fi"];
+
 function Brand() {
   return (
     <span className="brand">
@@ -114,62 +204,203 @@ function Brand() {
   );
 }
 function PlayButton({ player, large = false }) {
-  return (
+  const button = (
     <IconButton
       label={player.playing ? "Pause" : "Play"}
       className={`play-button ${large ? "large" : ""}`}
       disabled={!player.track || player.loading}
       onClick={player.togglePlay}
     >
-      {player.loading ? (
-        <LoaderCircle className="spin" />
-      ) : player.playing ? (
-        <Pause fill="currentColor" />
-      ) : (
-        <Play fill="currentColor" />
-      )}
+      <span className="play-glyph">
+        <AnimatePresence mode="popLayout" initial={false}>
+          <Motion.span key={player.loading ? "loading" : player.playing ? "pause" : "play"} {...iconSwap}>
+            {player.loading ? (
+              <LoaderCircle className="spin" />
+            ) : player.playing ? (
+              <Pause fill="currentColor" />
+            ) : (
+              <Play fill="currentColor" />
+            )}
+          </Motion.span>
+        </AnimatePresence>
+      </span>
     </IconButton>
+  );
+  return large ? <Magnetic strength={0.3}>{button}</Magnetic> : button;
+}
+
+// Its own presence boundary: the page switcher skips entrance states on first
+// load (initial={false}), which would leave nothing for the scroll reveal to play.
+function RevealSection(props) {
+  return (
+    <AnimatePresence>
+      <Motion.section {...revealSection} {...props} />
+    </AnimatePresence>
+  );
+}
+
+// A small waveform loader: five bars rise and fall in sequence (transform only).
+function Waveform() {
+  return (
+    <span className="waveform-loader" aria-hidden="true">
+      <i />
+      <i />
+      <i />
+      <i />
+      <i />
+    </span>
+  );
+}
+
+// Magnetic: leans toward a fine pointer on a spring and settles back when it leaves.
+function Magnetic({ children, strength = 0.22, limit = 10 }) {
+  const x = useSpring(0, MAGNET_SPRING);
+  const y = useSpring(0, MAGNET_SPRING);
+  const move = (event) => {
+    if (event.pointerType !== "mouse" || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    const box = event.currentTarget.getBoundingClientRect();
+    const clamp = (value) => Math.max(-limit, Math.min(limit, value));
+    x.set(clamp((event.clientX - box.left - box.width / 2) * strength));
+    y.set(clamp((event.clientY - box.top - box.height / 2) * strength));
+  };
+  const leave = () => {
+    x.set(0);
+    y.set(0);
+  };
+  return (
+    <Motion.span className="magnetic" style={{ x, y }} onPointerMove={move} onPointerLeave={leave}>
+      {children}
+    </Motion.span>
+  );
+}
+
+// Text generate: each word rises out of a soft blur, one after another. Its own
+// presence boundary lets it play on first load and whenever the words change.
+function RevealWords({ text }) {
+  const words = text.split(" ");
+  return (
+    <AnimatePresence mode="wait">
+      <Motion.span key={text} className="reveal-words" aria-hidden="true">
+        {words.map((word, i) => [
+          i > 0 ? " " : null,
+          <Motion.span
+            key={`${word}-${i}`}
+            className="reveal-word"
+            initial={{ opacity: 0, y: "0.35em", filter: "blur(10px)" }}
+            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+            exit={{ opacity: 0, filter: "blur(6px)", transition: { duration: 0.25 } }}
+            transition={{ duration: 0.85, ease: EASE, delay: 0.08 + i * 0.07 }}
+          >
+            {word}
+          </Motion.span>,
+        ])}
+      </Motion.span>
+    </AnimatePresence>
+  );
+}
+
+// A like pops the heart past full size and sends out a soft ring; unliking settles quietly.
+function LikeHeart({ liked, size = 24 }) {
+  const [previous, setPrevious] = useState(liked);
+  const [burst, setBurst] = useState(0);
+  if (previous !== liked) {
+    setPrevious(liked);
+    if (liked) setBurst((value) => value + 1);
+  }
+  return (
+    <span className="like-heart">
+      <Motion.span
+        key={burst}
+        className="like-glyph"
+        initial={burst ? { scale: 0.55 } : false}
+        animate={{ scale: 1 }}
+        transition={HEART_SPRING}
+      >
+        <Heart size={size} fill={liked ? "currentColor" : "none"} />
+      </Motion.span>
+      {burst > 0 && (
+        <Motion.span
+          key={`ring-${burst}`}
+          className="like-ring"
+          aria-hidden="true"
+          initial={{ scale: 0.4, opacity: 0.7 }}
+          animate={{ scale: 1.9, opacity: 0 }}
+          transition={{ duration: 0.65, ease: EASE }}
+        />
+      )}
+    </span>
   );
 }
 function Seek({ player }) {
+  // Dragging previews locally and seeks once on release; seeking YouTube on every
+  // input event stutters playback and cancels DJ preparation repeatedly.
+  const [drag, setDrag] = useState(null);
   const duration = Math.max(player.duration || player.track?.duration || 0, 1);
+  // Whole seconds are enough for the bar; the CSS transition interpolates between them.
+  const time = useStore(player.clock, (value) => Math.round(value * 4) / 4);
+  const value = drag ?? Math.min(time || 0, duration);
   const zone = player.djEnabled ? player.djWindow : null;
+  const peaks = usePeaks(player);
   const zoneLabel = zone
     ? `DJ transition from ${formatTime(zone.start)} to ${formatTime(zone.end)}${zone.ready ? ", next track ready" : ""}`
     : undefined;
+  const commit = () => {
+    if (drag === null) return;
+    player.seek(drag);
+    setDrag(null);
+  };
   return (
     <div className="seek-control">
       <div className="seek-track">
-        {zone && (
+        {peaks.map((range) => (
           <span
-            className={`dj-seek-zone ${zone.ready ? "ready" : ""}`}
-            role="img"
-            aria-label={zoneLabel}
-            title={zoneLabel}
+            key={range.start}
+            className="peak-mark"
+            aria-hidden="true"
+            title="Refrain"
             style={{
-              left: `${Math.max(0, (zone.start / duration) * 100)}%`,
-              width: `${Math.max(0, ((Math.min(duration, zone.end) - Math.max(0, zone.start)) / duration) * 100)}%`,
+              left: `${Math.min(100, (range.start / duration) * 100)}%`,
+              width: `${Math.max(0.6, ((Math.min(duration, range.end) - range.start) / duration) * 100)}%`,
             }}
           />
-        )}
+        ))}
+        <AnimatePresence>
+          {zone && (
+            <Motion.span
+              key="zone"
+              className={`dj-seek-zone ${zone.ready ? "ready" : ""} ${zone.glide ? "glide" : ""}`}
+              role="img"
+              aria-label={zoneLabel}
+              title={zoneLabel}
+              initial={{ opacity: 0, scaleX: 0.6 }}
+              animate={{ opacity: 1, scaleX: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.7, ease: EASE }}
+              style={{
+                left: `${Math.max(0, (zone.start / duration) * 100)}%`,
+                width: `${Math.max(0, ((Math.min(duration, zone.end) - Math.max(0, zone.start)) / duration) * 100)}%`,
+              }}
+            />
+          )}
+        </AnimatePresence>
         <input
           aria-label="Seek in track"
+          aria-valuetext={`${formatTime(value)} of ${formatTime(duration)}`}
           type="range"
           min="0"
-          max={Math.max(player.duration || player.track?.duration || 0, 1)}
+          max={duration}
           step="0.1"
-          value={Math.min(
-            player.time || 0,
-            player.duration || player.track?.duration || 1,
-          )}
-          onChange={(e) => player.seek(Number(e.target.value))}
-          style={{
-            "--progress": `${Math.min(100, ((player.time || 0) / (player.duration || player.track?.duration || 1)) * 100)}%`,
-          }}
+          value={value}
+          className={drag !== null ? "dragging" : ""}
+          onChange={(e) => setDrag(Number(e.target.value))}
+          onPointerUp={commit}
+          onKeyUp={commit}
+          onBlur={commit}
+          style={{ "--progress": `${Math.min(100, (value / duration) * 100)}%` }}
         />
       </div>
       <div className="timestamps">
-        <span>{formatTime(player.time)}</span>
+        <span>{formatTime(value)}</span>
         <span>{formatTime(player.duration || player.track?.duration)}</span>
       </div>
     </div>
@@ -220,10 +451,106 @@ function Transport({ player, large = false }) {
   );
 }
 
+// Lines are emphasised slightly before they are sung so the long transition
+// settles as the voice arrives; the word fill itself stays on genuine timing.
+const LINE_LEAD = 0.5;
+// Words held at least this long glow as they fill.
+const HELD_WORD = 1;
+const lineEnd = (line) => line?.words?.at(-1)?.end ?? line?.end;
+
+function Interlude({ clock, offset, start, end }) {
+  const progress = useStore(clock, (value) =>
+    Math.round(Math.max(0, Math.min(1, (value + offset - start) / (end - start))) * 60) / 60,
+  );
+  return (
+    <Motion.div
+      className="lyric-interlude"
+      aria-label="Instrumental break"
+      initial={{ opacity: 0, height: 0, marginTop: 0 }}
+      animate={{ opacity: 1, height: 58, marginTop: 6 }}
+      exit={{ opacity: 0, height: 0, marginTop: 0 }}
+      transition={{ duration: 0.8, ease: EASE }}
+    >
+      {[0, 1, 2].map((dot) => (
+        <i
+          key={dot}
+          style={{ "--dot": Math.max(0, Math.min(1, progress * 3 - dot)) }}
+        />
+      ))}
+    </Motion.div>
+  );
+}
+
+// Peaks (refrain, held notes) come from genuinely timed lyrics only.
+function usePeaks(player) {
+  return useMemo(
+    () => (player.lyrics?.sync && player.lyrics.sync !== "plain" ? peakMoments(player.lyrics.lines) : []),
+    [player.lyrics],
+  );
+}
+
+// Jumps to the song's best part (its longest refrain) and hides while it plays.
+function BestPartChip({ player }) {
+  const best = bestPart(usePeaks(player));
+  const offset = player.lyricsOffset || 0;
+  const inside = useStore(player.clock, (value) => !!best && value + offset >= best.start - 1 && value + offset < best.end);
+  return (
+    <AnimatePresence>
+      {best && !inside && (
+        <Motion.button
+          key="best"
+          type="button"
+          className="best-part-chip"
+          onClick={() => player.seek(Math.max(0, best.start - offset - 0.6))}
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.9 }}
+          transition={{ duration: 0.5, ease: EASE }}
+          aria-label={`Jump to the best part at ${formatTime(best.start)}`}
+        >
+          <Sparkles size={13} /> Best part
+        </Motion.button>
+      )}
+    </AnimatePresence>
+  );
+}
+
+// The artwork backdrop opens up (a slow zoom and lift) through the song's peaks:
+// its refrain and long held notes, read from genuinely timed lyrics only.
+function ArtBackdrop({ player }) {
+  const peaks = usePeaks(player);
+  const offset = player.lyricsOffset || 0;
+  const peak = useStore(player.clock, (value) => peaks.length > 0 && isPeakAt(peaks, value + offset));
+  const artwork = player.track?.artwork;
+  return (
+    <>
+      <div className={`player-art-background ${peak ? "is-peak" : ""}`}>
+        <AnimatePresence initial={false}>
+          {artwork && (
+            <Motion.div
+              key={artwork}
+              className="art-bg-layer"
+              style={{ backgroundImage: `url("${artworkAt(artwork, 1000)}")` }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1, transition: { duration: 1.6, ease: EASE } }}
+              exit={{ opacity: 0, transition: { duration: 1.4, ease: EASE_IN_OUT } }}
+            />
+          )}
+        </AnimatePresence>
+      </div>
+      <div className={`player-veil ${peak ? "is-peak" : ""}`} />
+    </>
+  );
+}
+
 function Lyrics({ player }) {
   const reduce = useReducedMotion();
+  // State, not a ref: the list mounts after the loading state finishes exiting,
+  // and the painter must start once the node actually exists.
   const container = useRef(null);
+  const [mountedList, setMountedList] = useState(null);
   const activeRef = useRef(null);
+  const scrolling = useRef(null);
   const [following, setFollowing] = useState(true);
   const lines = useMemo(() => player.lyrics?.lines?.length
     ? player.lyrics.lines
@@ -231,84 +558,135 @@ function Lyrics({ player }) {
         .split(/\r?\n/)
         .filter((line) => line.trim())
         .map((text) => ({ text })), [player.lyrics]);
-  const adjusted = (player.time || 0) + (player.lyricsOffset || 0);
+  const backing = useMemo(() => lines.map((line) => line.words?.length ? splitBackingVocals(line.words.map((word) => word.text)) : null), [lines]);
+  const offset = player.lyricsOffset || 0;
   const timed = player.lyrics?.sync !== "plain";
-  let active = -1;
-  if (timed)
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].time <= adjusted) active = i;
-      else break;
-    }
-  const previousEnd = active >= 0 ? lines[active].words?.at(-1)?.end : 0;
-  const nextStart = lines[active + 1]?.time;
-  const inGap =
-    timed &&
-    Number.isFinite(previousEnd) &&
-    Number.isFinite(nextStart) &&
-    nextStart - previousEnd > 4 &&
-    adjusted >= previousEnd &&
-    adjusted < nextStart;
+  const lead = reduce ? 0 : LINE_LEAD;
+  // Re-render only when the active line or interlude state changes, not every clock tick.
+  const position = useStore(player.clock, (value) => {
+    const adjusted = value + offset;
+    let current = -1;
+    if (timed)
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].time <= adjusted + lead) current = i;
+        else break;
+      }
+    const start = current >= 0 ? lineEnd(lines[current]) : 0;
+    const end = lines[current + 1]?.time;
+    const gap =
+      timed &&
+      Number.isFinite(start) &&
+      Number.isFinite(end) &&
+      end - start > 4 &&
+      adjusted >= start + 0.4 &&
+      adjusted < end - 0.5;
+    return `${current}:${gap ? 1 : 0}`;
+  });
+  const active = Number(position.split(":")[0]);
+  const inGap = position.endsWith(":1");
+  const gapStart = active >= 0 ? lineEnd(lines[active]) : 0;
+  const gapEnd = lines[active + 1]?.time;
+  const interlude = { clock: player.clock, offset, start: gapStart, end: gapEnd };
+  const stopScroll = () => scrolling.current?.stop();
   useEffect(() => {
-    if (!following || !activeRef.current || !container.current) return;
+    const box = container.current;
     const target = activeRef.current;
-    container.current.scrollTo({
-      top:
-        target.offsetTop -
-        container.current.offsetTop -
-        container.current.clientHeight * 0.35,
-      behavior: reduce ? "instant" : "smooth",
+    if (!following || !box || !target) return;
+    const top = Math.max(0, target.offsetTop + target.offsetHeight / 2 - box.clientHeight * 0.4);
+    stopScroll();
+    if (reduce) {
+      box.scrollTop = top;
+      return;
+    }
+    // A long, eased glide replaces the browser's short smooth-scroll jump.
+    scrolling.current = animate(box.scrollTop, top, {
+      duration: 1.6,
+      ease: [0.45, 0.05, 0.1, 1],
+      onUpdate: (value) => {
+        box.scrollTop = value;
+      },
     });
-  }, [active, following, reduce]);
+    return stopScroll;
+  }, [mountedList, active, following, reduce, inGap]);
+  // Edge fading via visibility classes: a mask on the scrolling list forced the
+  // whole list to re-rasterise on every painted word.
+  useEffect(() => {
+    if (!mountedList || !("IntersectionObserver" in window)) return;
+    const observer = new IntersectionObserver(
+      (entries) => entries.forEach((entry) => entry.target.classList.toggle("at-edge", entry.intersectionRatio < 0.99)),
+      { root: mountedList, rootMargin: "-14% 0px -14% 0px", threshold: [0, 0.99] },
+    );
+    mountedList.querySelectorAll(".lyric-line").forEach((line) => observer.observe(line));
+    return () => observer.disconnect();
+  }, [mountedList, lines]);
   const { getPlaybackTime, lyricsOffset = 0, lyricsLoading } = player;
   useEffect(() => {
-    if (!container.current || !timed || lyricsLoading) return;
-    const words = Array.from(container.current.querySelectorAll(".lyric-line"),
-      (line) => Array.from(line.querySelectorAll(".word-fill")));
+    if (!mountedList || !timed || lyricsLoading) return;
+    const nodes = Array.from(mountedList.querySelectorAll(".lyric-line"));
+    const words = nodes.map((line) => Array.from(line.querySelectorAll(".word-fill")));
+    // Each line is painted for as long as any of its words is sung: backing
+    // vocals often run on after the next line has started.
+    const spans = lines.map(lineSpan);
     let frame;
     let previousTime = null;
-    let previousLine = -1;
     const paint = () => {
       const time = getPlaybackTime() + lyricsOffset;
       if (time !== previousTime) {
-        let currentLine = -1;
-        for (let i = 0; i < lines.length && lines[i].time <= time; i++) currentLine = i;
         const reset = previousTime === null || time < previousTime || time - previousTime > 0.5;
-        const start = reset ? 0 : Math.max(0, Math.min(previousLine, currentLine));
-        const end = reset ? lines.length - 1 : Math.min(lines.length - 1, currentLine + 1);
-        for (let i = start; i <= end; i++) {
-          words[i]?.forEach((fill, index) => {
+        for (let i = 0; i < lines.length; i++) {
+          const span = spans[i];
+          if (!words[i]?.length) continue;
+          if (!reset && (time < span.start - 0.25 || previousTime > span.end + 0.15)) continue;
+          const singing = time >= span.start - 0.1 && time <= span.end + 0.1;
+          if (nodes[i].classList.contains("is-singing") !== singing) nodes[i].classList.toggle("is-singing", singing);
+          words[i].forEach((fill, index) => {
             const word = lines[i].words[index];
-            // Lead the onset by at most 60ms, but finish exactly at the word's end.
-            const lead = reduce ? 0 : Math.min(0.06, (word.end - word.start) * 0.15);
+            // A feathered wipe leads the onset by at most 90ms and finishes on the word's end.
+            const lead = reduce ? 0 : Math.min(0.09, (word.end - word.start) * 0.2);
             const progress = reduce
               ? Number(time >= word.start)
               : Math.min(1, Math.max(0, (time - word.start + lead) / Math.max(0.001, word.end - word.start + lead)));
-            fill.style.clipPath = `inset(0 ${(1 - progress) * 100}% 0 0)`;
-            fill.parentElement.classList.toggle("singing", time >= word.start && time < word.end);
+            // Write only on change: every style write invalidates paint for that word.
+            const value = progress.toFixed(3);
+            if (fill.dataset.fill !== value) {
+              fill.dataset.fill = value;
+              fill.style.setProperty("--fill", value);
+            }
+            const state = time >= word.end ? "sung" : time >= word.start - lead ? "singing" : "";
+            const holder = fill.parentElement;
+            if (holder.dataset.state !== state) {
+              holder.dataset.state = state;
+              holder.classList.toggle("singing", state === "singing");
+              holder.classList.toggle("sung", state === "sung");
+            }
           });
         }
         previousTime = time;
-        previousLine = currentLine;
       }
       frame = requestAnimationFrame(paint);
     };
     paint();
     return () => cancelAnimationFrame(frame);
-  }, [getPlaybackTime, lines, lyricsOffset, lyricsLoading, timed, reduce]);
+  }, [mountedList, getPlaybackTime, lines, lyricsOffset, lyricsLoading, timed, reduce]);
+  const releaseFollow = () => {
+    stopScroll();
+    setFollowing(false);
+  };
+  let content;
   if (player.lyricsLoading)
-    return (
-      <div className="lyric-empty">
+    content = (
+      <Motion.div key="loading" className="lyric-empty" {...fade}>
         <span className="lyric-loading">
           <i />
           <i />
           <i />
         </span>
         <p>Finding the words…</p>
-      </div>
+      </Motion.div>
     );
-  if (!lines.length)
-    return (
-      <div className="lyric-empty">
+  else if (!lines.length)
+    content = (
+      <Motion.div key="empty" className="lyric-empty" {...fade}>
         <Music2 size={36} />
         <h2>
           {player.lyrics?.instrumental
@@ -320,109 +698,147 @@ function Lyrics({ player }) {
             ? "This track is instrumental."
             : "Lyrics aren’t available for this track yet."}
         </p>
-      </div>
+      </Motion.div>
     );
-  return (
-    <div className="lyrics-layout">
-      <div
-        className="lyrics-scroll"
-        ref={container}
-        onWheel={() => setFollowing(false)}
-        onTouchStart={() => setFollowing(false)}
-        onKeyDown={(e) => {
-          if (["ArrowDown", "ArrowUp", "PageDown", "PageUp"].includes(e.key))
-            setFollowing(false);
-        }}
-        tabIndex="0"
-        aria-label="Song lyrics"
-      >
-        <div className="lyrics-spacer" />
-        {lines.map((line, i) => (
-          <button
-            key={`${i}-${line.time}`}
-            ref={i === active ? activeRef : null}
-            className={`lyric-line ${i === active ? "current" : ""} ${i < active ? "past" : ""} ${!timed ? "plain" : ""}`}
-            disabled={!timed}
-            onClick={() => {
-              player.seek(Math.max(0, line.time - (player.lyricsOffset || 0)));
-              setFollowing(true);
-            }}
-            aria-label={
-              timed
-                ? `Seek to ${formatTime(line.time)}: ${line.text}`
-                : undefined
-            }
-          >
-            {line.words?.length
-              ? line.words.map((word, wi) => (
-                  <span
-                    key={wi}
-                    className="lyric-word"
-                  >
-                    <span>{word.text}</span>
-                    <span
-                      aria-hidden="true"
-                      className="word-fill"
-                    >
-                      {word.text}
-                    </span>
-                  </span>
-                ))
-              : line.text}
-          </button>
-        ))}
-        <div className="lyrics-spacer" />
-      </div>
-      <AnimatePresence>
-        {inGap && (
-          <Motion.div
-            key="interlude"
-            className="lyric-interlude"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            aria-label="Instrumental break"
-          >
-            <Music2 size={18} />
-            <span>Feel the music</span>
-          </Motion.div>
-        )}
-      </AnimatePresence>
-      <div className="lyric-footer">
-        <span>
-          {player.lyrics?.source || "Lyrics"} ·{" "}
-          {player.lyrics?.sync === "word"
-            ? "Word sync"
-            : timed
-              ? "Line sync"
-              : "Unsynced"}
-        </span>
-        {!following && timed && (
-          <button className="small-pill" onClick={() => setFollowing(true)}>
-            Follow lyrics <ArrowDown size={14} />
-          </button>
-        )}
-      </div>
-    </div>
-  );
+  else
+    content = (
+      <Motion.div key="lyrics" className="lyrics-layout" {...fade}>
+        <div
+          className="lyrics-scroll"
+          ref={(node) => {
+            container.current = node;
+            setMountedList(node);
+          }}
+          onWheel={releaseFollow}
+          onTouchStart={releaseFollow}
+          onKeyDown={(e) => {
+            if (["ArrowDown", "ArrowUp", "PageDown", "PageUp"].includes(e.key))
+              releaseFollow();
+          }}
+          tabIndex="0"
+          aria-label="Song lyrics"
+        >
+          <div className="lyrics-spacer" />
+          <AnimatePresence initial={false}>
+            {inGap && active === -1 && <Interlude key="intro" {...interlude} />}
+          </AnimatePresence>
+          {lines.map((line, i) => (
+            <div key={`${i}-${line.time}`} className="lyric-block">
+              <button
+                ref={i === active ? activeRef : null}
+                className={`lyric-line ${i === active ? "current" : ""} ${i < active ? "past" : ""} ${i === active + 1 ? "upcoming" : ""} ${!timed ? "plain" : ""} ${line.words?.length ? "has-words" : ""}`}
+                disabled={!timed}
+                onClick={() => {
+                  player.seek(Math.max(0, line.time - (player.lyricsOffset || 0)));
+                  setFollowing(true);
+                }}
+                aria-label={
+                  timed
+                    ? `Seek to ${formatTime(line.time)}: ${line.text}`
+                    : undefined
+                }
+              >
+                {line.words?.length
+                  ? line.words.map((word, wi) => (
+                      <span
+                        key={wi}
+                        className={`lyric-word${backing[i]?.[wi] ? " backing" : ""}${word.end - word.start >= HELD_WORD ? " held" : ""}`}
+                      >
+                        <span>{word.text}</span>
+                        <span aria-hidden="true" className="word-fill">
+                          {word.text}
+                        </span>
+                      </span>
+                    ))
+                  : line.text}
+              </button>
+              <AnimatePresence initial={false}>
+                {inGap && i === active && <Interlude key="gap" {...interlude} />}
+              </AnimatePresence>
+            </div>
+          ))}
+          <div className="lyrics-spacer" />
+        </div>
+        <div className="lyric-footer">
+          <span>
+            {player.lyrics?.source || "Lyrics"} ·{" "}
+            {player.lyrics?.sync === "word"
+              ? "Word sync"
+              : timed
+                ? "Line sync"
+                : "Unsynced"}
+          </span>
+          <AnimatePresence>
+            {!following && timed && (
+              <Motion.button
+                key="follow"
+                className="small-pill"
+                onClick={() => setFollowing(true)}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 8 }}
+                transition={{ duration: 0.45, ease: EASE }}
+              >
+                Follow lyrics <ArrowDown size={14} />
+              </Motion.button>
+            )}
+          </AnimatePresence>
+        </div>
+      </Motion.div>
+    );
+  return <AnimatePresence mode="wait" initial={false}>{content}</AnimatePresence>;
+}
+
+const fade = {
+  initial: { opacity: 0, y: 14 },
+  animate: { opacity: 1, y: 0, transition: { duration: 0.7, ease: EASE } },
+  exit: { opacity: 0, y: -8, transition: { duration: 0.35, ease: EASE_IN_OUT } },
+};
+
+function useMediaQuery(query) {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const list = window.matchMedia(query);
+    const update = () => setMatches(list.matches);
+    list.addEventListener("change", update);
+    return () => list.removeEventListener("change", update);
+  }, [query]);
+  return matches;
 }
 
 function Sheet({ title, close, back, children }) {
   const ref = useRef(null);
   const [isPresent, safeToRemove] = usePresence();
   const reduce = useReducedMotion();
+  const mobile = useMediaQuery("(max-width: 760px)");
   useEffect(() => {
     const dialog = ref.current;
     dialog.showModal();
+    // The page behind a sheet stays put: wheel and touch scrolling no longer
+    // chain through the dialog to the document. Counted, so stacked sheets work.
+    const root = document.documentElement;
+    root.dataset.sheets = String(Number(root.dataset.sheets || 0) + 1);
+    root.classList.add("scroll-locked");
     return () => {
       if (dialog.open) dialog.close();
+      const left = Math.max(0, Number(root.dataset.sheets || 1) - 1);
+      root.dataset.sheets = String(left);
+      if (!left) root.classList.remove("scroll-locked");
     };
   }, []);
+  // Mobile sheets rise from the bottom edge; desktop dialogs settle in from slightly below.
+  const hidden = mobile ? { y: "100%", opacity: 1, scale: 1 } : { y: 18, opacity: 0, scale: 0.965 };
   return (
     <Motion.dialog
-      initial={{ opacity: 0, y: 16 }}
-      animate={{ opacity: isPresent ? 1 : 0, y: isPresent ? 0 : 10 }}
-      transition={{ duration: reduce ? 0 : 0.22, ease: [0.22, 1, 0.36, 1] }}
+      initial={hidden}
+      animate={isPresent ? { y: 0, opacity: 1, scale: 1 } : hidden}
+      transition={
+        reduce
+          ? { duration: 0 }
+          : isPresent
+            ? { ...SHEET_SPRING, opacity: { duration: 0.35, ease: EASE } }
+            : { duration: mobile ? 0.38 : 0.28, ease: EASE_EXIT }
+      }
       onAnimationComplete={() => {
         if (!isPresent) {
           ref.current?.close();
@@ -430,7 +846,7 @@ function Sheet({ title, close, back, children }) {
         }
       }}
       ref={ref}
-      className="sheet"
+      className={`sheet ${isPresent ? "" : "is-closing"}`}
       onCancel={(event) => {
         event.preventDefault();
         close();
@@ -441,9 +857,9 @@ function Sheet({ title, close, back, children }) {
       aria-label={title}
     >
       <Motion.div
-        initial={{ opacity: 0, y: 20 }}
+        initial={{ opacity: 0, y: 14 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ type: "spring", stiffness: 280, damping: 30 }}
+        transition={{ duration: 0.55, ease: EASE, delay: reduce ? 0 : 0.08 }}
         className="sheet-inner"
       >
         <Motion.button
@@ -455,7 +871,7 @@ function Sheet({ title, close, back, children }) {
           dragConstraints={{ top: 0, bottom: 0 }}
           dragElastic={0.2}
           onDragEnd={(_, info) => {
-            if (info.offset.y > 45) close();
+            if (info.offset.y > 45 || info.velocity.y > 500) close();
           }}
         />
         <header>
@@ -475,39 +891,198 @@ function Sheet({ title, close, back, children }) {
   );
 }
 
+function sourceLabel(player) {
+  const info = player.sourceInfo;
+  if (!info) return "";
+  if (info.kind === "local") return info.format ? qualityLabel(info.format) : "Local file";
+  if (info.video) return "YouTube video";
+  return info.official ? "Official audio" : "YouTube audio";
+}
+
+function QualityChip({ player, onClick }) {
+  const label = sourceLabel(player);
+  if (!label) return null;
+  const lossless = player.sourceInfo?.format?.lossless;
+  return (
+    <button className={`quality-chip ${lossless ? "lossless" : ""}`} onClick={onClick} aria-label={`Audio quality: ${label}`}>
+      <AnimatePresence mode="wait" initial={false}>
+        <Motion.span key={label} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.35, ease: EASE }}>
+          {label}
+        </Motion.span>
+      </AnimatePresence>
+    </button>
+  );
+}
+
+function AudioQuality({ player }) {
+  const info = player.sourceInfo;
+  const output = player.audioOutput();
+  const rows = [
+    ["Now playing", sourceLabel(player) || "Nothing yet"],
+    info?.kind === "youtube" && ["Source", info.official ? `Official audio upload${info.channel ? ` · ${info.channel}` : ""}` : info.video ? "The video you chose" : "Best matching upload (altered versions excluded)"],
+    info?.kind === "local" && ["Decoding", "Your browser decodes the file directly; nothing is uploaded."],
+    output && ["Output", `${output.sampleRate / 1000} kHz · 32-bit float · ${output.channels > 2 ? `${output.channels} channels` : "stereo"}`],
+    ["Signal path", "Direct. Filters and effects join only during DJ blends."],
+  ].filter(Boolean);
+  return (
+    <>
+      <dl className="audio-facts">
+        {rows.map(([term, value]) => (
+          <div key={term}>
+            <dt>{term}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="setting-row">
+        <div>
+          <strong>Surround for multichannel files</strong>
+          <p>5.1 and 7.1 files reach every speaker your output offers. Stereo stays stereo.</p>
+        </div>
+        <button role="switch" aria-label="Surround for multichannel files" aria-checked={!!player.surround} className="setting-switch" onClick={() => player.setSurround(!player.surround)}>
+          <span />
+        </button>
+      </div>
+      <p className="provider-note">
+        Online songs play YouTube’s own stream, and YouTube chooses its quality; Aurora always prefers official audio uploads and never
+        picks 8D, slowed or sped-up versions unless you search for them. Lossless and Dolby Atmos streaming require licensed services, so
+        Aurora does not claim them. For lossless and hi-res, open your own FLAC, ALAC, WAV or AIFF files: their real format is shown above.
+      </p>
+    </>
+  );
+}
+
+function djPhaseLabel(player) {
+  if (!player.djEnabled) return "Off";
+  return {
+    priming: "Preparing",
+    gliding: "Matching tempo",
+    mixing: "Blending",
+  }[player.djState?.phase] || "On";
+}
+
+function DjPill({ player, onClick, label }) {
+  const active = player.djEnabled && player.djState?.phase !== "idle";
+  const progress = useStore(player.mixProgress, (value) => Math.round(value * 50) / 50);
+  return (
+    <button
+      className={`dj-pill ${player.djEnabled ? "enabled" : ""} ${active ? "is-active" : ""}`}
+      onClick={onClick}
+      aria-label={label}
+      style={{ "--dj-progress": active ? progress : 0 }}
+    >
+      <AudioLines size={16} />
+      <span>DJ transition</span>
+      <AnimatePresence mode="wait" initial={false}>
+        <Motion.small
+          key={djPhaseLabel(player)}
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 0.85, y: 0 }}
+          exit={{ opacity: 0, y: -6 }}
+          transition={{ duration: 0.35, ease: EASE }}
+        >
+          {djPhaseLabel(player)}
+        </Motion.small>
+      </AnimatePresence>
+    </button>
+  );
+}
+
+function DjStatus({ player }) {
+  const state = player.djState || {};
+  const busy = player.djEnabled && state.phase && state.phase !== "idle";
+  const effects = state.effects || [];
+  const progress = useStore(player.mixProgress, (value) => Math.round(value * 100) / 100);
+  return (
+    <div className={`dj-now ${busy ? "is-busy" : ""}`} role="status">
+      <span className="dj-orbit">
+        <i />
+        <i />
+        <i />
+      </span>
+      <div>
+        <strong>{player.djEnabled ? state.label || "Ready when you are" : "DJ transition is off"}</strong>
+        {busy && state.entryAt > 0.5 && <p className="dj-entry">Next song enters at {formatTime(state.entryAt)}</p>}
+        <p>
+          {state.fromBpm && state.toBpm
+            ? `${Math.round(state.fromBpm)} → ${Math.round(state.toBpm)} BPM · tempo glide`
+            : player.track?.localUrl
+              ? "Local audio · tempo glide, hollow filter and echo"
+              : "Online playback · two-deck volume blend"}
+        </p>
+        {effects.length > 0 && (
+          <span className="dj-effects">
+            {effects.map((effect) => (
+              <em key={effect}>{effect}</em>
+            ))}
+          </span>
+        )}
+        <span className="dj-progress" aria-hidden="true">
+          <i style={{ transform: `scaleX(${busy ? progress : 0})` }} />
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const player = usePlayer();
   const reduce = useReducedMotion();
-  const [page, setPage] = useState("home");
-  const [featured, setFeatured] = useState([]);
+  const [notice, setNotice] = useState("");
+  const nav = useNavigation({ onLeaveHint: useCallback(() => setNotice("Press back again to leave Aurora"), []) });
+  const { page, immersive, sheet, collection } = nav.view;
+  const setImmersive = (open) => (open ? nav.openPlayer() : nav.closePlayer());
+  const setSheet = (next) => (next ? nav.openSheet(next) : nav.closeSheet());
+  const [starterPicks, setStarterPicks] = useState([]);
   const [catalogError, setCatalogError] = useState("");
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState([]);
+  const [forYouRows, setForYou] = useState([]);
+  const [revealed, setRevealed] = useState(() => !shouldWelcome());
+  const [listenerName, setListenerName] = useState(readName);
+  const [motionArt, setMotionArt] = useState(() => {
+    try {
+      return localStorage.getItem("aurora-motion-art") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const reveal = useCallback(() => setRevealed(true), []);
+  const [searchType, setSearchType] = useState("all");
+  const [searchData, setSearchData] = useState(EMPTY_SEARCH);
+  const results = searchData.songs;
+  const [collectionState, setCollectionState] = useState({ key: "", data: null, error: "" });
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
-  const [immersive, setImmersive] = useState(false);
+  const [searchRetry, setSearchRetry] = useState(0);
+  const [recentSearches, setRecentSearches] = useState(() =>
+    readSaved("aurora-searches", (item) => typeof item === "string"),
+  );
   const [showLyrics, setShowLyrics] = useState(false);
   const [video, setVideo] = useState(false);
-  const [sheet, setSheet] = useState(null);
-  const [sheetParent, setSheetParent] = useState(null);
+  const ambientVideo = motionArt && !video && immersive && !!player.track && !player.track.localUrl;
+  const sheetParent = nav.view.sheetDepth > 1 ? "settings" : null;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [favorites, setFavorites] = useState(() =>
     readSaved("aurora-favorites"),
   );
   const [recent, setRecent] = useState(() => readSaved("aurora-recent"));
   const [color, setColor] = useState("153, 93, 62");
-  const [notice, setNotice] = useState("");
   const [featureIndex, setFeatureIndex] = useState(0);
   const searchRef = useRef(null);
+  // The search page animates in after the previous page leaves, so focus is
+  // requested here and applied when the field actually mounts.
+  const focusSearchOnMount = useRef(false);
+  const focusSearch = () => {
+    if (searchRef.current) searchRef.current.focus();
+    else focusSearchOnMount.current = true;
+  };
   const fileRef = useRef(null);
-  const heroTrack =
-    (immersive ? player.track : null) || featured[featureIndex] || featured[0];
   const currentFavorite = favorites.some((t) => t.id === player.track?.id);
 
   useEffect(() => {
     const controller = new AbortController();
     getFeaturedTracks(controller.signal)
-      .then(setFeatured)
+      .then(setStarterPicks)
       .catch((e) => {
         if (e.name !== "AbortError")
           setCatalogError(
@@ -520,15 +1095,15 @@ export default function App() {
     const controller = new AbortController();
     const timer = setTimeout(() => {
       if (query.trim().length < 2) {
-        setResults([]);
+        setSearchData(EMPTY_SEARCH);
         setSearching(false);
         setSearchError("");
         return;
       }
       setSearching(true);
       setSearchError("");
-      searchTracks(query, controller.signal)
-        .then(setResults)
+      searchCatalog(query, searchType, controller.signal)
+        .then((data) => setSearchData({ ...data, songs: uniqueTracks(data.songs), videos: uniqueTracks(data.videos) }))
         .catch((e) => {
           if (e.name !== "AbortError")
             setSearchError("Search couldn’t connect. Please try again.");
@@ -536,12 +1111,119 @@ export default function App() {
         .finally(() => {
           if (!controller.signal.aborted) setSearching(false);
         });
-    }, 220);
+    }, 260);
     return () => {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [query]);
+  }, [query, searchRetry, searchType]);
+  // Spotlight: a soft light follows a fine pointer across cards (one delegated,
+  // frame-throttled listener that only writes two custom properties).
+  useEffect(() => {
+    if (!window.matchMedia?.("(hover: hover) and (pointer: fine)").matches) return;
+    let frame = 0;
+    let latest = null;
+    const paint = () => {
+      frame = 0;
+      const target = latest?.target?.closest?.(".spotlight");
+      if (!target) return;
+      const box = target.getBoundingClientRect();
+      target.style.setProperty("--spot-x", `${latest.clientX - box.left}px`);
+      target.style.setProperty("--spot-y", `${latest.clientY - box.top}px`);
+    };
+    const move = (event) => {
+      latest = event;
+      if (!frame) frame = requestAnimationFrame(paint);
+    };
+    document.addEventListener("pointermove", move, { passive: true });
+    return () => {
+      document.removeEventListener("pointermove", move);
+      cancelAnimationFrame(frame);
+    };
+  }, []);
+  // Each screen starts at its top: opening the player or a page never inherits scroll.
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }, [immersive, page, collection]);
+  // Home adapts to what this listener plays, finishes and likes (all on-device).
+  // Seeds come from listening history, then liked and recently played songs.
+  const tasteList = useMemo(() => [...favorites, ...recent], [favorites, recent]);
+  // The song playing now (or last played) leads: "More like …" is the first row.
+  const nowSeed = player.track && !player.track.localUrl ? player.track : null;
+  const homeSeedList = useMemo(() => {
+    const seeds = homeSeeds(3, tasteList);
+    return nowSeed ? [nowSeed, ...seeds.filter((seed) => seed.id !== nowSeed.id && seed.artist !== nowSeed.artist)].slice(0, 3) : seeds;
+  }, [tasteList, nowSeed]);
+  const seedKey = useMemo(() => homeSeedList.map((seed) => seed.id).join("|"), [homeSeedList]);
+  const rowCache = useRef(new Map());
+  useEffect(() => {
+    if (page !== "home") return;
+    const seeds = homeSeedList;
+    if (!seeds.length) return;
+    const controller = new AbortController();
+    Promise.allSettled(
+      seeds.map((seed) => {
+        const cached = rowCache.current.get(seed.id);
+        if (cached) return Promise.resolve({ seed, tracks: tasteFilter(cached) });
+        return getSimilarTracks(seed, controller.signal).then((tracks) => {
+          rowCache.current.set(seed.id, tracks);
+          return { seed, tracks: tasteFilter(tracks) };
+        });
+      }),
+    ).then((rows) => {
+      if (!controller.signal.aborted) setForYou(rows.filter((row) => row.status === "fulfilled" && row.value.tracks.length >= 3).map((row) => ({ ...row.value, tracks: row.value.tracks.slice(0, 12) })));
+    });
+    return () => controller.abort();
+  }, [page, seedKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Rows only exist while there is something to seed them.
+  const forYou = useMemo(() => (seedKey ? forYouRows : []), [seedKey, forYouRows]);
+  // One interleaved mix across the listener's seeds: the spotlight and "Made for you".
+  const personalMix = useMemo(() => {
+    const seen = new Set();
+    const mix = [];
+    for (let i = 0; i < 10; i++)
+      for (const row of forYou) {
+        const track = row.tracks[i];
+        if (track && !seen.has(track.id)) {
+          seen.add(track.id);
+          mix.push(track);
+        }
+      }
+    // A fresh starting point each day, stable within the day.
+    return rotateForDay(mix);
+  }, [forYou]);
+  // Songs this listener keeps finishing, and the artists they come back to.
+  const repeatSongs = useMemo(() => onRepeat(10), [recent, player.track?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const yourArtists = useMemo(() => {
+    const seen = new Set();
+    return homeSeeds(8, tasteList).filter((track) => {
+      const key = track.artist?.toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [tasteList]);
+  const personalized = personalMix.length >= 5;
+  const headline = personalized ? `Your frequency, ${daypart() === "night" || daypart() === "evening" ? "tonight" : "today"}` : "Find your frequency";
+  const featured = personalized ? personalMix.slice(0, 6) : starterPicks;
+  const heroTrack =
+    (immersive ? player.track : null) || featured[featureIndex] || featured[0];
+  // A full grid or none of the leftovers: a short mix reuses the spotlight picks.
+  const madeForYou = personalized && personalMix.length >= 10 ? personalMix.slice(6, 12) : featured.slice(0, 6);
+  const favouriteArtists = forYou.map((row) => row.seed.artist).filter((name, i, all) => all.indexOf(name) === i);
+  // Albums, artists and playlists open as pages with their own history entry.
+  const collectionKey = collection ? `${collection.type}:${collection.id}` : "";
+  useEffect(() => {
+    if (!collection) return;
+    const controller = new AbortController();
+    const key = `${collection.type}:${collection.id}`;
+    getCollection(collection.type, collection.id, controller.signal)
+      .then((data) => setCollectionState({ key, data, error: "" }))
+      .catch((e) => {
+        if (e.name !== "AbortError") setCollectionState({ key, data: null, error: e.message });
+      });
+    return () => controller.abort();
+  }, [collection]);
   useEffect(() => {
     let live = true;
     if (heroTrack?.artwork)
@@ -562,19 +1244,6 @@ export default function App() {
       ? `${player.track.title} · Aurora`
       : "Aurora — Your music, closer";
   }, [player.track]);
-  useEffect(() => {
-    const key = (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
-        e.preventDefault();
-        setImmersive(false);
-        setPage("search");
-        setTimeout(() => searchRef.current?.focus(), 0);
-      }
-      if (e.key === "Escape" && !sheet) setImmersive(false);
-    };
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  }, [sheet]);
 
   const persist = (key, value) => {
     try {
@@ -583,8 +1252,32 @@ export default function App() {
       setNotice("Storage is full. Changes will last for this session.");
     }
   };
-  const play = (track, list = [track]) => {
-    player.loadTrack(track, list);
+  const rememberSearch = () => {
+    const term = query.trim();
+    if (page !== "search" || term.length < 2) return;
+    const updated = [term, ...recentSearches.filter((item) => item.toLowerCase() !== term.toLowerCase())].slice(0, 8);
+    setRecentSearches(updated);
+    persist("aurora-searches", updated);
+  };
+  // Starting a new song keeps songs the listener queued by hand; radio picks made
+  // for the previous song are replaced by fresh ones for this one.
+  const play = (selected, list) => {
+    rememberSearch();
+    // Altered versions (8D, slowed…) only when the listener searched for one.
+    const variant = page === "search" ? requestedVariant(query) : "";
+    const track =
+      variant && !requestedVariant(selected.title) && !selected.variant
+        ? { ...selected, id: `${selected.id}~${variant}`, variant }
+        : selected;
+    player.loadTrack(
+      track,
+      list ?? [
+        track,
+        ...player.queue
+          .slice(player.queueIndex + 1)
+          .filter((item) => !item.recommended && item.id !== track.id),
+      ],
+    );
     const updated = [track, ...recent.filter((t) => t.id !== track.id)].slice(
       0,
       30,
@@ -600,6 +1293,7 @@ export default function App() {
   const toggleFavorite = (track) => {
     if (!track) return;
     const exists = favorites.some((t) => t.id === track.id);
+    if (!exists) recordLike(track);
     const updated = exists
       ? favorites.filter((t) => t.id !== track.id)
       : [track, ...favorites];
@@ -613,27 +1307,83 @@ export default function App() {
     );
   };
   const navigate = (next) => {
-    setPage(next);
-    setImmersive(false);
-    if (next === "search") setTimeout(() => searchRef.current?.focus(), 0);
+    nav.goPage(next);
+    if (next === "search") focusSearch();
   };
+  const mutedVolume = useRef(80);
+  const toggleMute = () => {
+    if (player.volume > 0) {
+      mutedVolume.current = player.volume;
+      player.setVolume(0);
+      setNotice("Muted");
+    } else player.setVolume(mutedVolume.current || 80);
+  };
+  // Always reads the latest player and handlers without re-binding the listener.
+  const onShortcut = useEffectEvent((e) => {
+    if (!player.track && e.key !== "/") return;
+    const handled = {
+      " ": () => player.togglePlay(),
+      ArrowRight: () => (e.shiftKey ? player.next() : player.seek(player.getPlaybackTime() + 5)),
+      ArrowLeft: () => (e.shiftKey ? player.previous() : player.seek(Math.max(0, player.getPlaybackTime() - 5))),
+      m: () => toggleMute(),
+      l: () => { setShowLyrics((value) => !value); setImmersive(true); },
+      f: () => toggleFavorite(player.track),
+      "/": () => navigate("search"),
+    }[e.key.length === 1 ? e.key.toLowerCase() : e.key];
+    if (!handled) return;
+    e.preventDefault();
+    handled();
+  });
+  const onKey = useEffectEvent((e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+        e.preventDefault();
+        navigate("search");
+        focusSearch();
+      }
+      if (e.key === "Escape" && !sheet && !e.target.closest?.("input, textarea, select"))
+        setImmersive(false);
+      // Media shortcuts never steal keys from fields, controls or open dialogs.
+      // Fields keep every key; sliders keep their arrows; buttons keep Space.
+      if (sheet || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.target.closest?.('textarea, select, [contenteditable], input:not([type="range"])')) return;
+      if (e.target.matches?.('input[type="range"]') && /^(Arrow|Home|End|Page)/.test(e.key)) return;
+      if (e.key === " " && e.target.closest?.("button, a")) return;
+      onShortcut(e);
+  });
+  useEffect(() => {
+    const key = (e) => onKey(e);
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, []);
   const addQueue = (track) => {
+    rememberSearch();
     player.addToQueue(track);
     setNotice("Added to your queue");
   };
-  const trackRows = (tracks, queueMode = false) => (
-    <div className="track-list">
-      {tracks.map((track, i) => (
-        <div
-          className={`track-row ${player.track?.id === track.id ? "selected" : ""}`}
-          key={`${track.id}-${i}`}
+  const playNext = (track) => {
+    rememberSearch();
+    player.playNext(track);
+    setNotice("Plays next");
+  };
+  const trackRows = (tracks, queueMode = false, context) => {
+    const occurrences = new Map();
+    const rows = tracks.map((track, i) => {
+      const occurrence = occurrences.get(track.id) || 0;
+      occurrences.set(track.id, occurrence + 1);
+      const selected = player.track?.id === track.id;
+      return (
+        <Motion.div
+          layout={queueMode ? "position" : false}
+          {...listItem(i)}
+          className={`track-row ${selected ? "selected" : ""}`}
+          key={`${track.id}#${occurrence}`}
         >
           <button
             className="track-main"
-            onClick={() => play(track, queueMode ? tracks : [track])}
+            onClick={() => play(track, queueMode ? tracks : context)}
           >
             <span className="track-number">
-              {player.track?.id === track.id && player.playing ? (
+              {selected && player.playing ? (
                 <span className="equalizer">
                   <i />
                   <i />
@@ -671,11 +1421,21 @@ export default function App() {
           >
             {queueMode ? <X size={18} /> : <Plus size={18} />}
           </IconButton>
-        </div>
-      ))}
-    </div>
-  );
-  const browseTracks = page === "library" ? favorites : results;
+        </Motion.div>
+      );
+    });
+    return (
+      <div className="track-list">
+        {queueMode ? (
+          <AnimatePresence initial={false} mode="popLayout">
+            {rows}
+          </AnimatePresence>
+        ) : (
+          rows
+        )}
+      </div>
+    );
+  };
   const currentPosition = featured.findIndex((t) => t.id === heroTrack?.id);
   const carouselIndex = currentPosition >= 0 ? currentPosition : featureIndex;
   const carousel = featured.length
@@ -688,16 +1448,418 @@ export default function App() {
       }))
     : [];
 
+  // ── Search, library and collection pages ────────────────────────────────
+  const openCollection = (type, item) =>
+    nav.goPage("collection", { type, id: String(item.id), title: item.title || item.name || "", artwork: item.artwork || "", subtitle: item.artist || item.owner || "" });
+  const categoryItems = {
+    songs: searchData.songs,
+    videos: searchData.videos,
+    albums: searchData.albums,
+    artists: searchData.artists,
+    playlists: searchData.playlists,
+  };
+  const top = searchData.top;
+  const topItem =
+    top?.kind === "artist"
+      ? searchData.artists.find((item) => item.id === top.id)
+      : top?.kind === "video"
+        ? searchData.videos.find((item) => item.videoId === top.id)
+        : top?.kind === "song"
+          ? searchData.songs.find((item) => item.id === String(top.id))
+          : searchData.songs[0] || searchData.videos[0];
+  const topKind = topItem ? (top?.kind === "artist" ? "artist" : topItem.source === "video" ? "video" : "song") : null;
+  const activateTop = () => {
+    if (!topItem) return;
+    if (topKind === "artist") openCollection("artist", topItem);
+    else play(topItem, topKind === "video" ? searchData.videos : undefined);
+  };
+  const hasResults = searchType === "all" ? Object.values(categoryItems).some((items) => items.length) : categoryItems[searchType].length > 0;
+  const sectionHead = (title, kind, hint) => (
+    <div className="results-heading">
+      <h2>
+        {title}
+        {hint && <small>{hint}</small>}
+      </h2>
+      {searchType === "all" && kind && categoryItems[kind].length > 4 && (
+        <button className="text-button" onClick={() => setSearchType(kind)}>
+          See all <ArrowRight size={15} />
+        </button>
+      )}
+    </div>
+  );
+  const videoCard = (track, i, list) => (
+    <Motion.button key={track.id} {...listItem(i)} className="video-card" onClick={() => play(track, list)} aria-label={`Play ${track.title} by ${track.artist}`}>
+      <span className="video-thumb">
+        {track.artwork ? <img src={track.artwork} alt="" loading="lazy" decoding="async" /> : <Video aria-hidden="true" />}
+        <em>{formatTime(track.duration)}</em>
+        <span className="video-play" aria-hidden="true">
+          <Play size={18} fill="currentColor" />
+        </span>
+      </span>
+      <strong>{track.title}</strong>
+      <small>
+        {track.artist}
+        {track.views ? ` · ${track.views.replace(/ views?$/i, "")} views` : ""}
+      </small>
+    </Motion.button>
+  );
+  const collectionCard = (type) => (item, i) => (
+    <Motion.button key={`${type}-${item.id}`} {...listItem(i)} className="collection-card" onClick={() => openCollection(type, item)} aria-label={`Open ${item.title}`}>
+      <span className="collection-cover">
+        {item.artwork ? <img src={type === "album" ? artworkAt(item.artwork, 320) : item.artwork} alt="" loading="lazy" decoding="async" /> : <Disc3 aria-hidden="true" />}
+        {type === "playlist" && item.count > 0 && <em>{item.count}</em>}
+      </span>
+      <strong>{item.title}</strong>
+      <small>{type === "album" ? [item.artist, item.year].filter(Boolean).join(" · ") : item.owner || "Playlist"}</small>
+    </Motion.button>
+  );
+  const artistCard = (item, i) => (
+    <Motion.button key={`artist-${item.id}`} {...listItem(i)} className="artist-card" onClick={() => openCollection("artist", item)} aria-label={`Open ${item.name}`}>
+      <span className="artist-avatar">{item.artwork ? <img src={item.artwork} alt="" loading="lazy" decoding="async" /> : <UserRound aria-hidden="true" />}</span>
+      <strong>{item.name}</strong>
+      <small>{item.fans ? `${formatCount(item.fans)} fans` : "Artist"}</small>
+    </Motion.button>
+  );
+  const topResultCard = () => (
+    <div className={`top-result ${topKind}`}>
+      {topKind === "artist" ? (
+        <span className="artist-avatar large">{topItem.artwork ? <img src={topItem.artwork} alt="" /> : <UserRound aria-hidden="true" />}</span>
+      ) : topKind === "video" ? (
+        <span className="video-thumb large">
+          <img src={topItem.artwork} alt="" />
+        </span>
+      ) : (
+        <FadingCover track={topItem} eager />
+      )}
+      <div>
+        <span className="feature-label">
+          <span /> Top result · {topKind === "artist" ? "Artist" : topKind === "video" ? "Video" : "Song"}
+        </span>
+        <FluidText as="h2">{topKind === "artist" ? topItem.name : topItem.title}</FluidText>
+        <p>
+          {topKind === "artist"
+            ? `${formatCount(topItem.fans)} fans`
+            : `${topItem.artist}${topItem.album ? ` · ${topItem.album}` : ""}`}
+        </p>
+        <div className="top-result-actions">
+          <button className="primary-button top-result-play" onClick={activateTop}>
+            {topKind === "artist" ? <UserRound size={16} /> : <Play size={16} fill="currentColor" />}
+            {topKind === "artist" ? "Open artist" : "Play"}
+          </button>
+          {topKind !== "artist" && (
+            <button className="small-pill" onClick={() => playNext(topItem)} disabled={!player.track}>
+              <ListMusic size={15} />
+              Play next
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+  const renderCategory = (kind, limit = Infinity) => {
+    const items = categoryItems[kind].slice(0, limit);
+    if (!items.length) return null;
+    if (kind === "songs") return trackRows(items, false, undefined);
+    if (kind === "videos") return <div className="media-grid video-grid">{items.map((track, i) => videoCard(track, i, categoryItems.videos))}</div>;
+    if (kind === "artists") return <div className="artist-row">{items.map(artistCard)}</div>;
+    return <div className="media-grid">{items.map(collectionCard(kind === "albums" ? "album" : "playlist"))}</div>;
+  };
+  const renderSearch = () => (
+    <>
+      <div className="page-heading">
+        <div>
+          <p>There’s a song for that.</p>
+          <h1>
+            What’s on your mind?<span>.</span>
+          </h1>
+        </div>
+      </div>
+        <Motion.label variants={sectionMotion} className={`search-field ${searching ? "is-searching" : ""}`}>
+          <Search size={22} />
+          <input
+            ref={(node) => {
+              searchRef.current = node;
+              if (node && focusSearchOnMount.current) {
+                focusSearchOnMount.current = false;
+                node.focus({ preventScroll: true });
+              }
+            }}
+            type="search"
+            enterKeyHint="search"
+            autoComplete="off"
+            aria-label="Search songs or artists"
+            placeholder="Search songs, artists, a feeling…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && topItem) {
+                e.preventDefault();
+                activateTop();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                if (query) setQuery("");
+                else e.currentTarget.blur();
+              } else if (e.key === "ArrowDown" && results.length) {
+                e.preventDefault();
+                document.querySelector(".search-results .track-main, .top-result-play")?.focus();
+              }
+            }}
+          />
+          <AnimatePresence>
+            {query && (
+              <Motion.span
+                key="clear"
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.8 }}
+                transition={{ duration: 0.3, ease: EASE }}
+              >
+                <IconButton
+                  label="Clear search"
+                  onClick={() => {
+                    setQuery("");
+                    searchRef.current?.focus();
+                  }}
+                >
+                  <X size={18} />
+                </IconButton>
+              </Motion.span>
+            )}
+          </AnimatePresence>
+          <span className="search-progress" aria-hidden="true" />
+        </Motion.label>
+      {query.trim().length >= 2 && (
+        <div className="search-tabs" role="tablist" aria-label="Search categories">
+          {SEARCH_TABS.map(([id, label]) => (
+            <button key={id} role="tab" aria-selected={searchType === id} className={searchType === id ? "selected" : ""} onClick={() => setSearchType(id)}>
+              {searchType === id && <Motion.span layoutId="search-tab" className="nav-pill" transition={PILL_SPRING} />}
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+      <AnimatePresence mode="wait" initial={false}>
+        {searching && !hasResults ? (
+          <Motion.div key="skeleton" className="search-skeleton" role="status" aria-label="Searching the catalogue" {...fade}>
+            {Array.from({ length: 6 }, (_, i) => (
+              <span key={i} style={{ "--i": i }}>
+                <i />
+                <b />
+              </span>
+            ))}
+          </Motion.div>
+        ) : searchError ? (
+          <Motion.div key="error" className="empty-state" role="alert" {...fade}>
+            <p>{searchError}</p>
+            <button className="small-pill" onClick={() => setSearchRetry((value) => value + 1)}>
+              Try again
+            </button>
+          </Motion.div>
+        ) : query.trim().length >= 2 && hasResults ? (
+          <Motion.div key={`results-${searchType}`} className={`search-results ${searching ? "is-refreshing" : ""}`} {...fade}>
+            {searchType === "all" ? (
+              <>
+                {topItem && topResultCard()}
+                {searchData.songs.length > 0 && (
+                  <section className="result-section">
+                    {sectionHead("Songs", "songs")}
+                    {renderCategory("songs", 5)}
+                  </section>
+                )}
+                {searchData.videos.length > 0 && (
+                  <section className="result-section">
+                    {sectionHead("Videos", "videos", "Remixes, edits and live")}
+                    {renderCategory("videos", 6)}
+                  </section>
+                )}
+                {searchData.artists.length > 0 && (
+                  <section className="result-section">
+                    {sectionHead("Artists", "artists")}
+                    {renderCategory("artists", 6)}
+                  </section>
+                )}
+                {searchData.albums.length > 0 && (
+                  <section className="result-section">
+                    {sectionHead("Albums", "albums")}
+                    {renderCategory("albums", 6)}
+                  </section>
+                )}
+                {searchData.playlists.length > 0 && (
+                  <section className="result-section">
+                    {sectionHead("Playlists", "playlists")}
+                    {renderCategory("playlists", 6)}
+                  </section>
+                )}
+              </>
+            ) : (
+              <section className="result-section">
+                {sectionHead(SEARCH_TABS.find(([id]) => id === searchType)[1], null, `${categoryItems[searchType].length} results`)}
+                {renderCategory(searchType)}
+              </section>
+            )}
+          </Motion.div>
+        ) : (
+          <Motion.div key={`empty-${query.trim().length > 1}`} className="empty-state" {...fade}>
+            <Search size={38} />
+            <h2>{query.trim().length > 1 ? "Nothing here just yet." : "Follow your curiosity."}</h2>
+            <p>{query.trim().length > 1 ? "Try another title, an artist, or a different category." : "Songs, remixes, slowed edits, albums, artists and playlists."}</p>
+            {query.trim().length < 2 && (
+              <div className="search-suggestions">
+                {recentSearches.length > 0 && (
+                  <div className="chip-group" aria-label="Recent searches">
+                    <span>Recent</span>
+                    {recentSearches.map((term) => (
+                      <button key={term} className="chip" onClick={() => setQuery(term)}>
+                        {term}
+                      </button>
+                    ))}
+                    <button
+                      className="chip chip-quiet"
+                      onClick={() => {
+                        setRecentSearches([]);
+                        persist("aurora-searches", []);
+                      }}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                )}
+                <div className="chip-group" aria-label="Search ideas">
+                  <span>Try</span>
+                  {SEARCH_IDEAS.map((term) => (
+                    <button key={term} className="chip" onClick={() => setQuery(term)}>
+                      {term}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </Motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  );
+  const renderLibrary = () => (
+    <>
+      <div className="page-heading">
+        <div>
+          <p>The music you keep close.</p>
+          <h1>
+            Your library<span>.</span>
+          </h1>
+        </div>
+        <Heart size={32} />
+      </div>
+      {favorites.length ? (
+        <div className="search-results">
+          <div className="results-heading">
+            <h2>Liked songs</h2>
+            <span>{favorites.length} tracks</span>
+          </div>
+          {trackRows(favorites, false, favorites)}
+        </div>
+      ) : (
+        <div className="empty-state">
+          <Heart size={38} />
+          <h2>Keep the ones you love.</h2>
+          <p>Tap the heart on any playing track. Your favorites stay on this device.</p>
+          <button className="primary-button" onClick={() => navigate("search")}>
+            Find a song <ArrowRight size={16} />
+          </button>
+        </div>
+      )}
+      {recent.length > 0 && (
+        <section className="result-section">
+          <div className="results-heading">
+            <h2>Recently played</h2>
+            <span>{recent.length} tracks</span>
+          </div>
+          {trackRows(recent.slice(0, 12), false, recent.slice(0, 12))}
+        </section>
+      )}
+    </>
+  );
+  const renderCollection = () => {
+    const ready = collectionState.key === collectionKey ? collectionState : { data: null, error: "" };
+    const tracks = ready.data?.tracks || [];
+    const title = ready.data?.title || collection?.title || "";
+    const artwork = ready.data?.artwork || collection?.artwork || "";
+    const typeLabel = { album: "Album", artist: "Artist", playlist: "Playlist" }[collection?.type] || "Collection";
+    return (
+      <>
+        <div className={`collection-head ${collection?.type}`}>
+          <IconButton label="Back" className="collection-back" onClick={() => window.history.back()}>
+            <ArrowLeft />
+          </IconButton>
+          <span className={collection?.type === "artist" ? "artist-avatar large" : "collection-cover large"}>
+            {artwork ? <img src={collection?.type === "album" ? artworkAt(artwork, 600) : artwork} alt="" /> : <Disc3 aria-hidden="true" />}
+          </span>
+          <div>
+            <span className="feature-label">
+              <span /> {typeLabel}
+            </span>
+            <FluidText as="h1">{title}</FluidText>
+            <p>{ready.data?.subtitle || collection?.subtitle}</p>
+            <div className="top-result-actions">
+              <button className="primary-button" disabled={!tracks.length} onClick={() => play(tracks[0], tracks)}>
+                <Play size={16} fill="currentColor" />
+                Play
+              </button>
+              <button
+                className="small-pill"
+                disabled={tracks.length < 2}
+                onClick={() => {
+                  const shuffled = [...tracks].sort(() => Math.random() - 0.5);
+                  play(shuffled[0], shuffled);
+                }}
+              >
+                <Shuffle size={15} />
+                Shuffle
+              </button>
+            </div>
+          </div>
+        </div>
+        <AnimatePresence mode="wait" initial={false}>
+          {ready.error ? (
+            <Motion.div key="error" className="empty-state" role="alert" {...fade}>
+              <p>{ready.error}</p>
+              <button className="small-pill" onClick={() => nav.goPage("collection", { ...collection })}>
+                Try again
+              </button>
+            </Motion.div>
+          ) : !ready.data ? (
+            <Motion.div key="loading" className="search-skeleton" role="status" aria-label="Opening" {...fade}>
+              {Array.from({ length: 8 }, (_, i) => (
+                <span key={i} style={{ "--i": i }}>
+                  <i />
+                  <b />
+                </span>
+              ))}
+            </Motion.div>
+          ) : (
+            <Motion.div key="tracks" className="search-results" {...fade}>
+              <div className="results-heading">
+                <h2>{collection?.type === "artist" ? "Top songs" : "Songs"}</h2>
+                <span>{tracks.length} tracks</span>
+              </div>
+              {trackRows(tracks, false, tracks)}
+            </Motion.div>
+          )}
+        </AnimatePresence>
+      </>
+    );
+  };
+
   return (
     <MotionConfig reducedMotion="user">
-      <Welcome />
+      <Welcome onLeave={reveal} />
       <div
-        className={`aurora-app ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${immersive ? "is-immersive" : ""} ${video && immersive ? "has-video" : ""} ${video && showLyrics ? "video-with-lyrics" : ""}`}
+        className={`aurora-app ${revealed ? "" : "is-veiled"} ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${immersive ? "is-immersive" : ""} ${video && immersive ? "has-video" : ""} ${video && showLyrics ? "video-with-lyrics" : ""} ${ambientVideo ? "motion-art" : ""}`}
         style={{ "--art-color": color }}
       >
         <div
           aria-hidden="true"
-          className={`video-surface ${video && immersive ? "is-visible" : ""}`}
+          className={`video-surface ${(video || ambientVideo) && immersive ? "is-visible" : ""}`}
         >
           <div id="youtube-player" />
         </div>
@@ -730,6 +1892,9 @@ export default function App() {
                 className={page === id && !immersive ? "selected" : ""}
                 onClick={() => navigate(id)}
               >
+                {page === id && !immersive && (
+                  <Motion.span layoutId="sidebar-pill" className="nav-pill" transition={PILL_SPRING} />
+                )}
                 <Icon size={21} />
                 <span>{label}</span>
                 {id === "search" && <kbd>⌘ K</kbd>}
@@ -783,8 +1948,15 @@ export default function App() {
           </div>
         </Motion.aside>
         <Motion.main layout layoutDependency={sidebarCollapsed} className="main-content">
-          {!immersive && (
-            <>
+          <AnimatePresence mode="wait" initial={false}>
+          {!(immersive && player.track) ? (
+            <Motion.div
+              key="browse"
+              className="browse-shell"
+              initial={{ opacity: 0, y: 24 }}
+              animate={{ opacity: 1, y: 0, transition: { duration: 0.6, ease: EASE } }}
+              exit={{ opacity: 0, y: -12, transition: { duration: 0.3, ease: EASE_EXIT } }}
+            >
               <header className="topbar">
                 <span className="mobile-brand">
                   <Brand />
@@ -796,7 +1968,9 @@ export default function App() {
                       ? "Listen now"
                       : page === "search"
                         ? "Search"
-                        : "Your library"}
+                        : page === "collection"
+                          ? collection?.title || "Collection"
+                          : "Your library"}
                   </span>
                 </div>
                 <div className="topbar-right">
@@ -812,19 +1986,22 @@ export default function App() {
                   </IconButton>
                 </div>
               </header>
+              <AnimatePresence mode="wait" initial={false}>
               {page === "home" ? (
                 <Motion.div
                   key="home"
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.25 }}
+                  variants={pageMotion}
+                  initial="initial"
+                  animate="animate"
+                  exit="exit"
                   className="browse-content"
                 >
                   <div className="page-heading">
                     <div>
-                      <p>A little less noise. A little more music.</p>
-                      <h1>
-                        Find your frequency<span>.</span>
+                      <p>{greeting(listenerName.trim())} {personalized ? "Here’s what your ears have been asking for." : "A little less noise, a little more music."}</p>
+                      <h1 aria-label={`${headline}.`}>
+                        <RevealWords text={headline} />
+                        <span aria-hidden="true">.</span>
                       </h1>
                     </div>
                     <button
@@ -835,8 +2012,9 @@ export default function App() {
                       <Search />
                     </button>
                   </div>
-                  <section
-                    className="discovery-stage"
+                  <Motion.section
+                    variants={sectionMotion}
+                    className="discovery-stage spotlight"
                     aria-label="Featured music"
                   >
                     <div className="stage-aura" />
@@ -844,10 +2022,11 @@ export default function App() {
                       <>
                         <div className="stage-copy">
                           <span className="feature-label">
-                            <span /> In the spotlight
+                            <span /> {personalized ? "Picked for you" : "In the spotlight"}
                           </span>
                           <FluidText as="h2">{heroTrack.artist}</FluidText>
                           <FluidText as="p">{heroTrack.title}</FluidText>
+                          <Magnetic>
                           <button
                             className="primary-button"
                             onClick={() => play(heroTrack)}
@@ -855,6 +2034,7 @@ export default function App() {
                             <Play size={16} fill="currentColor" />
                             Press play
                           </button>
+                          </Magnetic>
                           <span className="stage-caption">
                             An entirely different kind of listening.
                           </span>
@@ -939,21 +2119,18 @@ export default function App() {
                         </button>
                       </div>
                     )}
-                  </section>
-                  <section className="mood-section" aria-label="Browse by mood">
+                  </Motion.section>
+                  <Motion.section variants={sectionMotion} className="mood-section" aria-label="Browse by mood">
                     {[
                       [
                         "Daily rotation",
                         "The tracks you come back to",
-                        "The Weeknd Dua Lipa",
+                        topArtists(2, tasteList).join(" ") || "The Weeknd Dua Lipa",
                         Disc3,
                       ],
-                      [
-                        "After hours",
-                        "For the quieter side of you",
-                        "Joji Frank Ocean",
-                        Headphones,
-                      ],
+                      daypart() === "morning"
+                        ? ["Easy morning", "Soft starts and warm coffee", "acoustic morning", Headphones]
+                        : ["After hours", "For the quieter side of you", "Joji Frank Ocean", Headphones],
                       [
                         "A little energy",
                         "Turn the everyday up",
@@ -963,7 +2140,7 @@ export default function App() {
                     ].map(([title, subtitle, term, Icon], i) => (
                       <button
                         key={title}
-                        className={`mood-card mood-${i}`}
+                        className={`mood-card mood-${i} spotlight`}
                         onClick={() => {
                           setQuery(term);
                           navigate("search");
@@ -979,12 +2156,43 @@ export default function App() {
                         <ArrowRight size={18} />
                       </button>
                     ))}
-                  </section>
-                  <section className="music-section">
+                  </Motion.section>
+                  {forYou.map(({ seed, tracks }) => (
+                    <RevealSection key={seed.id} className="music-section for-you">
+                      <div className="section-heading">
+                        <div>
+                          <h2>{seed.id === nowSeed?.id ? `More like ${seed.title}` : `Because you listened to ${seed.title}`}</h2>
+                          <p>{seed.id === nowSeed?.id ? `Same language and vibe as ${seed.artist}.` : "Picked on this device from what you finish and love."}</p>
+                        </div>
+                        <button className="text-button" onClick={() => play(tracks[0], tracks)}>
+                          Play all <Play size={14} fill="currentColor" />
+                        </button>
+                      </div>
+                      <div className="shelf">
+                        {tracks.map((track, i) => (
+                          <Motion.button key={track.id} variants={revealCard} className="album-card" onClick={() => play(track, tracks.slice(i))}>
+                            <div className="album-image spotlight">
+                              <Cover track={track} />
+                              <span className="album-play">
+                                <Play size={21} fill="currentColor" />
+                              </span>
+                            </div>
+                            <strong>{track.title}</strong>
+                            <span>{track.artist}</span>
+                          </Motion.button>
+                        ))}
+                      </div>
+                    </RevealSection>
+                  ))}
+                  <RevealSection className="music-section">
                     <div className="section-heading">
                       <div>
-                        <h2>Made for a good listen</h2>
-                        <p>A few favorites to get you started.</p>
+                        <h2>{personalized ? "Made for you" : "Made for a good listen"}</h2>
+                        <p>
+                          {personalized
+                            ? `Shaped by what you play${favouriteArtists.length ? `, around ${favouriteArtists.slice(0, 2).join(" and ")}` : ""}.`
+                            : "A few favorites to get you started."}
+                        </p>
                       </div>
                       <button
                         className="text-button"
@@ -994,13 +2202,14 @@ export default function App() {
                       </button>
                     </div>
                     <div className="album-grid">
-                      {featured.slice(0, 6).map((track) => (
-                        <button
+                      {madeForYou.map((track) => (
+                        <Motion.button
+                          variants={revealCard}
                           className="album-card"
                           key={track.id}
                           onClick={() => play(track)}
                         >
-                          <div className="album-image">
+                          <div className="album-image spotlight">
                             <Cover track={track} />
                             <span className="album-play">
                               <Play size={21} fill="currentColor" />
@@ -1008,18 +2217,75 @@ export default function App() {
                           </div>
                           <strong>{track.title}</strong>
                           <span>{track.artist}</span>
-                        </button>
+                        </Motion.button>
                       ))}
                     </div>
-                  </section>
+                  </RevealSection>
+                  {repeatSongs.length > 0 && (
+                    <RevealSection className="music-section on-repeat">
+                      <div className="section-heading">
+                        <div>
+                          <h2>On repeat</h2>
+                          <p>The songs you keep finishing.</p>
+                        </div>
+                        <button className="text-button" onClick={() => play(repeatSongs[0], repeatSongs)}>
+                          Play all <Play size={14} fill="currentColor" />
+                        </button>
+                      </div>
+                      <div className="shelf">
+                        {repeatSongs.map((track, i) => (
+                          <Motion.button key={track.id} variants={revealCard} className="album-card" onClick={() => play(track, repeatSongs.slice(i))}>
+                            <div className="album-image spotlight">
+                              <Cover track={track} />
+                              <span className="album-play">
+                                <Play size={21} fill="currentColor" />
+                              </span>
+                            </div>
+                            <strong>{track.title}</strong>
+                            <span>{track.artist}</span>
+                          </Motion.button>
+                        ))}
+                      </div>
+                    </RevealSection>
+                  )}
+                  {yourArtists.length >= 2 && (
+                    <RevealSection className="music-section your-artists">
+                      <div className="section-heading">
+                        <div>
+                          <h2>Your artists</h2>
+                          <p>The voices you come back to.</p>
+                        </div>
+                      </div>
+                      <div className="artist-row">
+                        {yourArtists.map((track) => (
+                          <Motion.button
+                            key={track.artist}
+                            variants={revealCard}
+                            className="artist-card"
+                            aria-label={`Music by ${track.artist}`}
+                            onClick={() => {
+                              setQuery(track.artist);
+                              navigate("search");
+                            }}
+                          >
+                            <span className="artist-avatar">
+                              {track.artwork ? <img src={artworkAt(track.artwork, 300)} alt="" loading="lazy" decoding="async" /> : <UserRound aria-hidden="true" />}
+                            </span>
+                            <strong>{track.artist}</strong>
+                            <small>{track.title}</small>
+                          </Motion.button>
+                        ))}
+                      </div>
+                    </RevealSection>
+                  )}
                   {recent.length > 0 && (
-                    <section className="music-section">
+                    <RevealSection className="music-section">
                       <div className="section-heading">
                         <h2>Back to your favorites</h2>
                         <span className="muted">Recently played</span>
                       </div>
                       {trackRows(recent.slice(0, 5))}
-                    </section>
+                    </RevealSection>
                   )}
                   <footer className="browse-footer">
                     <Brand />
@@ -1029,126 +2295,29 @@ export default function App() {
                 </Motion.div>
               ) : (
                 <Motion.div
-                  key={page}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.25 }}
+                  key={page === "collection" ? `collection-${collectionKey}` : page}
+                  variants={pageMotion}
+                  initial="initial"
+                  animate="animate"
+                  exit="exit"
                   className="browse-content search-page"
                 >
-                  <div className="page-heading">
-                    <div>
-                      <p>
-                        {page === "search"
-                          ? "There’s a song for that."
-                          : "The music you keep close."}
-                      </p>
-                      <h1>
-                        {page === "search"
-                          ? "What’s on your mind?"
-                          : "Your library"}
-                        <span>.</span>
-                      </h1>
-                    </div>
-                    {page === "library" && <Heart size={32} />}
-                  </div>
-                  {page === "search" && (
-                    <label className="search-field">
-                      <Search size={22} />
-                      <input
-                        ref={searchRef}
-                        aria-label="Search songs or artists"
-                        placeholder="Search songs, artists, a feeling…"
-                        value={query}
-                        onChange={(e) => setQuery(e.target.value)}
-                      />
-                      {query && (
-                        <IconButton
-                          label="Clear search"
-                          onClick={() => setQuery("")}
-                        >
-                          <X size={18} />
-                        </IconButton>
-                      )}
-                    </label>
-                  )}
-                  {searching && page === "search" ? (
-                    <div className="empty-state">
-                      <LoaderCircle className="spin" />
-                      <p>Searching the catalogue…</p>
-                    </div>
-                  ) : searchError && page === "search" ? (
-                    <div className="empty-state" role="alert">
-                      <p>{searchError}</p>
-                      <button
-                        className="small-pill"
-                        onClick={() => setQuery(`${query} `)}
-                      >
-                        Try again
-                      </button>
-                    </div>
-                  ) : browseTracks.length ? (
-                    <>
-                      <div className="results-heading">
-                        <h2>{page === "library" ? "Liked songs" : "Songs"}</h2>
-                        <span>{browseTracks.length} tracks</span>
-                      </div>
-                      {trackRows(browseTracks)}
-                    </>
-                  ) : (
-                    <div className="empty-state">
-                      {page === "library" ? (
-                        <Heart size={38} />
-                      ) : (
-                        <Search size={38} />
-                      )}
-                      <h2>
-                        {page === "library"
-                          ? "Keep the ones you love."
-                          : query.trim().length > 1
-                            ? "Nothing here just yet."
-                            : "Follow your curiosity."}
-                      </h2>
-                      <p>
-                        {page === "library"
-                          ? "Tap the heart on any playing track. Your favorites stay on this device."
-                          : query.trim().length > 1
-                            ? "Try another song title or artist name."
-                            : "Find an old favorite. Discover a new one."}
-                      </p>
-                      {page === "library" && (
-                        <button
-                          className="primary-button"
-                          onClick={() => navigate("search")}
-                        >
-                          Find a song <ArrowRight size={16} />
-                        </button>
-                      )}
-                    </div>
-                  )}
+                  {page === "collection" ? renderCollection() : page === "search" ? renderSearch() : renderLibrary()}
                 </Motion.div>
               )}
-            </>
-          )}
-          <AnimatePresence>
-            {immersive && player.track && (
+              </AnimatePresence>
+            </Motion.div>
+          ) : (
               <Motion.section
                 key="immersive-player"
-                exit={{ opacity: 0, y: 10, transition: { duration: 0.2 } }}
-                initial={{ opacity: 0, y: 18 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ type: "spring", stiffness: 220, damping: 28 }}
+                variants={playerMotion}
+                initial="initial"
+                animate="animate"
+                exit="exit"
                 className={`immersive-player ${showLyrics ? "with-lyrics" : ""} ${video ? "with-video" : ""}`}
                 aria-label="Now playing"
               >
-                <div
-                  className="player-art-background"
-                  style={{
-                    backgroundImage: player.track.artwork
-                      ? `url("${player.track.artwork}")`
-                      : undefined,
-                  }}
-                />
-                <div className="player-veil" />
+                <ArtBackdrop player={player} />
                 <header className="player-topbar">
                   <IconButton
                     label="Back to music"
@@ -1165,18 +2334,22 @@ export default function App() {
                       <IconButton
                         label="Artwork mode"
                         active={!video}
+                        aria-pressed={!video}
                         onClick={() => setVideo(false)}
                       >
+                        {!video && <Motion.span layoutId="mode-pill" className="nav-pill" transition={PILL_SPRING} />}
                         <Headphones size={19} />
                       </IconButton>
                       <IconButton
                         label="Video mode"
                         active={video}
+                        aria-pressed={video}
                         disabled={!!player.track?.localUrl}
                         onClick={() => {
                           setVideo(!video);
                         }}
                       >
+                        {video && <Motion.span layoutId="mode-pill" className="nav-pill" transition={PILL_SPRING} />}
                         <Video size={19} />
                       </IconButton>
                     </div>
@@ -1199,7 +2372,7 @@ export default function App() {
                       else if (info.offset.x > 65) player.previous();
                     }}
                   >
-                    <Cover track={player.track} eager />
+                    <FadingCover track={player.track} eager size={1200} direction={player.direction} />
                     <span className="art-caption">
                       <span
                         className={
@@ -1219,12 +2392,13 @@ export default function App() {
                         key="lyrics"
                         exit={{
                           opacity: 0,
-                          x: 8,
-                          transition: { duration: 0.18 },
+                          x: 24,
+                          filter: "blur(6px)",
+                          transition: { duration: 0.4, ease: EASE_EXIT },
                         }}
-                        initial={{ opacity: 0, x: 16 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ duration: 0.3 }}
+                        initial={{ opacity: 0, x: 40, filter: "blur(8px)" }}
+                        animate={{ opacity: 1, x: 0, filter: "blur(0px)" }}
+                        transition={{ duration: 0.8, ease: EASE }}
                         className="desktop-lyrics"
                       >
                         <Lyrics key={player.track.id} player={player} />
@@ -1234,15 +2408,16 @@ export default function App() {
                   <div className="mobile-player-info">
                     <FluidText as="h1">{player.track.title}</FluidText>
                     <p>{player.track.artist}</p>
+                    <div className="meta-chips">
+                      <QualityChip player={player} onClick={() => setSheet("audio")} />
+                      <BestPartChip player={player} />
+                    </div>
                     <div className="player-pills">
                       <button
                         className={currentFavorite ? "is-liked" : ""}
                         onClick={() => toggleFavorite(player.track)}
                       >
-                        <Heart
-                          size={20}
-                          fill={currentFavorite ? "currentColor" : "none"}
-                        />
+                        <LikeHeart size={20} liked={!!currentFavorite} />
                         {currentFavorite ? "Liked" : "Like"}
                       </button>
                       <button
@@ -1256,21 +2431,7 @@ export default function App() {
                         Queue
                       </button>
                     </div>
-                    <button
-                      className={`dj-pill ${player.djEnabled ? "enabled" : ""}`}
-                      onClick={() => setSheet("dj")}
-                      aria-label="DJ transition settings"
-                    >
-                      <AudioLines size={16} />
-                      <span>DJ transition</span>
-                      <small>
-                        {player.djEnabled
-                          ? player.djState?.phase === "mixing"
-                            ? "Mixing"
-                            : "On"
-                          : "Off"}
-                      </small>
-                    </button>
+                    <DjPill player={player} onClick={() => setSheet("dj")} label="DJ transition settings" />
                     <Seek player={player} />
                     <Transport player={player} large />
                     <Motion.button
@@ -1293,20 +2454,31 @@ export default function App() {
                   <div>
                     <FluidText as="h1">{player.track.title}</FluidText>
                     <p>{player.track.artist}</p>
+                    <div className="meta-chips">
+                      <QualityChip player={player} onClick={() => setSheet("audio")} />
+                      <BestPartChip player={player} />
+                    </div>
                   </div>
                   <IconButton
                     label={currentFavorite ? "Unlike track" : "Like track"}
                     active={currentFavorite}
                     onClick={() => toggleFavorite(player.track)}
                   >
-                    <Heart fill={currentFavorite ? "currentColor" : "none"} />
+                    <LikeHeart liked={!!currentFavorite} />
                   </IconButton>
                 </div>
               </Motion.section>
-            )}
+          )}
           </AnimatePresence>
         </Motion.main>
-        {player.track && <div className="player-dock">
+        <AnimatePresence>
+        {player.track && <Motion.div
+          key="dock"
+          className="player-dock"
+          initial={{ y: 110, opacity: 0 }}
+          animate={{ y: 0, opacity: 1, transition: { type: "spring", stiffness: 140, damping: 22, opacity: { duration: 0.5 } } }}
+          exit={{ y: 110, opacity: 0, transition: { duration: 0.4, ease: EASE_EXIT } }}
+        >
           <div className="dock-transport">
             <Transport player={player} />
           </div>
@@ -1323,7 +2495,7 @@ export default function App() {
               player.track ? setImmersive(true) : navigate("search")
             }
           >
-            <Cover track={player.track} />
+            <FadingCover track={player.track} size={160} />
             <span>
               <strong>{player.track?.title || "Make yourself at home"}</strong>
               <small>
@@ -1392,8 +2564,9 @@ export default function App() {
               <SkipForward fill="currentColor" />
             </IconButton>
           </div>
-        </div>
+        </Motion.div>
         }
+        </AnimatePresence>
         <nav className="mobile-nav" aria-label="Mobile navigation">
           {[
             ["home", House, "Listen"],
@@ -1405,6 +2578,9 @@ export default function App() {
               className={page === id ? "selected" : ""}
               onClick={() => navigate(id)}
             >
+              {page === id && (
+                <Motion.span layoutId="mobile-nav-pill" className="nav-pill" transition={PILL_SPRING} />
+              )}
               <Icon size={22} />
               <span>{label}</span>
             </button>
@@ -1421,17 +2597,11 @@ export default function App() {
                         ? "A continuous mix, shaped around this song."
                         : "Your songs, in your order."}
                     </p>
-                    <button
-                      className={`dj-pill ${player.djEnabled ? "enabled" : ""}`}
-                      onClick={() => setSheet("dj")}
-                    >
-                      <AudioLines size={16} />
-                      DJ transition
-                      <small>{player.djEnabled ? "On" : "Off"}</small>
-                    </button>
+                    <DjPill player={player} onClick={() => setSheet("dj")} />
                   </div>
                   {player.recommendationsLoading && (
-                    <p className="queue-status" role="status">
+                    <p className="queue-status is-loading" role="status">
+                      <Waveform />
                       Finding the next good listen…
                     </p>
                   )}
@@ -1464,18 +2634,8 @@ export default function App() {
             <Sheet
               key="dj"
               title="DJ transition"
-              back={
-                sheetParent === "settings"
-                  ? () => {
-                      setSheet("settings");
-                      setSheetParent(null);
-                    }
-                  : undefined
-              }
-              close={() => {
-                setSheet(null);
-                setSheetParent(null);
-              }}
+              back={sheetParent === "settings" ? nav.backSheet : undefined}
+              close={() => setSheet(null)}
             >
               <div className="dj-intro">
                 <span className="dj-symbol">
@@ -1533,30 +2693,67 @@ export default function App() {
                   <span />
                 </button>
               </div>
-              <div className="dj-now" role="status">
-                <span className="dj-orbit">
-                  <i />
-                  <i />
-                  <i />
-                </span>
+              <div className="setting-row">
                 <div>
-                  <strong>
-                    {player.djState?.label || "Ready when you are"}
-                  </strong>
-                  <p>
-                    {player.djState?.fromBpm && player.djState?.toBpm
-                      ? `${player.djState.fromBpm} → ${player.djState.toBpm} BPM · tempo blend`
-                      : player.track?.localUrl
-                        ? "Local audio · crossfade + filter sweep"
-                        : "Online playback · gentle volume fade"}
-                  </p>
+                  <strong>Hollow sweep</strong>
+                  <p>A deep, echoing sweep over online blends, whose audio YouTube keeps unfiltered.</p>
+                </div>
+                <button
+                  role="switch"
+                  aria-label="Hollow sweep"
+                  aria-checked={!!player.transitionFx}
+                  className="setting-switch"
+                  onClick={() => player.setTransitionFx?.(!player.transitionFx)}
+                >
+                  <span />
+                </button>
+              </div>
+              <div className="setting-row">
+                <div>
+                  <strong>Blend length</strong>
+                  <p>5–10 seconds, in whole bars when the beat is known.</p>
+                </div>
+                <div className="segmented" role="radiogroup" aria-label="Blend length">
+                  {[
+                    [5, "Tight"],
+                    [8, "Natural"],
+                    [10, "Long"],
+                  ].map(([seconds, label]) => (
+                    <button
+                      key={seconds}
+                      role="radio"
+                      aria-checked={player.blendLength === seconds}
+                      className={player.blendLength === seconds ? "selected" : ""}
+                      onClick={() => player.setBlendLength(seconds)}
+                    >
+                      {player.blendLength === seconds && <Motion.span layoutId="blend-pill" className="nav-pill" transition={PILL_SPRING} />}
+                      {label}
+                      <small>{seconds}s</small>
+                    </button>
+                  ))}
                 </div>
               </div>
+              <DjStatus player={player} />
+              <ul className="dj-capabilities">
+                {player.track?.localUrl ? (
+                  <>
+                    <li>Finds a quiet phrase in the last 30 seconds and the first beat of the next song.</li>
+                    <li>Glides the ending song up to ±8% into the next song’s measured tempo, pitch preserved.</li>
+                    <li>A five-second, bar-length blend with a hollow filter sweep and echo tail.</li>
+                  </>
+                ) : (
+                  <>
+                    <li>Starts the blend after the last timed vocal line, or near the natural ending.</li>
+                    <li>Pre-loads the next song on a second deck for a real five-second overlap.</li>
+                    <li>Glides tempo only when catalogue BPM is known and this player accepts fine speeds.</li>
+                  </>
+                )}
+              </ul>
               <p className="provider-note">
-                Local files support a soft, hollow filter sweep and tempo
-                adjustment when a steady beat can be measured. YouTube supports
-                volume fading; it does not provide the audio access needed for
-                these effects or precise tempo matching.
+                YouTube does not share its audio with the page, so the hollow
+                filter, echo and measured beat matching work with your own
+                audio files. Online songs blend with volume and, when possible,
+                tempo.
               </p>
               <button
                 className="primary-button"
@@ -1567,18 +2764,43 @@ export default function App() {
               </button>
             </Sheet>
           )}
+          {sheet === "audio" && (
+            <Sheet key="audio" title="Audio quality" back={sheetParent ? nav.backSheet : undefined} close={() => setSheet(null)}>
+              <AudioQuality player={player} />
+            </Sheet>
+          )}
           {sheet === "settings" && (
             <Sheet
               key="settings"
               title="Make it yours"
               close={() => setSheet(null)}
             >
+              <label className="setting-row name-row">
+                <div>
+                  <strong>What should we call you?</strong>
+                  <p>Only used to greet you. It stays on this device.</p>
+                </div>
+                <input
+                  type="text"
+                  aria-label="Your name"
+                  placeholder="Your name"
+                  maxLength={24}
+                  autoComplete="given-name"
+                  value={listenerName}
+                  onChange={(e) => {
+                    const value = e.target.value.replace(/\s+/g, " ").slice(0, 24);
+                    setListenerName(value);
+                    try {
+                      localStorage.setItem("aurora-name", value.trim());
+                    } catch {
+                      /* The greeting lasts this session. */
+                    }
+                  }}
+                />
+              </label>
               <button
                 className="dj-settings-link"
-                onClick={() => {
-                  setSheetParent("settings");
-                  setSheet("dj");
-                }}
+                onClick={() => setSheet("dj")}
               >
                 <AudioLines />
                 <span>
@@ -1587,6 +2809,33 @@ export default function App() {
                 </span>
                 <ChevronRight size={18} />
               </button>
+              <button className="dj-settings-link" onClick={() => setSheet("audio")}>
+                <Headphones />
+                <span>
+                  <strong>Audio quality</strong>
+                  <small>What you hear, and how it gets to you</small>
+                </span>
+                <ChevronRight size={18} />
+              </button>
+              <div className="setting-row">
+                <div>
+                  <strong>Motion backdrop</strong>
+                  <p>The song’s own video, softly blurred behind the artwork.</p>
+                </div>
+                <button
+                  role="switch"
+                  aria-label="Motion backdrop"
+                  aria-checked={motionArt}
+                  className="setting-switch"
+                  onClick={() => {
+                    const next = !motionArt;
+                    setMotionArt(next);
+                    persist("aurora-motion-art", next);
+                  }}
+                >
+                  <span />
+                </button>
+              </div>
               <div className="setting-row">
                 <div>
                   <strong>Lyrics timing</strong>
@@ -1618,6 +2867,22 @@ export default function App() {
                 >
                   <Upload />
                 </IconButton>
+              </div>
+              <div className="shortcut-list" aria-label="Keyboard shortcuts">
+                {[
+                  ["Space", "Play or pause"],
+                  ["← →", "Seek 5 seconds"],
+                  ["⇧ ← →", "Previous or next"],
+                  ["L", "Lyrics"],
+                  ["M", "Mute"],
+                  ["F", "Like"],
+                  ["/", "Search"],
+                ].map(([keys, label]) => (
+                  <span key={keys}>
+                    <kbd>{keys}</kbd>
+                    {label}
+                  </span>
+                ))}
               </div>
               <div className="settings-note">
                 <Headphones size={23} />
@@ -1656,9 +2921,9 @@ export default function App() {
             <Motion.div
               role={player.error ? "alert" : "status"}
               className={`toast ${player.error ? "error-toast" : ""}`}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
+              initial={{ opacity: 0, y: 24, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1, transition: { type: "spring", stiffness: 260, damping: 24 } }}
+              exit={{ opacity: 0, y: 12, scale: 0.98, transition: { duration: 0.35, ease: EASE_EXIT } }}
             >
               <span>{player.error || notice}</span>
               {player.error && (

@@ -8,7 +8,7 @@
     <meta name="theme-color" content="#151717" />
     <meta name="description" content="Your music, closer. Listen with immersive artwork, synchronized lyrics and a library that stays yours. No account needed." />
     <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2" />
 
     <!-- Discover the app font alongside the stylesheet. -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -19,8 +19,14 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <title>Aurora Player</title>
+    <!-- Versioned so browsers drop any icon cached from earlier deployments. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=2" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=2" />
+    <link rel="icon" href="/favicon.ico?v=2" sizes="any" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="application-name" content="Aurora" />
+    <meta name="apple-mobile-web-app-title" content="Aurora" />
+    <title>Aurora</title>
   </head>
   <body>
     <div id="root"></div>
