@@ -33,7 +33,8 @@ const lineLyrics = { source: 'Stub', sync: 'line', lines: [['Sunrise on the wate
 function fakeYouTube() {
   window.__events = []; window.__vols = []; window.__longtasks = [];
   try { new PerformanceObserver(list => list.getEntries().forEach(entry => window.__longtasks.push(Math.round(entry.duration)))).observe({ type: 'longtask', buffered: true }); } catch { /* unsupported */ }
-  // '1': the embed lists and plays fine rates; '2': plays them but lists only coarse ones.
+  // '1': the embed lists and plays fine rates; '2': plays them but lists only coarse ones;
+  // '3': plays only whole 0.05 steps.
   const fine = localStorage.getItem('fine-rates');
   const coarse = [.25, .5, .75, 1, 1.25, 1.5, 1.75, 2];
   window.__sweeps = 0;
@@ -55,7 +56,7 @@ function fakeYouTube() {
     stopVideo() { this.set(5); } seekTo(t) { log('seek', this.vid, Math.round(t * 10) / 10); this.t = t; }
     getCurrentTime() { return this.t; } getDuration() { return this.dur; } getPlayerState() { return this.state; }
     setVolume(v) { this.vol = v; window.__vols.push([Math.round(performance.now()), this.vid, Math.round(v)]); } mute() { this.muted = true; } unMute() { this.muted = false; }
-    setPlaybackRate(r) { const applied = fine ? r : coarse.reduce((best, rate) => Math.abs(rate - r) < Math.abs(best - r) ? rate : best, 1); this.rate = applied; log('rate', this.vid, applied); } getPlaybackRate() { return this.rate; }
+    setPlaybackRate(r) { const applied = fine === '3' ? Math.round(r / .05) * .05 : fine ? r : coarse.reduce((best, rate) => Math.abs(rate - r) < Math.abs(best - r) ? rate : best, 1); this.rate = applied; log('rate', this.vid, applied); } getPlaybackRate() { return this.rate; }
     getAvailablePlaybackRates() { return fine === '1' ? Array.from({ length: 41 }, (_, i) => Math.round((.8 + i * .01) * 100) / 100) : coarse; }
     getVideoData() { return { video_id: this.vid }; } destroy() { clearInterval(this.clock); }
   }
@@ -311,7 +312,7 @@ if (!only || only === 'D') {
   await check('D', 'no reload of the next song on the audible deck', async () => ok(!(await events(page)).some(row => row[1] === 'load' && row[2] === 'BBBBBBBBBBB' && row[3] === false)));
   await check('D', 'title switches with the blend', async () => ok((await title(page)).startsWith('Morning Light')));
   await check('D', 'incoming lyrics ready at the hand-over', async () => { await page.click('button[aria-label="Show lyrics"]'); await wait(900); ok((await page.textContent('.desktop-lyrics')).includes('Sunrise')); });
-  await wait(4000);
+  await wait(7500);
   await check('D', 'both songs are audible together', async () => { const vols = await page.evaluate(() => window.__vols); const a = vols.filter(v => v[1] === 'AAAAAAAAAAA' && v[2] > 5 && v[2] < 75); const b = vols.filter(v => v[1] === 'BBBBBBBBBBB' && v[2] > 5 && v[2] < 75); ok(a.length > 3 && b.length > 3, `A:${a.length} B:${b.length} ${JSON.stringify(vols.slice(-6))}`); });
   await check('D', 'equal-power curve reaches full volume', async () => { const vols = await page.evaluate(() => window.__vols.filter(v => v[1] === 'BBBBBBBBBBB')); ok(vols.at(-1)[2] >= 79, JSON.stringify(vols.at(-1))); });
   await check('D', 'midpoint loudness is equal power', async () => { const vols = await page.evaluate(() => window.__vols.filter(v => v[1] === 'BBBBBBBBBBB' && v[2] > 0)); const mid = vols.find(v => v[2] >= 50); ok(mid && mid[2] <= 62, JSON.stringify(mid)); });
@@ -329,6 +330,17 @@ if (!only || only === 'D') {
   await check('D', 'glide stays within the ±8% bound', async () => ok((await events(page)).filter(row => row[1] === 'rate').every(row => row[3] >= .92 && row[3] <= 1.08)));
   await check('D', 'glided song hands over to the next title', async () => ok((await title(page)).startsWith('Morning Light')));
   await check('D', 'no runtime errors during glide', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'D') {
+  // 120 → 126 BPM on an embed that only plays 0.05 speed steps.
+  const { context, page, errors } = await djSession({ 'fine-rates': '3' }, { incomingBpm: 126 });
+  await wait(7000); await setSeek(page, 24); await wait(14000);
+  const rows = (await events(page)).filter(row => row[1] === 'rate');
+  await check('D', 'a 0.05-step embed is detected and song A steps to 1.05× live', async () => ok(rows.some(row => row[2] === 'AAAAAAAAAAA' && Math.abs(row[3] - 1.05) < 1e-6), JSON.stringify(rows.slice(-6))));
+  await check('D', 'on the step grid song A never goes past its bound', async () => ok(rows.filter(row => row[2] === 'AAAAAAAAAAA').every(row => row[3] <= 1.0501), JSON.stringify(rows)));
+  await check('D', 'stepped tempo match hands over to the next song', async () => ok((await title(page)).startsWith('Morning Light')));
+  await check('D', 'no runtime errors in a stepped-tempo blend', async () => ok(!errors.length, errors.join(' | ')));
   await context.close();
 }
 if (!only || only === 'D') {
@@ -428,7 +440,7 @@ if (!only || only === 'F') {
   await check('F', 'Back closes the sheet, not the player', async () => { await page.goBack(); await wait(900); ok(await page.locator('dialog.sheet').count() === 0); ok(await page.locator('.immersive-player').count() === 1); });
   await check('F', 'settings → DJ → Back returns to settings', async () => { await page.click('button[aria-label="Player settings"]'); await wait(700); await page.click('.dj-settings-link >> nth=0'); await wait(800); await page.goBack(); await wait(800); ok(await page.locator('dialog[aria-label="Make it yours"]').count() === 1); });
   await check('F', 'closing a stacked sheet closes it completely', async () => { await page.click('.dj-settings-link >> nth=0'); await wait(700); await page.click('dialog[aria-label="DJ transition"] button[aria-label="Close DJ transition"]'); await wait(900); ok(await page.locator('dialog.sheet').count() === 0); await page.goBack(); await wait(900); ok(await page.locator('dialog.sheet').count() === 0, 'back reopened a sheet'); });
-  await check('F', 'blend length choice persists', async () => { await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(700); await page.click('.segmented [role=radio]:has-text("Long")'); ok(await page.evaluate(() => localStorage.getItem('aurora-blend')) === '8'); ok(await page.getAttribute('.segmented [role=radio]:has-text("Long")', 'aria-checked') === 'true'); await page.keyboard.press('Escape'); await wait(700); });
+  await check('F', 'blend length choice persists', async () => { await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(700); await page.click('.segmented [role=radio]:has-text("Long")'); ok(await page.evaluate(() => localStorage.getItem('aurora-blend')) === '10'); ok(await page.getAttribute('.segmented [role=radio]:has-text("Long")', 'aria-checked') === 'true'); await page.keyboard.press('Escape'); await wait(700); });
   await check('F', 'motion backdrop shows the blurred video behind the artwork', async () => { if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(900); } await page.click('button[aria-label="Player settings"]'); await wait(700); await page.click('button[aria-label="Motion backdrop"]'); await page.keyboard.press('Escape'); await wait(800); ok(await page.locator('.aurora-app.motion-art .video-surface.is-visible').count() === 1); ok(await page.locator('.now-playing-art').isVisible()); });
   await check('F', 'no runtime errors in discovery and navigation', async () => ok(!errors.length, errors.join(' | ')));
   await context.close();
@@ -542,6 +554,71 @@ if (!only || only === 'G') {
   await check('G', 'the blend completes and the DJ returns to idle', async () => { await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(700); const text = await page.textContent('.dj-now'); ok(/complete|Ready/i.test(text), text); await page.keyboard.press('Escape'); await wait(500); });
   await check('G', 'no runtime errors in the local DJ blend', async () => ok(!errors.length, errors.join(' | ')));
   await context.close();
+}
+
+// ── H: ten new scenarios (scroll lock, personal home, best part, blend lengths) ──
+if (!only || only === 'H') {
+  const hours = h => Date.now() - h * 3600000;
+  const finish = (track, h) => ({ key: `${track.artist.toLowerCase()}|${track.title.toLowerCase()}`, artist: track.artist.toLowerCase(), affinity: 2, at: hours(h), type: 'play', track });
+  const drive = { id: '1', title: 'Night Drive', artist: 'Band', artwork: 'https://img.test/a/600x600bb.jpg', duration: 60 };
+  const tide = { id: '4', title: 'Slow Tide', artist: 'Other', artwork: 'https://img.test/c/100x100bb.jpg', duration: 60 };
+  const history = [finish(drive, 30), finish(tide, 20), finish(drive, 10), finish(tide, 8), finish(drive, 2)];
+  const radio = [1, 2, 3, 4, 5, 6, 7, 8].map(i => ({ id: `deezer:${i}`, title: `Radio ${i}`, artist: `Artist ${i}`, album: 'LP', artwork: 'https://img.test/c/r.jpg', duration: 60, recommended: true }));
+  const { context, page, errors } = await newSession(browser, { prefs: { 'aurora-listening': JSON.stringify(history) }, recommendations: radio });
+  await page.goto(BASE); await wait(1500);
+  const docScroll = () => page.evaluate(() => document.scrollingElement.scrollTop);
+  await check('H', '1 · the page behind an open sheet does not scroll', async () => {
+    await page.click('button[aria-label="Preferences"]:visible'); await wait(900);
+    await page.mouse.move(700, 450); for (let i = 0; i < 5; i++) { await page.mouse.wheel(0, 400); await wait(80); }
+    await page.mouse.move(20, 880); for (let i = 0; i < 5; i++) { await page.mouse.wheel(0, 400); await wait(80); }
+    await wait(300); ok(await docScroll() === 0, `document scrolled to ${await docScroll()}`);
+  });
+  await check('H', '2 · stacked sheets keep the lock until the last one closes', async () => {
+    await page.click('.dj-settings-link:has-text("DJ transition")'); await wait(900);
+    ok(await page.evaluate(() => document.documentElement.classList.contains('scroll-locked')));
+    await page.keyboard.press('Escape'); await wait(900);
+    ok(!(await page.evaluate(() => document.documentElement.classList.contains('scroll-locked'))), 'lock released');
+  });
+  await check('H', '3 · closing the sheet gives scrolling back to the page', async () => { await page.mouse.move(700, 450); await page.mouse.wheel(0, 500); await wait(600); ok(await docScroll() > 0); await page.evaluate(() => window.scrollTo(0, 0)); await wait(300); });
+  await check('H', '4 · the name you give is used to greet you, and remembered', async () => {
+    await page.click('button[aria-label="Preferences"]:visible'); await wait(900);
+    await page.fill('input[aria-label="Your name"]', 'Alex'); await page.keyboard.press('Escape'); await wait(900);
+    ok((await page.textContent('.page-heading p')).includes(', Alex.'));
+    await page.reload(); await wait(1500); ok((await page.textContent('.page-heading p')).includes(', Alex.'), 'after reload');
+  });
+  await check('H', '5 · "On repeat" lists the songs you keep finishing', async () => { const text = await page.textContent('.on-repeat'); ok(text.includes('Night Drive') && text.includes('Slow Tide'), text.slice(0, 120)); ok(text.indexOf('Night Drive') < text.indexOf('Slow Tide'), 'most played first'); });
+  await check('H', '6 · "Your artists" shows the voices you come back to', async () => ok(await page.locator('.your-artists .artist-card').count() >= 2));
+  await check('H', '7 · the heading speaks to you once home is personal', async () => ok(/Your frequency, (today|tonight)/.test(await page.textContent('.page-heading h1')), await page.textContent('.page-heading h1')));
+  await check('H', '8 · a playing song leads home with "More like …"', async () => {
+    await startQueue(page); await wait(800);
+    await page.click('button[aria-label="Back to music"]').catch(() => {}); await wait(600);
+    await page.click('nav[aria-label="Main navigation"] button[aria-label="Listen now"]'); await wait(1500);
+    ok((await page.textContent('.for-you h2')).startsWith('More like Night Drive'), await page.textContent('.for-you h2'));
+  });
+  await check('H', '9 · the refrain is marked on the timeline and "Best part" jumps there', async () => {
+    await page.click('.dock-track'); await wait(1200);
+    ok(await page.locator('.seek-track .peak-mark').count() >= 1, 'no refrain marks');
+    await page.click('.immersive-track-meta .best-part-chip'); await wait(900);
+    const t = await playerTime(page); ok(t >= 24 && t <= 27, String(t));
+  });
+  await check('H', '10 · blends last 5–10 s: Tight, Natural (default) and Long', async () => {
+    await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(800);
+    const labels = await page.locator('.segmented [role=radio]').allTextContents();
+    ok(labels.join('|') === 'Tight5s|Natural8s|Long10s', labels.join('|'));
+    ok(await page.getAttribute('.segmented [role=radio]:has-text("Natural")', 'aria-checked') === 'true');
+    await page.keyboard.press('Escape'); await wait(600);
+  });
+  await check('H', 'no runtime errors across the new scenarios', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+  const mobile = await newSession(browser, { viewport: { width: 390, height: 780 }, prefs: { 'aurora-listening': JSON.stringify(history) }, recommendations: radio });
+  await mobile.page.goto(BASE); await wait(1500);
+  await check('H', 'on a phone the page behind a sheet stays still too', async () => {
+    await mobile.page.click('button[aria-label="Preferences"]:visible'); await wait(900);
+    await mobile.page.mouse.move(195, 300); for (let i = 0; i < 5; i++) { await mobile.page.mouse.wheel(0, 400); await wait(80); }
+    ok(await mobile.page.evaluate(() => document.scrollingElement.scrollTop) === 0);
+    ok(await mobile.page.evaluate(() => getComputedStyle(document.querySelector('.sheet header')).position) === 'sticky', 'sticky sheet header');
+  });
+  await mobile.context.close();
 }
 
 await browser.close();

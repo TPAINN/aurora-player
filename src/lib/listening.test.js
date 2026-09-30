@@ -83,3 +83,27 @@ test('without usable history, liked and recently played songs seed the home scre
     assert.deepEqual(topArtists(2, recent), ['NF', 'Michael Jackson']);
   });
 });
+
+test('On repeat lists the songs finished most often, newest first on ties, never skips', async () => {
+  const { onRepeat } = await import('./listening.js');
+  withStorage(() => {
+    const a = { id: 'a', title: 'Alpha', artist: 'One' }, b = { id: 'b', title: 'Beta', artist: 'Two' }, c = { id: 'c', title: 'Gamma', artist: 'Three' };
+    for (let i = 0; i < 3; i++) recordListening(b, 190, 200);
+    recordListening(a, 190, 200); recordListening(a, 195, 200);
+    recordListening(c, 10, 200); recordListening(c, 12, 200); recordListening(c, 9, 200);
+    const songs = onRepeat(5);
+    assert.deepEqual(songs.map(song => song.id), ['b', 'a']);
+    assert.equal(onRepeat(5, 3).length, 1, 'a minimum play count');
+  });
+});
+
+test('the day seed rotates the home mix without inventing songs', async () => {
+  const { rotateForDay } = await import('./listening.js');
+  const list = [1, 2, 3, 4, 5];
+  const monday = rotateForDay(list, new Date('2026-09-28T10:00:00'));
+  const tuesday = rotateForDay(list, new Date('2026-09-29T10:00:00'));
+  assert.deepEqual([...monday].sort(), list);
+  assert.notDeepEqual(monday, tuesday);
+  assert.deepEqual(rotateForDay(list, new Date('2026-09-28T23:00:00')), monday, 'stable within a day');
+  assert.deepEqual(rotateForDay([], new Date()), []);
+});
