@@ -4,7 +4,7 @@ import { songKey } from '../../shared/titles.js';
 import { buildApiUrl } from '../lib/api';
 import { getSimilarTracks, getTrackTempo } from '../lib/catalog';
 import { pickSeed, recordListening, tasteFilter } from '../lib/listening';
-import { adaptiveBlend, analyzeLocalTempo, beatAlignedEntry, blendCurve, vocalSpans, chooseEntry, equalPower, glideRate, phaseNudge, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
+import { adaptiveBlend, analyzeLocalTempo, beatAlignedEntry, blendCurve, vocalSpans, chooseEntry, equalPower, glideRate, nudgePlan, phaseOffset, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
 import { playSweep } from '../lib/sweep';
 import { nextPlayable } from '../lib/queue';
 import { detectLanguage } from '../../shared/language.js';
@@ -71,6 +71,13 @@ const BLENDS = ['auto', 5, 8, 10];
 const readBlend = value => (value === 'auto' ? 'auto' : BLENDS.includes(Number(value)) ? Number(value) : 'auto');
 // Some embeds only play whole 0.05 speed steps; tempo plans then use that grid.
 const RATE_STEP = .05;
+// Media elements re-seat their time-stretcher on every rate change, which briefly
+// softens a kick: rates move in steps of at least 0.3% (far below a tempo change
+// anyone hears), and the exact final value is written once it is reached.
+const RATE_GRAIN = .003;
+function setRate(element, value, grain = RATE_GRAIN) {
+  if (element && Math.abs(element.playbackRate - value) > Math.max(grain, 1e-6)) element.playbackRate = value;
+}
 const snapRate = (value, quantum) => Number((Math.round(value / quantum) * quantum).toFixed(3));
 
 export function usePlayer() {
@@ -907,18 +914,29 @@ export function usePlayer() {
       if (!outgoing.element.paused) outgoing.element.pause();
       const after = context.current.currentTime - activeMix.finished;
       if (plan.recoverSeconds > 0 && after < plan.recoverSeconds) {
-        incoming.element.playbackRate = recoverRate(after, plan.recoverSeconds, plan.inRate);
+        setRate(incoming.element, recoverRate(after, plan.recoverSeconds, plan.inRate));
         return;
       }
+      setRate(incoming.element, 1, 0);
       cancelMix();
       setIdle(plan.matched ? 'Tempo blend complete' : 'Blend complete');
       return;
     }
     // Finish any glide the pre-roll could not complete (for example after a late seek).
-    outgoing.element.playbackRate = activeMix.startRate + (plan.rate - activeMix.startRate) * smoothstep(progress * 2);
-    incoming.element.playbackRate = plan.inRate * (elapsed < 2.5 && plan.matched
-      ? phaseNudge({ inPosition: incoming.element.currentTime, inGrid: to?.intro?.grid, outPosition: outgoing.element.currentTime, outGrid: from?.outro?.grid, outRate: outgoing.element.playbackRate, inRate: plan.inRate })
-      : 1);
+    const glide = smoothstep(progress * 2);
+    setRate(outgoing.element, activeMix.startRate + (plan.rate - activeMix.startRate) * glide, glide >= 1 ? 0 : RATE_GRAIN);
+    // Beat lock: once B has settled (play() latency), its slip against A's grid is
+    // measured at rest and closed with one short push; one re-check afterwards.
+    if (plan.matched) {
+      const now = context.current.currentTime;
+      const lock = activeMix.lock ??= { checks: 0, until: 0, next: activeMix.started + .35 };
+      if (lock.until && now >= lock.until) { setRate(incoming.element, plan.inRate, 0); lock.until = 0; lock.next = now + .5; }
+      else if (!lock.until && lock.checks < 2 && now >= lock.next) {
+        lock.checks++;
+        const push = nudgePlan(phaseOffset({ inPosition: incoming.element.currentTime, inGrid: to?.intro?.grid, outPosition: outgoing.element.currentTime, outGrid: from?.outro?.grid, outRate: outgoing.element.playbackRate, inRate: plan.inRate }), plan.inRate);
+        if (push) { setRate(incoming.element, push.rate, 0); lock.until = now + push.seconds; } else lock.checks = 2;
+      }
+    }
   }, [cancelMix, setIdle, mixProgress]);
 
   const tickOnlineBlend = useCallback(blend => {
@@ -1049,9 +1067,12 @@ export function usePlayer() {
       if (attemptedMix.current === key || element.duration <= 12) return;
       // Song A glides into song B's tempo before the overlap, so the blend starts beat-matched.
       if (plan.matched && element.currentTime >= rampStart && element.currentTime < start) {
-        element.playbackRate = glideRate(element.currentTime, rampStart, plan.rampSeconds, plan.rate);
+        setRate(element, glideRate(element.currentTime, rampStart, plan.rampSeconds, plan.rate));
         announce({ phase: 'gliding', label: 'Matching the next tempo', mode: 'local', progress: (element.currentTime - rampStart) / plan.rampSeconds, fromBpm: from.outro.bpm, toBpm: plan.targetBpm });
-      } else if (element.playbackRate !== 1) element.playbackRate = 1;
+        // Before the glide (for example after seeking back) song A plays at its own
+        // tempo; from the blend's start the matched rate holds, so song A never falls
+        // back to its own tempo as the overlap begins.
+      } else if (element.currentTime < rampStart && element.playbackRate !== 1) element.playbackRate = 1;
       if (remaining > 0 && element.currentTime >= start) void startLocalMix(selected, remaining);
       return;
     }
