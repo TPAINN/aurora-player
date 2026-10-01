@@ -54,6 +54,12 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
 }
 
 const extracted = new Map<string, Promise<RGBTriplet[] | null>>();
+const luma = new Map<string, number>();
+
+/** Mean relative luminance (0–1) of an artwork already decoded by extractColors. */
+export function artworkLuma(url: string): number | null {
+  return luma.get(url) ?? null;
+}
 
 /** Extracts up to 3 dominant colors from an image URL as "r,g,b" strings, or null on failure.
  *  Each artwork is decoded once: opening and closing the player reuses its colours. */
@@ -84,6 +90,10 @@ function decodeColors(url: string): Promise<RGBTriplet[] | null> {
         const ctx = cv.getContext('2d')!;
         ctx.drawImage(img, 0, 0, S, S);
         const { data } = ctx.getImageData(0, 0, S, S);
+        let light = 0;
+        for (let i = 0; i < data.length; i += 4) light += 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+        luma.set(url, light / (data.length / 4) / 255);
+        if (luma.size > 64) luma.delete(luma.keys().next().value as string);
         const buckets: Record<number, { w: number; r: number; g: number; b: number }> = {};
         let totalWeight = 0, satWeight = 0, avgR = 0, avgG = 0, avgB = 0;
 

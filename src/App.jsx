@@ -7,6 +7,7 @@ import {
   useMotionValue,
   useSpring,
   useTransform,
+  useIsPresent,
   useReducedMotion,
   usePresence,
 } from "framer-motion";
@@ -49,7 +50,7 @@ import { useNavigation } from "./hooks/useNavigation";
 import { getCollection, getFeaturedTracks, getMoodTracks, getSimilarTracks, searchCatalog } from "./lib/catalog";
 import { MOODS } from "../shared/moods.js";
 import { detectLanguage } from "../shared/language.js";
-import { extractColors } from "../shared/palette";
+import { artworkLuma, extractColors } from "../shared/palette";
 import { requestedVariant } from "../shared/audio-variants.js";
 import { artworkAt, artworkSrcSet } from "./lib/artwork";
 import { qualityLabel } from "./lib/audio-format";
@@ -380,6 +381,8 @@ function LikeHeart({ liked, size = 24 }) {
     </span>
   );
 }
+// Keyed by the song: a new song starts with a fresh slider, so a drag in progress,
+// a pending seek or the bar's transition never carry over from the previous one.
 function Seek({ player }) {
   // Dragging previews locally and seeks once on release; seeking YouTube on every
   // input event stutters playback and cancels DJ preparation repeatedly.
@@ -594,9 +597,22 @@ function ArtBackdrop({ player }) {
   const peak = useStore(player.clock, (value) => peaks.length > 0 && isPeakAt(peaks, value + offset));
   const artwork = player.track?.artwork;
   const blend = player.changeKind === "blend";
+  // Every artwork sits at the same perceived brightness: bright covers are eased
+  // down and dark ones lifted, from the cover's measured mean luminance.
+  const [exposure, setExposure] = useState({ artwork: null, value: 1 });
+  useEffect(() => {
+    if (!artwork) return undefined;
+    let live = true;
+    extractColors(artwork).then(() => {
+      const light = artworkLuma(artwork);
+      if (live && light !== null) setExposure({ artwork, value: Math.min(1.45, Math.max(0.72, 0.36 / Math.max(light, 0.05))) });
+    });
+    return () => { live = false; };
+  }, [artwork]);
+  const level = exposure.artwork === artwork ? exposure.value : 1;
   return (
     <>
-      <div className={`player-art-background ${peak ? "is-peak" : ""}`}>
+      <div className={`player-art-background ${peak ? "is-peak" : ""}`} style={{ "--art-exposure": level.toFixed(3) }}>
         <AnimatePresence initial={false}>
           {artwork && (
             <Motion.div
@@ -617,6 +633,10 @@ function ArtBackdrop({ player }) {
 
 function Lyrics({ player }) {
   const reduce = useReducedMotion();
+  // While a song's lyrics fade out after a hand-over, the shared clock already
+  // belongs to the next song: the outgoing words hold their last state.
+  const present = useIsPresent();
+  const held = useRef(null);
   // State, not a ref: the list mounts after the loading state finishes exiting,
   // and the painter must start once the node actually exists.
   const container = useRef(null);
@@ -636,6 +656,7 @@ function Lyrics({ player }) {
   const lead = reduce ? 0 : LINE_LEAD;
   // Re-render only when the active line or interlude state changes, not every clock tick.
   const position = useStore(player.clock, (value) => {
+    if (!present && held.current) return held.current;
     const adjusted = value + offset;
     let current = -1;
     if (timed)
@@ -652,7 +673,8 @@ function Lyrics({ player }) {
       end - start > 4 &&
       adjusted >= start + 0.4 &&
       adjusted < end - 0.5;
-    return `${current}:${gap ? 1 : 0}`;
+    held.current = `${current}:${gap ? 1 : 0}`;
+    return held.current;
   });
   const active = Number(position.split(":")[0]);
   const inGap = position.endsWith(":1");
@@ -663,7 +685,7 @@ function Lyrics({ player }) {
   useEffect(() => {
     const box = container.current;
     const target = activeRef.current;
-    if (!following || !box || !target) return;
+    if (!following || !box || !target || !present) return;
     const top = Math.max(0, target.offsetTop + target.offsetHeight / 2 - box.clientHeight * 0.4);
     stopScroll();
     if (reduce) {
@@ -679,7 +701,7 @@ function Lyrics({ player }) {
       },
     });
     return stopScroll;
-  }, [mountedList, active, following, reduce, inGap]);
+  }, [mountedList, active, following, reduce, inGap, present]);
   // Edge fading via visibility classes: a mask on the scrolling list forced the
   // whole list to re-rasterise on every painted word.
   useEffect(() => {
@@ -693,7 +715,7 @@ function Lyrics({ player }) {
   }, [mountedList, lines]);
   const { getPlaybackTime, lyricsOffset = 0, lyricsLoading } = player;
   useEffect(() => {
-    if (!mountedList || !timed || lyricsLoading) return;
+    if (!mountedList || !timed || lyricsLoading || !present) return;
     const nodes = Array.from(mountedList.querySelectorAll(".lyric-line"));
     const words = nodes.map((line) => Array.from(line.querySelectorAll(".word-fill")));
     // Each line is painted for as long as any of its words is sung: backing
@@ -739,7 +761,7 @@ function Lyrics({ player }) {
     };
     paint();
     return () => cancelAnimationFrame(frame);
-  }, [mountedList, getPlaybackTime, lines, lyricsOffset, lyricsLoading, timed, reduce]);
+  }, [mountedList, getPlaybackTime, lines, lyricsOffset, lyricsLoading, timed, reduce, present]);
   const releaseFollow = () => {
     stopScroll();
     setFollowing(false);
@@ -2633,7 +2655,7 @@ export default function App() {
                       </button>
                     </div>
                     <DjPill player={player} onClick={() => setSheet("dj")} label="DJ transition settings" />
-                    <Seek player={player} />
+                    <Seek key={player.track?.id || "idle"} player={player} />
                     <Transport player={player} large />
                     <Motion.button
                       drag="y"
@@ -2712,7 +2734,7 @@ export default function App() {
             )}
           </Motion.button>
           <div className="dock-seek">
-            <Seek player={player} />
+            <Seek key={player.track?.id || "idle"} player={player} />
           </div>
           <div className="dock-actions">
             <IconButton

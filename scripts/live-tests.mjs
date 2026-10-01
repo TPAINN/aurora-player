@@ -778,7 +778,80 @@ if (!only || only === 'J') {
     await wait(300); const first = await playerTime(page); await wait(1500); const later = await playerTime(page);
     ok(first >= 11.5 && first < 20 && later > first + .8, `slider stuck: ${first} → ${later}`);
   });
+  await check('J', 'changing song mid-drag leaves the slider following the new song', async () => {
+    await page.evaluate(selector => { const input = document.querySelector(selector); input.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '40'); input.dispatchEvent(new Event('input', { bubbles: true })); }, seekInput);
+    await page.evaluate(() => document.querySelector('.dock-transport button[aria-label="Next track"]').click());
+    await wait(1800); const first = await playerTime(page); await wait(1200); const later = await playerTime(page);
+    ok((await title(page)).startsWith('Slow Tide'), await title(page));
+    ok(first < 5 && later > first + .5, `slider not following the new song: ${first} → ${later}`);
+  });
   await check('J', 'no runtime errors on the timeline', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'J') {
+  // The queue grows from what is heard, and never with another version of a queued song.
+  const rec = (id, title, artist = 'Other Band') => ({ id, title, artist, album: 'LP', artwork: 'https://img.test/c/r.jpg', duration: 60, recommended: true });
+  const recommendations = [rec('r1', 'Night Drive (Sousa Remix)', 'BAND x Friend'), rec('r2', 'Slow Tide [Ultra Records]'), rec('r3', 'Harbour Lights'), rec('r4', 'NIGHT DRIVE (YUMA REMIX)'), rec('r5', 'Glass City'), rec('r6', 'Paper Moons')];
+  const { context, page, errors, requests } = await newSession(browser, { viewport: { width: 1280, height: 800 }, prefs: { 'aurora-autoplay': 'true' }, recommendations });
+  await page.goto(BASE); await wait(500); await startQueue(page, ['Morning Light', 'Slow Tide']); await wait(1500);
+  const asked = () => requests.filter(url => url.includes('/api/recommendations')).length;
+  // The opening refill already seeded from the first song; the next song heard grows it.
+  await page.click('.dock-transport button[aria-label="Next track"]'); await wait(1500);
+  const before = asked();
+  await setSeek(page, 27); await wait(2500);
+  await check('J', 'hearing a song for a while asks for more like it', async () => ok(asked() > before, `requests before ${before}, after ${asked()}`));
+  await page.click('.dock-actions button:has(svg.lucide-list-music), button[aria-label="Queue"], button[aria-label="Open queue"]').catch(() => {}); await wait(900);
+  const rows = await page.locator('dialog .track-row strong, dialog .track-row .track-title').allTextContents();
+  await check('J', 'a song heard for a while adds more like it to the queue', async () => ok(rows.some(text => /Harbour Lights|Glass City|Paper Moons/.test(text)), JSON.stringify(rows)));
+  await check('J', 'the queue never adds another version of a queued song', async () => ok(!rows.some(text => /Remix|Ultra Records/i.test(text)), JSON.stringify(rows)));
+  await check('J', 'no runtime errors while the queue grows', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'J') {
+  // Phones: the screen stays awake while music plays, and the lock screen shows a full player.
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 390, height: 844 } });
+  await context.addInitScript(() => {
+    window.__locks = { taken: 0, released: 0 };
+    Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: { request: async () => { window.__locks.taken++; const listeners = []; return { released: false, addEventListener: (_, fn) => listeners.push(fn), release: async () => { window.__locks.released++; listeners.forEach(fn => fn()); } }; } } });
+  });
+  await page.goto(BASE); await wait(500);
+  await page.click('nav[aria-label="Mobile navigation"] button:has-text("Search")'); await wait(400); await searchFor(page, 'band'); await page.click('.top-result-play'); await wait(1800);
+  await check('J', 'the screen stays awake while a song plays', async () => ok((await page.evaluate(() => window.__locks)).taken >= 1, JSON.stringify(await page.evaluate(() => window.__locks))));
+  await check('J', 'the lock-screen player shows the song with sized artwork', async () => {
+    const meta = await page.evaluate(() => ({ title: navigator.mediaSession.metadata?.title, sizes: (navigator.mediaSession.metadata?.artwork || []).map(item => item.sizes), state: navigator.mediaSession.playbackState }));
+    ok(meta.title === 'Night Drive' && meta.sizes.includes('512x512') && meta.state === 'playing', JSON.stringify(meta));
+  });
+  await check('J', 'pausing lets the screen sleep again', async () => { await page.evaluate(() => document.querySelector('.dock-transport button[aria-label="Pause"], button[aria-label="Pause"]')?.click()); await wait(700); const locks = await page.evaluate(() => window.__locks); ok(locks.released >= 1, JSON.stringify(locks)); });
+  await check('J', 'no runtime errors with the lock-screen player', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'J') {
+  // After a DJ hand-over the incoming lyrics keep following the incoming song.
+  const { context, page, errors } = await djSession({ 'aurora-live-dj': 'true' }, { longIntro: true });
+  await page.click('button[aria-label="Show lyrics"]').catch(() => {});
+  await wait(7000); await setSeek(page, 31);
+  // Watch the outgoing lyrics while they fade: they must hold their last line, not
+  // follow the incoming song's clock.
+  await page.evaluate(() => {
+    window.__outgoing = [];
+    const watch = () => {
+      const outgoing = [...document.querySelectorAll('.lyrics-handover')].find(node => node.textContent.includes('Under') && !node.textContent.includes('Sunrise'));
+      if (outgoing && document.querySelectorAll('.lyrics-handover').length > 1) window.__outgoing.push((outgoing.querySelector('.lyric-line.current')?.textContent || '').replace(/\s/g, '') + '#' + [...outgoing.querySelectorAll('.word-fill')].map(node => Math.round(Number(node.style.getPropertyValue('--fill') || 0) * 10)).join(''));
+      if (performance.now() < window.__watchUntil) requestAnimationFrame(watch);
+    };
+    window.__watchUntil = performance.now() + 20000;
+    requestAnimationFrame(watch);
+  });
+  for (let i = 0; i < 40 && !(await title(page)).startsWith('Morning Light'); i++) await wait(300);
+  const seen = [];
+  for (let i = 0; i < 28; i++) { seen.push([Math.round(await playerTime(page)), await page.textContent('.desktop-lyrics .lyric-line.current').catch(() => '')]); await wait(500); }
+  await check('J', 'lyrics keep moving after a DJ hand-over', async () => {
+    const lines = [...new Set(seen.map(([, text]) => text).filter(Boolean))];
+    ok(lines.length >= 2, JSON.stringify(seen));
+    ok(lines.some(text => /Sunrise|Waking|Morning/.test(text)), JSON.stringify(lines));
+  });
+  await check('J', 'outgoing lyrics hold still while they fade out', async () => { const frames = await page.evaluate(() => window.__outgoing); ok(frames.length > 0, 'no overlap observed'); ok(new Set(frames).size === 1, JSON.stringify([...new Set(frames)])); });
+  await check('J', 'no runtime errors through the lyric hand-over', async () => ok(!errors.length, errors.join(' | ')));
   await context.close();
 }
 if (!only || only === 'J') {
