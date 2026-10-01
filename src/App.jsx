@@ -1164,6 +1164,7 @@ export default function App() {
   const [recent, setRecent] = useState(() => readSaved("aurora-recent"));
   const [color, setColor] = useState("153, 93, 62");
   const [featureIndex, setFeatureIndex] = useState(0);
+  const carouselSwiped = useRef(false);
   const searchRef = useRef(null);
   // The search page animates in after the previous page leaves, so focus is
   // requested here and applied when the field actually mounts.
@@ -2212,7 +2213,11 @@ export default function App() {
                     <div className="stage-aura" />
                     {heroTrack ? (
                       <>
-                        <div className="stage-copy">
+                        <div
+                          className="stage-copy"
+                          // A long single-word name scales down to stay on one line on phones.
+                          style={{ "--title-fit": Math.min(1, Math.max(0.6, 10 / Math.max(1, ...String(heroTrack.artist || "").split(/\s+/).map((word) => word.length)))).toFixed(3) }}
+                        >
                           <span className="feature-label">
                             <span /> {moodMode ? `${activeMood.label} · picked for you` : personalized ? "Picked for you" : "In the spotlight"}
                           </span>
@@ -2231,7 +2236,25 @@ export default function App() {
                             An entirely different kind of listening.
                           </span>
                         </div>
-                        <div className="cover-carousel">
+                        {/* Swipe sideways to browse (a long fling skips two); the tap
+                            that ends a swipe never plays a song. */}
+                        <Motion.div
+                          className="cover-carousel"
+                          drag={reduce ? false : "x"}
+                          dragConstraints={{ left: 0, right: 0 }}
+                          dragElastic={0.22}
+                          dragDirectionLock
+                          dragMomentum={false}
+                          onDragStart={() => { carouselSwiped.current = true; }}
+                          onDragEnd={(_, info) => {
+                            const distance = info.offset.x, speed = info.velocity.x;
+                            if (Math.abs(distance) > 46 || Math.abs(speed) > 420) {
+                              const step = (Math.abs(distance) > 190 || Math.abs(speed) > 1500 ? 2 : 1) * (distance < 0 ? 1 : -1);
+                              setFeatureIndex((carouselIndex + step + featured.length * 2) % featured.length);
+                            }
+                            setTimeout(() => { carouselSwiped.current = false; }, 0);
+                          }}
+                        >
                           {carousel.map(({ track, offset }) => (
                             <Motion.button
                               key={track.id}
@@ -2250,16 +2273,12 @@ export default function App() {
                               }
                               className={`carousel-card offset-${offset < 0 ? `minus${Math.abs(offset)}` : offset}`}
                               style={{ "--offset": offset }}
-                              onClick={() =>
-                                offset === 0
-                                  ? play(track)
-                                  : setFeatureIndex(
-                                      (carouselIndex +
-                                        offset +
-                                        featured.length) %
-                                        featured.length,
-                                    )
-                              }
+                              onClick={() => {
+                                if (carouselSwiped.current) return;
+                                if (offset === 0) play(track);
+                                else setFeatureIndex((carouselIndex + offset + featured.length) % featured.length);
+                              }}
+                              draggable={false}
                               aria-label={`${offset === 0 ? "Play" : "Discover"} ${track.title} by ${track.artist}`}
                             >
                               <Cover track={track} eager />
@@ -2269,7 +2288,7 @@ export default function App() {
                               </span>
                             </Motion.button>
                           ))}
-                        </div>
+                        </Motion.div>
                         <div className="stage-navigation">
                           <span>
                             {String(carouselIndex + 1).padStart(2, "0")}
@@ -2280,7 +2299,7 @@ export default function App() {
                             label="Previous featured track"
                             onClick={() =>
                               setFeatureIndex(
-                                (featureIndex - 1 + featured.length) %
+                                (carouselIndex - 1 + featured.length) %
                                   featured.length,
                               )
                             }
@@ -2291,7 +2310,7 @@ export default function App() {
                             label="Next featured track"
                             onClick={() =>
                               setFeatureIndex(
-                                (featureIndex + 1) % featured.length,
+                                (carouselIndex + 1) % featured.length,
                               )
                             }
                           >
