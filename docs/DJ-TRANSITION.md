@@ -64,3 +64,25 @@ When YouTube refuses an upload (removed, private, embedding disabled), the playe
 ## Hand-over visuals
 
 A DJ blend hands over as a slow dissolve: the new cover sharpens out of a soft blur, the backdrop crossfades over about three seconds, and the lyrics drift up and out while the new ones rise in after a beat. A skip keeps the quicker, direction-aware slide.
+
+## Beat lock, measured
+
+Song A glides to the shared tempo before the overlap and holds it as the overlap begins. Song B enters on A's beat at the shared tempo. Once B has settled (about 0.35 s, past `play()` latency), its slip against A's grid is measured at rest. Any slip of 25 ms or more is closed with one short 2 % push, then one re-check; the grids match beat to beat even when one tempo was read at half or double. Rates move in steps of at least 0.3 %, because every rate change briefly softens a kick in the browser's time-stretcher. B then settles back to its own tempo.
+
+`scripts/render-transitions.mjs` records what the app sends to the speakers and measures it. Its probe pairs give each song its own tick pitch, so each song's beats can be followed separately in the mix. On the production build:
+
+| Pair | Beat offset, median | Loudness while both play | Song B's tempo |
+| --- | --- | --- | --- |
+| 120 → 126 BPM | 10 ms | −0.1 dB | enters at ≈123 (shared), settles at 126 |
+| 128 → 122 BPM | 8 ms | −0.3 dB | enters at ≈125 (shared), settles at 122 |
+| 124 → 124 BPM | 6 ms | 0 dB | 124 throughout |
+
+Loudness is per beat, against song B on its own. Song B's beat intervals stay regular through every overlap, apart from the recorder's ±12 ms buffer jitter.
+
+Online playback cannot be recorded here: the YouTube embed's audio is not reachable from the page.
+
+```
+npm run build && npx vite preview --port 5188
+BASE=http://localhost:5188/ CHROMIUM_PATH=... node scripts/render-transitions.mjs [outDir]
+ONLY=probe TIMELINE=1 ...   # probe pairs only, with per-beat offsets and rate writes on stderr
+```

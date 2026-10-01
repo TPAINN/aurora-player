@@ -4528,3 +4528,49 @@ html.scroll-locked {
     transition: none;
   }
 }
+
+/* The home carousel swipes sideways; the page still scrolls vertically through it. */
+.cover-carousel {
+  touch-action: pan-y;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.cover-carousel:active {
+  cursor: grabbing;
+}
+.cover-carousel img {
+  -webkit-user-drag: none;
+  pointer-events: none;
+}
+
+/* Phones: the hero title and subtitle never run under "Press play". The button's
+   width is reserved on their right, long single words wrap, two lines at most. */
+@media (max-width: 760px) {
+  .stage-copy h2,
+  .stage-copy > p {
+    padding-right: 118px;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .stage-copy h2 {
+    font-size: calc(30px * var(--title-fit, 1));
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+  .stage-copy > p {
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
+  }
+}
+@media (max-width: 370px) {
+  .stage-copy h2,
+  .stage-copy > p {
+    padding-right: 96px;
+  }
+  .stage-copy h2 {
+    font-size: calc(25px * var(--title-fit, 1));
+  }
+}

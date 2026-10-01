@@ -789,6 +789,19 @@ if (!only || only === 'J') {
   await context.close();
 }
 if (!only || only === 'J') {
+  // Phones: the home carousel follows a swipe; a swipe never plays a song by accident.
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 390, height: 844 } });
+  await page.goto(BASE); await wait(1800);
+  const counter = () => page.evaluate(() => document.querySelector('.stage-navigation span')?.textContent?.slice(0, 2));
+  const swipe = async (from, to) => { const box = await page.locator('.cover-carousel').boundingBox(); const y = box.y + box.height / 2; await page.mouse.move(box.x + box.width * from, y); await page.mouse.down(); await page.mouse.move(box.x + box.width * ((from + to) / 2), y + 3, { steps: 4 }); await page.mouse.move(box.x + box.width * to, y + 4, { steps: 4 }); await page.mouse.up(); await wait(900); };
+  const start = await counter();
+  await check('J', 'swiping the home carousel left shows the next song', async () => { await swipe(0.8, 0.25); ok(await counter() === String(Number(start) + 1).padStart(2, '0'), `${start} → ${await counter()}`); });
+  await check('J', 'swiping right goes back', async () => { await swipe(0.25, 0.8); ok(await counter() === start, `${start} → ${await counter()}`); });
+  await check('J', 'a swipe never starts playback', async () => ok(await page.locator('.immersive-player').count() === 0 && !(await page.evaluate(() => (window.__events || []).some(row => row[1] === 'load')))));
+  await check('J', 'no runtime errors swiping the carousel', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'J') {
   // The queue grows from what is heard, and never with another version of a queued song.
   const rec = (id, title, artist = 'Other Band') => ({ id, title, artist, album: 'LP', artwork: 'https://img.test/c/r.jpg', duration: 60, recommended: true });
   const recommendations = [rec('r1', 'Night Drive (Sousa Remix)', 'BAND x Friend'), rec('r2', 'Slow Tide [Ultra Records]'), rec('r3', 'Harbour Lights'), rec('r4', 'NIGHT DRIVE (YUMA REMIX)'), rec('r5', 'Glass City'), rec('r6', 'Paper Moons')];
