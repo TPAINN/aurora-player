@@ -1,4 +1,6 @@
 import { startTransition, useCallback, useEffect, useRef, useState } from 'react';
+import { createPlayhead } from '../lib/playhead';
+import { songKey } from '../../shared/titles.js';
 import { buildApiUrl } from '../lib/api';
 import { getSimilarTracks, getTrackTempo } from '../lib/catalog';
 import { pickSeed, recordListening, tasteFilter } from '../lib/listening';
@@ -112,6 +114,9 @@ export function usePlayer() {
   const waitingForRadio = useRef(false);
   const recommendationRequest = useRef(null);
   const recommendedFor = useRef(null);
+  // Songs heard long enough to grow the queue from (each seeds it once).
+  const grownFrom = useRef(new Set());
+  const [heard, setHeard] = useState(null);
   const decks = useRef([]);
   const context = useRef(null);
   const mix = useRef(null);
@@ -129,6 +134,9 @@ export function usePlayer() {
   const generation = useRef(0);
   const source = useRef('youtube');
   const activeVideo = useRef(null);
+  // Whether the listener wants music now (cleared only by their own pause).
+  const intendsToPlay = useRef(false);
+  const backgroundResume = useRef(0);
   const localUrls = useRef(new Set());
   const listening = useRef({ seconds: 0, last: 0 });
   const actions = useRef({});
@@ -378,6 +386,14 @@ export function usePlayer() {
           onStateChange: event => {
             // Only the audible deck drives UI state; the standby deck is observed by the mixer.
             if (event.target !== player.current || source.current !== 'youtube' || !activeVideo.current || event.target.getVideoData?.().video_id !== activeVideo.current) return;
+            // Backgrounded, some browsers pause the embed on their own: playback the
+            // listener did not stop resumes (at most every few seconds, never fighting them).
+            if (event.data === 1) intendsToPlay.current = true;
+            if (event.data === 2 && document.hidden && intendsToPlay.current && performance.now() - backgroundResume.current > 3000) {
+              backgroundResume.current = performance.now();
+              setTimeout(() => { if (document.hidden && intendsToPlay.current && player.current === event.target) event.target.playVideo(); }, 60);
+              return;
+            }
             setPlaying(event.data === 1);
             setLoading(event.data === 3);
             if (event.data === 1) setError('');
@@ -595,9 +611,9 @@ export function usePlayer() {
     attemptedMix.current = '';
     setError('');
     try {
-      if (source.current === 'local') { if (audio.current?.paused) await audio.current.play(); else audio.current?.pause(); }
-      else if (player.current && activeVideo.current) { if (player.current.getPlayerState() === 1) player.current.pauseVideo(); else player.current.playVideo(); }
-      else if (current.current.track) await loadTrack(current.current.track);
+      if (source.current === 'local') { if (audio.current?.paused) { intendsToPlay.current = true; await audio.current.play(); } else { intendsToPlay.current = false; audio.current?.pause(); } }
+      else if (player.current && activeVideo.current) { if (player.current.getPlayerState() === 1) { intendsToPlay.current = false; player.current.pauseVideo(); } else { intendsToPlay.current = true; player.current.playVideo(); } }
+      else if (current.current.track) { intendsToPlay.current = true; await loadTrack(current.current.track); }
     } catch (err) { setError(err.message || 'Playback was blocked. Press play to retry.'); }
   }, [loadTrack, cancelMix]);
 
@@ -713,11 +729,18 @@ export function usePlayer() {
   useEffect(() => {
     // The queue never runs dry, but grows progressively: a small batch whenever
     // two or fewer songs remain, shaped by what the listener finishes and skips.
-    if (!autoplay || !track || track.localUrl || queue.length - queueIndex - 1 > 2 || recommendedFor.current === track.id) return;
+    // It also grows from what is heard: a song played for a while adds a few more
+    // like it, so the queue follows the listener rather than its first seed.
+    if (!autoplay || !track || track.localUrl) return;
+    const remaining = queue.length - queueIndex - 1;
+    const refill = remaining <= 2 && recommendedFor.current !== track.id;
+    const grow = !refill && heard === track.id && remaining < 25 && !grownFrom.current.has(track.id);
+    if (!refill && !grow) return;
     // Wait briefly for lyrics: their language keeps the radio in the same language.
     if (lyricsLoading && !waitingForRadio.current) return;
     const controller = new AbortController(); recommendationRequest.current = controller;
-    recommendedFor.current = track.id;
+    if (refill) recommendedFor.current = track.id;
+    grownFrom.current.add(track.id);
     Promise.resolve().then(async () => {
       if (controller.signal.aborted) return;
       setRecommendationsLoading(true); setRecommendationError('');
@@ -736,15 +759,15 @@ export function usePlayer() {
           if (controller.signal.aborted) return;
         }
         if (controller.signal.aborted || !mounted.current || current.current.track?.id !== track.id) return;
-        const identity = item => `${item.artist}|${item.title}`.toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+        // One song once: a title already queued (in any version or credit spelling) is skipped.
         const items = current.current.queue;
-        const seen = new Set(items.map(identity));
+        const seen = new Set(items.map(item => songKey(item.title)));
         const additions = suggestions.filter(candidate => {
-          const key = identity(candidate);
+          const key = songKey(candidate.title);
           if (seen.has(key) || items.some(item => item.id === candidate.id)) return false;
           seen.add(key); return true;
-        }).slice(0, 5);
-        if (!additions.length) { setRecommendationError('No new similar songs found. Try another track.'); return; }
+        }).slice(0, refill ? 5 : 3);
+        if (!additions.length) { if (refill) setRecommendationError('No new similar songs found. Try another track.'); return; }
         // Retain recent history and every future/manual selection without an unbounded radio queue.
         const index = items.findIndex(item => item.id === track.id);
         const updated = [...items.slice(Math.max(0, index - 30)), ...additions];
@@ -754,7 +777,12 @@ export function usePlayer() {
         if (!controller.signal.aborted && mounted.current) setRecommendationError(err.message || 'Similar tracks are temporarily unavailable.');
       } finally { if (!controller.signal.aborted && mounted.current) setRecommendationsLoading(false); }
     });
-  }, [autoplay, track, queue.length, queueIndex, radioRetry, setQueue, loadTrack, lyricsLoading]);
+  }, [autoplay, track, queue.length, queueIndex, radioRetry, setQueue, loadTrack, lyricsLoading, heard]);
+  // A song counts as heard after 25 seconds of it.
+  useEffect(() => clock.subscribe(() => {
+    const id = current.current.track?.id;
+    if (id && clock.get() >= 25) setHeard(previous => previous === id ? previous : id);
+  }), [clock]);
 
   // Warm the next local decoder, or resolve the online source, lyrics and catalogue tempo early.
   // A source cache reduces network work; the iframe still controls its own buffering.
@@ -1165,18 +1193,62 @@ export function usePlayer() {
       urls.forEach(url => URL.revokeObjectURL(url)); urls.clear();
     };
   }, [flushListening, clock]);
+  // Lock screen and notification player: artwork in the sizes each platform asks
+  // for, transport and ±10 s, and a live position so the system bar tracks the song.
   useEffect(() => {
     if (!('mediaSession' in navigator) || !track) return;
-    navigator.mediaSession.metadata = new MediaMetadata({ title: track.title, artist: track.artist, album: track.album, artwork: track.artwork ? [{ src: track.artwork }] : [] });
+    const art = track.artwork ? [96, 192, 256, 512].map(size => ({ src: artworkAt(track.artwork, size), sizes: `${size}x${size}`, type: 'image/jpeg' })) : [];
+    navigator.mediaSession.metadata = new MediaMetadata({ title: track.title, artist: track.artist, album: track.album || 'Aurora', artwork: art });
+  }, [track]);
+  useEffect(() => {
+    if (!('mediaSession' in navigator) || !track) return;
     navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
-    const handlers = { play: () => { if (!playing) togglePlay(); }, pause: () => { if (playing) togglePlay(); }, previoustrack: previous, nexttrack: () => next(), seekto: details => seek(details.seekTime) };
+    const skip = delta => seek(Math.max(0, clock.get() + delta));
+    const handlers = { play: () => { if (!playing) togglePlay(); }, pause: () => { if (playing) togglePlay(); }, stop: () => { if (playing) togglePlay(); }, previoustrack: previous, nexttrack: () => next(), seekbackward: details => skip(-(details?.seekOffset || 10)), seekforward: details => skip(details?.seekOffset || 10), seekto: details => seek(details.seekTime) };
     for (const [action, handler] of Object.entries(handlers)) { try { navigator.mediaSession.setActionHandler(action, handler); } catch { /* Browser support varies by action. */ } }
     return () => { for (const action of Object.keys(handlers)) { try { navigator.mediaSession.setActionHandler(action, null); } catch { /* Unsupported action. */ } } };
-  }, [track, playing, togglePlay, next, previous, seek]);
+  }, [track, playing, togglePlay, next, previous, seek, clock]);
+  useEffect(() => {
+    if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState || !track) return undefined;
+    const update = () => {
+      const length = Number(duration) || Number(track.duration) || 0;
+      if (!(length > 0)) return;
+      const rate = source.current === 'local' ? audio.current?.playbackRate || 1 : player.current?.getPlaybackRate?.() || 1;
+      try { navigator.mediaSession.setPositionState({ duration: length, playbackRate: rate, position: Math.min(length, Math.max(0, clock.get())) }); } catch { /* Out-of-range during a hand-over. */ }
+    };
+    update();
+    const timer = playing ? setInterval(update, 1000) : null;
+    return () => clearInterval(timer);
+  }, [track, playing, duration, clock]);
+  // The screen stays on while music plays (released on pause, taken back on return).
+  useEffect(() => {
+    if (!playing || !('wakeLock' in navigator)) return undefined;
+    let lock = null, live = true;
+    const take = () => {
+      if (!live || document.visibilityState !== 'visible' || lock) return;
+      navigator.wakeLock.request('screen').then(sentinel => {
+        if (!live) { void sentinel.release(); return; }
+        lock = sentinel;
+        sentinel.addEventListener('release', () => { if (lock === sentinel) lock = null; });
+      }).catch(() => {});
+    };
+    take();
+    document.addEventListener('visibilitychange', take);
+    return () => { live = false; document.removeEventListener('visibilitychange', take); void lock?.release().catch(() => {}); };
+  }, [playing]);
 
+  // Lyrics paint from this every frame. Local audio reports exact time; the embed
+  // reports coarsely, so its time is carried smoothly between reports. A new deck
+  // (a DJ hand-over) starts its own playhead.
+  const playhead = useRef({ deck: null, head: createPlayhead() });
   const getPlaybackTime = useCallback(() => {
-    const value = source.current === 'local' ? audio.current?.currentTime : player.current?.getCurrentTime?.();
-    return Number.isFinite(value) ? value : 0;
+    if (source.current === 'local') {
+      const value = audio.current?.currentTime;
+      return Number.isFinite(value) ? value : 0;
+    }
+    const deck = player.current;
+    if (playhead.current.deck !== deck) playhead.current = { deck, head: createPlayhead() };
+    return playhead.current.head.read({ raw: deck?.getCurrentTime?.(), playing: deck?.getPlayerState?.() === 1, rate: deck?.getPlaybackRate?.() ?? 1, now: performance.now() });
   }, []);
 
   return { warm, notice, unavailable, changeKind, direction, transitionFx, setTransitionFx, blendLength, setBlendLength, sourceInfo, surround, setSurround, audioOutput, track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, setLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime };
