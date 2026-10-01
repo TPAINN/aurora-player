@@ -59,6 +59,10 @@ function createStore(initial) {
 const PRIME_LEAD = 90;
 // YouTube needs a few hundred milliseconds to become audible after playVideo().
 const START_LEAD = .35;
+// A blend re-planned after a seek starts buffering at once and begins this soon;
+// when time runs short it shrinks, never below SHORT_BLEND, rather than cutting.
+const LATE_PRIME = 1.5;
+const SHORT_BLEND = 2.5;
 const START_TIMEOUT = 3000;
 // Blend lengths offered: 5–10 s, the range a DJ would ride two songs together.
 const BLENDS = ['auto', 5, 8, 10];
@@ -1052,12 +1056,23 @@ export function usePlayer() {
     let cue = blend?.cue ?? (dj ? planOnlineCue(length, state.lyrics?.sync !== 'plain' ? state.lyrics?.lines : [], plan.seconds) : seamless);
     // Seeking past the post-vocal cue still leaves the natural ending to blend on.
     if (!blend && cue.source === 'lyrics' && position >= cue.start - 1) cue = planOnlineCue(length, [], plan.seconds);
-    const rampStart = cue.start - plan.rampSeconds;
-    const window = { start: plan.rampSeconds ? rampStart : cue.start, end: cue.end, seconds: cue.seconds, mode: 'online', ready: blend?.stage === 'primed', glide: plan.rampSeconds > 0 };
+    const fallbackEnd = length - .5;
+    // Landing in or just before the blend (a seek into the marked zone): the blend is
+    // planned again from here and the next song starts buffering at once.
+    if (dj && !blend && attemptedMix.current !== key && position >= cue.start - 1) {
+      const start = position + LATE_PRIME;
+      const seconds = Math.min(plan.seconds, fallbackEnd - start);
+      if (seconds >= SHORT_BLEND) cue = { start, end: start + seconds, seconds, source: 'late', from: position };
+    }
+    // A late cue glides only over the time left before it, never from the past; a
+    // postponed cue keeps its glide and holds the matched tempo while it waits.
+    const rampStart = Math.max(cue.from ?? -Infinity, (cue.rampEnd ?? cue.start) - plan.rampSeconds);
+    const rampLength = Math.max(0, (cue.rampEnd ?? cue.start) - rampStart);
+    const window = { start: rampLength ? rampStart : cue.start, end: cue.end, seconds: cue.seconds, mode: 'online', ready: blend?.stage === 'primed', glide: rampLength > 0 };
     if (dj) setDjWindow(previous => JSON.stringify(previous) === JSON.stringify(window) ? previous : window);
     if (length <= 20) return;
-    const fallbackEnd = length - .5;
-    if (attemptedMix.current !== key && videoId && !blend && position >= Math.min(cue.start - 2, Math.max(6, cue.start - PRIME_LEAD)) && position < cue.start - 1) {
+    const primeFrom = cue.source === 'late' ? cue.from : Math.min(cue.start - 2, Math.max(6, cue.start - PRIME_LEAD));
+    if (attemptedMix.current !== key && videoId && !blend && position >= primeFrom && position < cue.start - 1) {
       // Pre-buffer the next song silently on the standby deck.
       const index = standbyIndex();
       // Song B's entry: past a long instrumental intro when its timed lyrics show one.
@@ -1077,16 +1092,22 @@ export function usePlayer() {
       }).catch(() => { if (mix.current === primed) primed.stage = 'failed'; });
       return;
     }
-    if (blend?.stage === 'priming' && position >= cue.start) { cancelMix(); attemptedMix.current = key; return; }
+    if (blend?.stage === 'priming' && position >= cue.start) {
+      // Still buffering at the cue: wait a moment longer while a full blend still fits.
+      const seconds = Math.min(cue.seconds, fallbackEnd - position - 1);
+      // The mixer owns this imperative state.
+      // eslint-disable-next-line react-hooks/immutability
+      if (seconds >= SHORT_BLEND) { blend.cue = { ...cue, start: position + 1, end: position + 1 + seconds, seconds, rampEnd: cue.rampEnd ?? cue.start }; blend.seconds = seconds; return; }
+      cancelMix(); attemptedMix.current = key; return;
+    }
     if (blend?.stage === 'primed') {
       if (plan.matched && position >= rampStart) {
-        const target = glideRate(position, rampStart, plan.rampSeconds, plan.rate);
+        const target = glideRate(position, rampStart, rampLength, plan.rate);
         const rate = listed ? quantizeRate(rates, target) : snapRate(target, quantum);
         if (active.getPlaybackRate?.() !== rate) active.setPlaybackRate(rate);
-        // The mixer owns this imperative state; only the confirmed rate may be claimed in the UI.
-        // eslint-disable-next-line react-hooks/immutability
+        // Only the confirmed rate may be claimed in the UI.
         blend.verified = Math.abs((active.getPlaybackRate?.() ?? 1) - plan.rate) <= .01;
-        if (position < cue.start) announce({ phase: 'gliding', label: 'Matching the next tempo', mode: 'online', progress: (position - rampStart) / Math.max(1, plan.rampSeconds), fromBpm: tempoA, toBpm: plan.targetBpm });
+        if (position < cue.start) announce({ phase: 'gliding', label: 'Matching the next tempo', mode: 'online', progress: (position - rampStart) / Math.max(1, rampLength), fromBpm: tempoA, toBpm: plan.targetBpm });
       }
       blend.plan = plan; blend.quantum = quantum;
       if (position >= cue.start - START_LEAD) { attemptedMix.current = key; beginOnlineBlend(blend); }

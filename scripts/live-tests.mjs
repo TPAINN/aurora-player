@@ -227,7 +227,7 @@ if (!only || only === 'C') {
   await check('C', 'ArrowLeft seeks back 5 s', async () => { const before = await playerTime(page); await page.locator('body').press('ArrowLeft'); await wait(350); ok(await playerTime(page) <= before - 3); });
   await check('C', 'seek slider commits once per drag', async () => {
     const before = (await events(page)).filter(row => row[1] === 'seek').length;
-    await page.evaluate(() => { const input = document.querySelector('.dock-seek input'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; for (const v of [10, 11, 12, 13, 14]) { set.call(input, String(v)); input.dispatchEvent(new Event('input', { bubbles: true })); } input.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); });
+    await page.evaluate(() => { const input = document.querySelector('.dock-seek input'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; input.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); for (const v of [10, 11, 12, 13, 14]) { set.call(input, String(v)); input.dispatchEvent(new Event('input', { bubbles: true })); } input.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); });
     await wait(300); ok((await events(page)).filter(row => row[1] === 'seek').length === before + 1);
   });
   await check('C', 'volume slider sets volume', async () => { await page.fill('input[aria-label="Volume"]', '40').catch(async () => { await page.evaluate(() => { const input = document.querySelector('input[aria-label="Volume"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '40'); input.dispatchEvent(new Event('input', { bubbles: true })); }); }); await wait(200); ok(await page.inputValue('input[aria-label="Volume"]') === '40'); });
@@ -750,6 +750,81 @@ if (!only || only === 'I') {
     ok(await phone.page.evaluate(() => { const row = document.querySelector('.mood-chips'); return row.scrollWidth > row.clientWidth; }), 'chips should scroll');
   });
   await phone.context.close();
+}
+
+if (!only || only === 'J') {
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 } });
+  await page.goto(BASE); await wait(500); await startQueue(page, ['Slow Tide']); await wait(1200);
+  const seekInput = '.dock-seek input[aria-label="Seek in track"]';
+  const tap = (value, order) => page.evaluate(([value, order, selector]) => {
+    const input = document.querySelector(selector);
+    const set = () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, String(value)); input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true })); };
+    input.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    if (order === 'touch') { input.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); set(); } else { set(); input.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); }
+  }, [value, order, seekInput]);
+  await check('J', 'a tap on the timeline seeks and the slider keeps moving', async () => {
+    await tap(20, 'touch'); await wait(300);
+    const rows = await events(page); ok(rows.some(row => row[1] === 'seek' && Math.abs(row[3] - 20) < .2), 'no seek to 20');
+    const first = await playerTime(page); await wait(1500); const later = await playerTime(page);
+    ok(first >= 19.5 && later > first + .8, `slider stuck: ${first} → ${later}`);
+  });
+  await check('J', 'a click on the timeline seeks and the slider keeps moving', async () => {
+    await tap(30, 'mouse'); await wait(300);
+    const first = await playerTime(page); await wait(1500); const later = await playerTime(page);
+    ok(first >= 29.5 && later > first + .8, `slider stuck: ${first} → ${later}`);
+  });
+  await check('J', 'a drag released outside the timeline still seeks and resumes', async () => {
+    await page.evaluate(selector => { const input = document.querySelector(selector); input.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '12'); input.dispatchEvent(new Event('input', { bubbles: true })); window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); }, seekInput);
+    await wait(300); const first = await playerTime(page); await wait(1500); const later = await playerTime(page);
+    ok(first >= 11.5 && first < 20 && later > first + .8, `slider stuck: ${first} → ${later}`);
+  });
+  await check('J', 'no runtime errors on the timeline', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'J') {
+  // Seeking into the marked blend region re-plans the blend from there instead of fading out.
+  const { context, page, errors } = await djSession({ 'aurora-live-dj': 'true' });
+  // Before the standby has been prepared (it primes from 6 s here, 90 s ahead in a long song).
+  ok(!(await events(page)).some(row => row[1] === 'load' && row[2] === 'BBBBBBBBBBB'), 'standby already primed');
+  // Land inside the marked zone: its label reads "DJ transition from m:ss to m:ss".
+  await setSeek(page, 45); await wait(400);
+  const zoneLabel = await page.getAttribute('.dock-seek .dj-seek-zone', 'aria-label');
+  const [zoneStart] = [...zoneLabel.matchAll(/(\d+):(\d+)/g)].map(m => Number(m[1]) * 60 + Number(m[2]));
+  await setSeek(page, zoneStart + 1.5);
+  const mark = await page.evaluate(() => performance.now());
+  await check('J', 'seeking into the DJ zone still blends into the next song', async () => {
+    await wait(6500);
+    const rows = await events(page);
+    ok(rows.some(row => row[1] === 'play' && row[2] === 'BBBBBBBBBBB' && row[0] > mark), JSON.stringify(rows.filter(row => row[0] > mark).slice(0, 8)));
+    ok((await title(page)).startsWith('Morning Light'), await title(page));
+  });
+  await check('J', 'both songs overlap after a seek into the zone', async () => { await wait(4000); const vols = await page.evaluate(m => window.__vols.filter(v => v[0] > m), mark); const a = vols.filter(v => v[1] === 'AAAAAAAAAAA' && v[2] > 5 && v[2] < 75); const b = vols.filter(v => v[1] === 'BBBBBBBBBBB' && v[2] > 5 && v[2] < 75); ok(a.length > 3 && b.length > 3, `A:${a.length} B:${b.length}`); });
+  await check('J', 'no runtime errors seeking into the zone', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'J') {
+  // Opening and closing the player repeatedly stays cheap: no forced scroll layout,
+  // no artwork re-decoding, never more than one player on screen.
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 390, height: 844 } });
+  await page.goto(BASE); await wait(500);
+  await page.click('nav[aria-label="Mobile navigation"] button:has-text("Search")'); await wait(400); await searchFor(page, 'band'); await page.click('.top-result-play'); await wait(1500);
+  await page.evaluate(() => {
+    window.__scrolls = 0; window.__decodes = 0; window.__maxOpen = 0;
+    const scroll = window.scrollTo; window.scrollTo = (...args) => { window.__scrolls++; return scroll.apply(window, args); };
+    const read = CanvasRenderingContext2D.prototype.getImageData; CanvasRenderingContext2D.prototype.getImageData = function (...args) { window.__decodes++; return read.apply(this, args); };
+    const watch = () => { window.__maxOpen = Math.max(window.__maxOpen, document.querySelectorAll('.immersive-player').length); if (!window.__stop) requestAnimationFrame(watch); }; requestAnimationFrame(watch);
+  });
+  for (let i = 0; i < 10; i++) {
+    await page.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))); await wait(120);
+    await page.evaluate(() => document.querySelector('.dock-track')?.click()); await wait(120);
+  }
+  await wait(1200);
+  const probe = await page.evaluate(() => { window.__stop = true; return { scrolls: window.__scrolls, decodes: window.__decodes, maxOpen: window.__maxOpen }; });
+  await check('J', 'spamming open/close forces no scroll layout', async () => ok(probe.scrolls === 0, JSON.stringify(probe)));
+  await check('J', 'spamming open/close never re-decodes artwork colours', async () => ok(probe.decodes === 0, JSON.stringify(probe)));
+  await check('J', 'spamming open/close never stacks two players', async () => ok(probe.maxOpen === 1, JSON.stringify(probe)));
+  await check('J', 'no runtime errors while spamming the player', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
 }
 
 await browser.close();

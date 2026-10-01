@@ -4480,3 +4480,7 @@ html.scroll-locked {
 .brand-mark {
   flex-shrink: 0;
 }
+
+/* The sidebar pill stays mounted under the open player; it only fades. */
+.sidebar .nav-pill { transition: opacity 0.3s var(--ease-soft); }
+.is-immersive .sidebar .nav-pill { opacity: 0; }

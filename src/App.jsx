@@ -393,10 +393,32 @@ function Seek({ player }) {
   const zoneLabel = zone
     ? `DJ transition from ${formatTime(zone.start)} to ${formatTime(zone.end)}${zone.ready ? ", next track ready" : ""}`
     : undefined;
-  const commit = () => {
-    if (drag === null) return;
-    player.seek(drag);
+  // Only a held pointer previews; a tap, click or key seeks at once. Touch can
+  // deliver pointerup before the value changes, and a drag can end off the rail,
+  // so the release is also caught on the window.
+  const held = useRef(false);
+  const pending = useRef(null);
+  const commit = useCallback(() => {
+    held.current = false;
+    if (pending.current === null) return;
+    const value = pending.current;
+    pending.current = null;
+    player.seek(value);
     setDrag(null);
+  }, [player]);
+  useEffect(() => {
+    if (drag === null) return undefined;
+    window.addEventListener("pointerup", commit);
+    window.addEventListener("pointercancel", commit);
+    return () => {
+      window.removeEventListener("pointerup", commit);
+      window.removeEventListener("pointercancel", commit);
+    };
+  }, [drag, commit]);
+  const change = (next) => {
+    pending.current = next;
+    if (held.current) setDrag(next);
+    else commit();
   };
   return (
     <div className="seek-control">
@@ -441,9 +463,9 @@ function Seek({ player }) {
           step="0.1"
           value={value}
           className={drag !== null ? "dragging" : ""}
-          onChange={(e) => setDrag(Number(e.target.value))}
+          onChange={(e) => change(Number(e.target.value))}
+          onPointerDown={() => { held.current = true; }}
           onPointerUp={commit}
-          onKeyUp={commit}
           onBlur={commit}
           style={{ "--progress": `${Math.min(100, (value / duration) * 100)}%` }}
         />
@@ -1207,10 +1229,31 @@ export default function App() {
       });
     return () => controller.abort();
   }, [mood, listeningLang]);
-  // Each screen starts at its top: opening the player or a page never inherits scroll.
+  // Each screen starts at its top: a page never inherits scroll, and the player opens
+  // at its top and gives the page back where it was. The position is tracked from
+  // scroll events, so opening and closing force no layout when nothing is scrolled.
+  const scrollY = useRef(0);
+  const pageScroll = useRef(0);
   useEffect(() => {
-    window.scrollTo({ top: 0, behavior: "instant" });
-  }, [immersive, page, collection]);
+    const track = () => { scrollY.current = window.scrollY; };
+    window.addEventListener("scroll", track, { passive: true });
+    return () => window.removeEventListener("scroll", track);
+  }, []);
+  useEffect(() => {
+    pageScroll.current = 0;
+    if (scrollY.current) window.scrollTo({ top: 0, behavior: "instant" });
+  }, [page, collection]);
+  useEffect(() => {
+    if (immersive) {
+      pageScroll.current = scrollY.current;
+      if (scrollY.current) window.scrollTo({ top: 0, behavior: "instant" });
+      return undefined;
+    }
+    const back = pageScroll.current;
+    if (!back) return undefined;
+    const frame = requestAnimationFrame(() => window.scrollTo({ top: back, behavior: "instant" }));
+    return () => cancelAnimationFrame(frame);
+  }, [immersive]);
   // Home adapts to what this listener plays, finishes and likes (all on-device).
   // Seeds come from listening history, then liked and recently played songs.
   const tasteList = useMemo(() => [...favorites, ...recent], [favorites, recent]);
@@ -1997,7 +2040,9 @@ export default function App() {
                 className={page === id && !immersive ? "selected" : ""}
                 onClick={() => navigate(id)}
               >
-                {page === id && !immersive && (
+                {/* Stays mounted while the player is open (hidden by CSS): opening the
+                    player then never triggers a shared-layout measurement. */}
+                {page === id && (
                   <Motion.span layoutId="sidebar-pill" className="nav-pill" transition={PILL_SPRING} />
                 )}
                 <Icon size={21} />
