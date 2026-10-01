@@ -53,8 +53,23 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
   return [Math.round(ch(h + 1 / 3) * 255), Math.round(ch(h) * 255), Math.round(ch(h - 1 / 3) * 255)];
 }
 
-/** Extracts up to 3 dominant colors from an image URL as "r,g,b" strings, or null on failure. */
+const extracted = new Map<string, Promise<RGBTriplet[] | null>>();
+
+/** Extracts up to 3 dominant colors from an image URL as "r,g,b" strings, or null on failure.
+ *  Each artwork is decoded once: opening and closing the player reuses its colours. */
 export function extractColors(url: string): Promise<RGBTriplet[] | null> {
+  const known = extracted.get(url);
+  if (known) return known;
+  const pending = decodeColors(url).then((colors) => {
+    if (!colors) extracted.delete(url);
+    return colors;
+  });
+  extracted.set(url, pending);
+  if (extracted.size > 64) extracted.delete(extracted.keys().next().value as string);
+  return pending;
+}
+
+function decodeColors(url: string): Promise<RGBTriplet[] | null> {
   return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
