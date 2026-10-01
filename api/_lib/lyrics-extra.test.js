@@ -48,3 +48,23 @@ test('NetEase line lyrics fill in when others miss, matched by duration', async 
   assert.equal(result.source, 'NetEase');
   assert.equal(result.sync, 'line');
 });
+
+test('credit and header lines never show as lyrics', async () => {
+  const { parseLrc } = await import('./lyrics-formats.js');
+  const credited = [
+    '[1000,1800]<0,900,0>GORDO、Drake <900,900,0>- Healing',
+    '[2800,900]<0,900,0>作词 : Aubrey Graham',
+    '[3700,900]<0,900,0>作曲：Carlos Nunez',
+    '[4600,900]<0,900,0>Producer: Gordo',
+    '[5500,900]<0,900,0>Lyrics by: Someone',
+    '[6400,900]<0,900,0>未经许可，不得翻唱或使用',
+    '[9000,1500]<0,700,0>Tell <700,800,0>me',
+    '[11000,1500]<0,1500,0>Healing',
+  ].join('\n');
+  const result = parseKrc(credited, 'KuGou', 200, { artist: 'GORDO x Drake', title: 'Healing' });
+  assert.deepEqual(result.lines.map(line => line.text), ['Tell me', 'Healing'], 'only the sung lines remain');
+  assert.equal(result.lines[0].time, 9, 'kept lines keep their own timing');
+  assert.equal(result.lines[0].words[1].start, 9.7);
+  const lrc = parseLrc('[00:00.50]Band - Night Drive\n[00:01.20]Written by: A. Writer\n[00:02.00]Mixed by B\n[00:12.00]Under the city lights\n[00:16.00]Producer is my friend', 'LRCLIB', 60, { artist: 'Band', title: 'Night Drive' });
+  assert.deepEqual(lrc.lines.map(line => line.text), ['Under the city lights', 'Producer is my friend'], 'a sung line that merely mentions a role stays');
+});
