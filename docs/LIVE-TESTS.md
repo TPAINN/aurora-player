@@ -1,6 +1,6 @@
 # Live interaction tests
 
-`scripts/live-tests.mjs` drives the real app in Chromium. The catalogue, lyrics and tempo APIs are stubbed (some deliberately slow or failing), and a simulated YouTube player records loads, plays, pauses, seeks, volumes and playback rates. Group G decodes real generated WAV audio. 242 checks in nine groups:
+`scripts/live-tests.mjs` drives the real app in Chromium. The catalogue, lyrics and tempo APIs are stubbed (some deliberately slow or failing), and a simulated YouTube player records loads, plays, pauses, seeks, volumes and playback rates. Group G decodes real generated WAV audio. 253 checks in ten groups:
 
 | Group | Covers | Checks |
 | --- | --- | --- |
@@ -13,8 +13,9 @@
 | G | Local DJ transition with real decoded WAV audio (120 → 126 BPM): glide, bound, shared tempo, entry at B's first full section, hand-over, easing back, completion | 10 |
 | H | Scroll lock behind sheets (desktop and phone, stacked sheets), name greeting, On repeat, Your artists, More like…, refrain marks and Best part, scroll reveal, word-by-word headline, spotlight, heart pop, play/pause morph, 5–10 s blend options | 17 |
 | I | Resilience and new interactions: skipping unplayable songs (with notice and queue marking), refused uploads falling back (including a refused video result, and a failed search that stays retryable), DJ preparing past an unplayable song, DJ with shuffle, swipe gestures, arrow keys on the timeline, mood chips (desktop and phone) | 26 |
+| J | Timeline and player robustness: a tap, click or off-rail drag seeks and the slider keeps moving; seeking into the DJ zone still blends; spamming open/close forces no scroll layout, re-decodes no artwork and never stacks players | 11 |
 
-Result on the production build (`npm run preview`): **242 / 242 passed**. The hand-over now renders as a React transition, so the long-task check at the blend also passes in development mode.
+Result on the production build (`npm run preview`): **253 / 253 passed**. The hand-over now renders as a React transition, so the long-task check at the blend also passes in development mode.
 
 A separate responsive sweep drives home, search, album, player and lyrics at 13 viewports (320×568 to 2560×1440, including landscape phones). It fails on any element that spills off-screen, then checks that the player never runs under the dock.
 
