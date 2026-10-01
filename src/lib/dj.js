@@ -266,17 +266,34 @@ export function findIntroStart(samples, sampleRate) {
 
 // Jog-wheel style correction: a small, bounded rate offset that walks the incoming
 // beat onto the outgoing beat. Only applied when both decks share a beat period.
-export function phaseNudge({ inPosition, inGrid, outPosition, outGrid, outRate = 1, inRate = 1 }) {
-  if (!inGrid?.period || !outGrid?.period) return 1;
+// How far song B's beat sits ahead (+) or behind (−) song A's, in B's own media
+// seconds, measured beat to beat: a grid read at half or double tempo still marks
+// real beats. Null when the two tempos are not locked together.
+export function phaseOffset({ inPosition, inGrid, outPosition, outGrid, outRate = 1, inRate = 1 }) {
+  if (!inGrid?.period || !outGrid?.period) return null;
   const outPeriod = outGrid.period / Math.max(.5, outRate);
-  if (Math.abs(inGrid.period / Math.max(.5, inRate) / outPeriod - 1) > .03) return 1;
-  const phase = (position, grid) => (((position - grid.origin) / grid.period) % 1 + 1) % 1;
-  let error = phase(inPosition, inGrid) - phase(outPosition, outGrid);
+  const ratio = inGrid.period / Math.max(.5, inRate) / outPeriod;
+  const octave = ratio > 1.5 ? 2 : ratio < .75 ? .5 : 1;
+  if (Math.abs(ratio / octave - 1) > .03) return null;
+  const inBeat = octave === 2 ? inGrid.period / 2 : inGrid.period;
+  const outBeat = octave === .5 ? outGrid.period / 2 : outGrid.period;
+  const phase = (position, origin, period) => (((position - origin) / period) % 1 + 1) % 1;
+  let error = phase(inPosition, inGrid.origin, inBeat) - phase(outPosition, outGrid.origin, outBeat);
   if (error >= .5) error -= 1;
   if (error < -.5) error += 1;
-  const seconds = error * inGrid.period;
-  if (Math.abs(seconds) < .008) return 1;
-  return 1 - Math.max(-.04, Math.min(.04, seconds * .8));
+  return Math.round(error * inBeat * 1e9) / 1e9;
+}
+
+// One short push closes a beat slip, as a DJ does on the platter: B runs 2% slow
+// (ahead) or fast (behind) for exactly as long as the slip needs, then returns to
+// the matched rate. Two rate changes instead of a continuous ride, which the
+// browser's time-stretcher would turn into audible jumps. Each change briefly
+// softens a kick, so only a slip heard as a flam (25 ms or more) is pushed.
+const PUSH = .02;
+export const SLIP = .025;
+export function nudgePlan(offset, inRate = 1) {
+  if (!Number.isFinite(offset) || Math.abs(offset) < SLIP) return null;
+  return { rate: inRate * (1 - Math.sign(offset) * PUSH), seconds: Math.min(3, Math.abs(offset) / (inRate * PUSH)) };
 }
 
 // Best entry into song B: within its first 30 seconds, on a 4-bar phrase boundary

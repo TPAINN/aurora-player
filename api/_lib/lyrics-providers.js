@@ -35,18 +35,18 @@ async function bini(track, signal) {
   const hit = candidates.find(item => item && match(item.track_name) === match(track.title) && match(item.artist_name) === match(track.artist) && (!track.duration || Math.abs(Number(item.duration)-track.duration) <= 10));
   // Returned URLs are never a general-purpose fetch proxy.
   if (!hit || !allowedLyricsUrl(hit.lyricsUrl) || new URL(hit.lyricsUrl).hostname !== 'lyrics-storage.binimum.org') return null;
-  return parseTtml(await get(hit.lyricsUrl,signal,false),'Bini Lyrics',track.duration);
+  return parseTtml(await get(hit.lyricsUrl,signal,false),'Bini Lyrics',track.duration,track);
 }
 async function better(track, signal, qq = false) {
   const data = await get(urlFor(`https://lyrics-api.boidu.dev/${qq ? 'qq/' : ''}getLyrics`, { s: track.title, a: track.artist, d: track.duration, al: track.album }),signal);
   const source = qq ? 'BetterLyrics · QQ' : 'BetterLyrics';
-  return parseTtml(data.ttml,source,track.duration) || parseLrc(data.syncedLyrics || data.lrc,source,track.duration);
+  return parseTtml(data.ttml,source,track.duration,track) || parseLrc(data.syncedLyrics || data.lrc,source,track.duration,track);
 }
 async function plus(track, signal) {
   for (const host of ['lyricsplus.binimum.org','lyricsplus-seven.vercel.app']) {
     try {
       const data = await get(urlFor(`https://${host}/v2/lyrics/get`, { title: track.title, artist: track.artist, duration: track.duration, album: track.album }),signal);
-      const result = parsePlus(data,'LyricsPlus',track.duration);
+      const result = parsePlus(data,'LyricsPlus',track.duration,track);
       if (result) return result;
     } catch { if (signal.aborted) return null; }
   }
@@ -56,10 +56,10 @@ async function simp(track, signal) {
   if (!track.videoId) return null;
   const data = await get(`https://api-lyrics.simpmusic.org/v1/${track.videoId}`,signal);
   const hit = data.success && Array.isArray(data.data) && data.data.find(item => item && (!track.duration || Math.abs(Number(item.duration)-track.duration) <= 10));
-  return parseTrack(hit,'SimpMusic',track.duration);
+  return parseTrack(hit,'SimpMusic',track.duration,track);
 }
 async function lrclib(track, signal) {
-  return parseTrack(await get(urlFor('https://lrclib.net/api/get', { track_name: track.title, artist_name: track.artist, duration: track.duration, album_name: track.album }),signal),'LRCLib',track.duration);
+  return parseTrack(await get(urlFor('https://lrclib.net/api/get', { track_name: track.title, artist_name: track.artist, duration: track.duration, album_name: track.album }),signal),'LRCLib',track.duration,track);
 }
 // Fuzzy catalogue search: tolerant of album and small duration differences, never of a different song.
 async function lrclibSearch(track, signal) {
@@ -67,7 +67,7 @@ async function lrclibSearch(track, signal) {
   const candidates = (Array.isArray(data) ? data : []).filter(item => item && match(item.trackName) === match(track.title) && match(item.artistName) === match(track.artist)
     && (!track.duration || Math.abs(Number(item.duration)-track.duration) <= 5));
   const hit = candidates.find(item => item.syncedLyrics) || candidates[0];
-  return hit ? parseTrack(hit,'LRCLib',track.duration) : null;
+  return hit ? parseTrack(hit,'LRCLib',track.duration,track) : null;
 }
 
 const near = (seconds, track) => !track.duration || Math.abs(seconds - track.duration) <= 3;
@@ -79,7 +79,7 @@ async function kugou(track, signal) {
   for (const fmt of ['krc', 'lrc']) {
     try {
       const body = await get(urlFor('https://lyrics.kugou.com/download', { ver: 1, client: 'pc', id: hit.id, accesskey: hit.accesskey, fmt, charset: 'utf8' }), signal);
-      const result = fmt === 'krc' ? parseKrc(decodeKrc(body.content), 'KuGou', track.duration) : parseLrc(Buffer.from(String(body.content || ''), 'base64').toString('utf8'), 'KuGou', track.duration);
+      const result = fmt === 'krc' ? parseKrc(decodeKrc(body.content), 'KuGou', track.duration,track) : parseLrc(Buffer.from(String(body.content || ''), 'base64').toString('utf8'), 'KuGou', track.duration,track);
       if (result) return result;
     } catch { if (signal.aborted) return null; }
   }
@@ -92,7 +92,7 @@ async function netease(track, signal) {
   const hit = (data.result?.songs || []).find(item => item && match(item.name) === match(track.title) && (item.artists || []).some(artist => match(track.artist).includes(match(artist.name))) && near(Number(item.duration) / 1000, track));
   if (!hit || !Number.isSafeInteger(hit.id)) return null;
   const lyric = await get(urlFor('https://music.163.com/api/song/lyric', { id: hit.id, lv: 1, kv: 1, tv: -1 }), signal, true, headers);
-  return parseLrc(lyric.lrc?.lyric, 'NetEase', track.duration);
+  return parseLrc(lyric.lrc?.lyric, 'NetEase', track.duration,track);
 }
 
 // Catalogue decorations that lyric databases usually omit.

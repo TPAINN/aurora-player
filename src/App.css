@@ -4480,3 +4480,97 @@ html.scroll-locked {
 .brand-mark {
   flex-shrink: 0;
 }
+
+/* The sidebar pill stays mounted under the open player; it only fades. */
+.sidebar .nav-pill { transition: opacity 0.3s var(--ease-soft); }
+.is-immersive .sidebar .nav-pill { opacity: 0; }
+
+/* Consistent backdrop: each cover is exposed to the same perceived brightness
+   (a static per-artwork filter). Best parts open up with brightness and contrast
+   through opacity alone, so the lift stays cheap to composite on phones. */
+.player-art-background .art-bg-layer {
+  filter: brightness(var(--art-exposure, 1)) saturate(1.08);
+}
+@media (max-width: 760px) {
+  .player-art-background .art-bg-layer {
+    filter: brightness(calc(0.86 * var(--art-exposure, 1))) saturate(1.1);
+  }
+}
+.player-veil::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse 120% 95% at 50% 42%, transparent 52%, #000000b3 100%);
+  opacity: 0;
+  transition: opacity 3.4s var(--ease-soft);
+}
+.player-veil.is-peak {
+  opacity: 0.72;
+}
+.player-veil.is-peak::before {
+  opacity: 0.8;
+}
+.player-veil.is-peak::after {
+  opacity: 0.6;
+}
+.player-art-background {
+  transition: opacity 3.4s var(--ease-soft), scale 3.4s var(--ease-soft);
+}
+@media (min-width: 761px) {
+  .immersive-player:not(.with-video) .player-art-background.is-peak {
+    opacity: 0.84;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .player-veil::after,
+  .player-art-background {
+    transition: none;
+  }
+}
+
+/* The home carousel swipes sideways; the page still scrolls vertically through it. */
+.cover-carousel {
+  touch-action: pan-y;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.cover-carousel:active {
+  cursor: grabbing;
+}
+.cover-carousel img {
+  -webkit-user-drag: none;
+  pointer-events: none;
+}
+
+/* Phones: the hero title and subtitle never run under "Press play". The button's
+   width is reserved on their right, long single words wrap, two lines at most. */
+@media (max-width: 760px) {
+  .stage-copy h2,
+  .stage-copy > p {
+    padding-right: 118px;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .stage-copy h2 {
+    font-size: calc(30px * var(--title-fit, 1));
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+  .stage-copy > p {
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
+  }
+}
+@media (max-width: 370px) {
+  .stage-copy h2,
+  .stage-copy > p {
+    padding-right: 96px;
+  }
+  .stage-copy h2 {
+    font-size: calc(25px * var(--title-fit, 1));
+  }
+}

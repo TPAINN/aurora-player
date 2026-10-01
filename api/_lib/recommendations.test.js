@@ -19,7 +19,8 @@ test('known lyrics take priority while metadata failure retains candidates', asy
 
 test('recommendations exclude current song and duplicate album versions across catalogues', () => {
   const selected = selectRecommendations([track('1', 'Blinding Lights (Deluxe)'), track('2', 'Save Your Tears'), track('3', 'Save Your Tears - Remastered'), track('4', 'Save Your Tears', 'Other Artist'), track('5', 'Empty', '')], current);
-  assert.deepEqual(selected.map(item => item.id), ['2', '4']);
+  // A same-named song by another artist (a cover or re-credit) is the same song to the listener.
+  assert.deepEqual(selected.map(item => item.id), ['2']);
   assert.ok(selected.every(item => item.recommended));
 });
 
@@ -195,4 +196,17 @@ test('with no lyrics to read, the artist\'s own titles set the language and keep
   } });
   assert.ok(result.length >= 4, `only ${result.length}`);
   assert.ok(!result.some(track => track.title.startsWith('Por Que')), result.map(track => track.title).join(' | '));
+});
+
+test('recommendations never repeat a song under another artist spelling or version', async () => {
+  const { selectRecommendations } = await import('./recommendations.js');
+  const make = (id, title, artist) => ({ id, title, artist, duration: 200 });
+  const picked = selectRecommendations([
+    make('1', 'Healing (Sousa AfroHouse Remix)', 'GORDO x Drake'),
+    make('2', 'Healing [Ultra Records]', 'Gordo & Drake'),
+    make('3', 'Passionfruit', 'Drake'),
+    make('4', 'HEALING (YUMA REMIX)', 'GORDO & DRAKE'),
+    make('5', 'Hypnotized', 'Gordo'),
+  ], { title: 'Healing', artist: 'GORDO x Drake' });
+  assert.deepEqual(picked.map(track => track.id), ['3', '5'], 'the playing song is never recommended back in any version');
 });
