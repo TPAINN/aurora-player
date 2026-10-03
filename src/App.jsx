@@ -3109,10 +3109,10 @@ export default function App() {
                 </div>
                 <div className="segmented" role="radiogroup" aria-label="Loudness">
                   {[
-                    ["quiet", "Quiet"],
-                    ["normal", "Normal"],
-                    ["loud", "Loud"],
-                  ].map(([level, label]) => (
+                    ["quiet", "Quiet", "Softer"],
+                    ["normal", "Normal", "Balanced"],
+                    ["loud", "Loud", "Full"],
+                  ].map(([level, label, hint]) => (
                     <button
                       key={level}
                       role="radio"
@@ -3122,6 +3122,7 @@ export default function App() {
                     >
                       {player.loudness === level && <Motion.span layoutId="loudness-pill" className="nav-pill" transition={PILL_SPRING} />}
                       {label}
+                      <small>{hint}</small>
                     </button>
                   ))}
                 </div>
@@ -3148,7 +3149,7 @@ export default function App() {
               <div className="setting-row">
                 <div>
                   <strong>Lyrics timing</strong>
-                  <p>Fine-tune words to your audio.</p>
+                  <p>Fine-tune words to your audio. Remembered for each song.</p>
                 </div>
                 <select
                   aria-label="Lyrics timing offset"

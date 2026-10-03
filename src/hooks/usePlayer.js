@@ -1,10 +1,11 @@
 import { startTransition, useCallback, useEffect, useRef, useState } from 'react';
 import { createPlayhead } from '../lib/playhead';
+import { readOffset, saveOffset } from '../lib/lyric-offsets';
 import { songKey } from '../../shared/titles.js';
 import { buildApiUrl } from '../lib/api';
 import { getSimilarTracks, getTrackTempo } from '../lib/catalog';
 import { pickSeed, recordListening, tasteFilter } from '../lib/listening';
-import { adaptiveBlend, analyzeLocalTempo, beatAlignedEntry, blendCurve, vocalSpans, chooseEntry, equalPower, glideRate, nudgePlan, phaseOffset, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
+import { swapTime, adaptiveBlend, analyzeLocalTempo, beatAlignedEntry, blendCurve, vocalSpans, chooseEntry, equalPower, glideRate, nudgePlan, phaseOffset, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
 import { playSweep } from '../lib/sweep';
 import { nextPlayable } from '../lib/queue';
 import { detectLanguage } from '../../shared/language.js';
@@ -121,7 +122,7 @@ export function usePlayer() {
   const [repeat, setRepeat] = useState('off');
   const [lyrics, setLyrics] = useState(null);
   const [lyricsLoading, setLyricsLoading] = useState(false);
-  const [lyricsOffset, setLyricsOffset] = useState(0);
+  const [lyricsOffset, updateLyricsOffset] = useState(0);
   // 1 when the listener moves forward (next, blend, pick), -1 for Previous: drives the change animation.
   const [direction, setDirection] = useState(1);
   // How the current song arrived: 'blend' (a DJ transition) or 'skip' (a direct change).
@@ -308,7 +309,7 @@ export function usePlayer() {
       if (deck.gain) {
         const now = context.current.currentTime;
         const active = deck.element === audio.current;
-        for (const [param, value] of [[deck.gain.gain, active ? current.current.volume / 100 : 0], [deck.highpass.frequency, 20], [deck.lowpass.frequency, 20000], [deck.lowpass.Q, .8], [deck.echoSend.gain, 0]]) {
+        for (const [param, value] of [[deck.gain.gain, active ? current.current.volume / 100 : 0], [deck.highpass.frequency, 20], [deck.lowpass.frequency, 20000], [deck.lowpass.Q, .8], [deck.echoSend.gain, 0], [deck.presence.gain, 0]]) {
           param.cancelScheduledValues(now); param.setValueAtTime(value, now);
         }
         // Back to the direct route with a short, click-free handover.
@@ -356,8 +357,12 @@ export function usePlayer() {
       // from volume, and the filter route that exists only for DJ blends.
       const dry = graph.createGain(); dry.gain.value = 1;
       const wet = graph.createGain(); wet.gain.value = 0;
-      input.connect(dry).connect(gain);
-      input.connect(highpass).connect(lowpass).connect(wet).connect(gain);
+      // The vocal band (presence, around 1.6 kHz): neutral except while two songs
+      // overlap, when the voice that is not leading is pulled back.
+      const presence = graph.createBiquadFilter(); presence.type = 'peaking'; presence.frequency.value = 1600; presence.Q.value = .7; presence.gain.value = 0;
+      input.connect(presence);
+      presence.connect(dry).connect(gain);
+      presence.connect(highpass).connect(lowpass).connect(wet).connect(gain);
       gain.connect(masterOf(graph));
       lowpass.connect(echoSend).connect(delay).connect(tone).connect(feedback).connect(delay);
       tone.connect(masterOf(graph));
@@ -366,7 +371,7 @@ export function usePlayer() {
       // eslint-disable-next-line react-hooks/immutability
       element.volume = 1;
       element.preservesPitch = true;
-      Object.assign(deck, { input, highpass, lowpass, gain, echoSend, delay, dry, wet });
+      Object.assign(deck, { input, presence, highpass, lowpass, gain, echoSend, delay, dry, wet });
     }
     void graph.resume().catch(() => {});
     return graph;
@@ -538,7 +543,7 @@ export function usePlayer() {
     updateQueue(nextQueue); setQueueIndex(nextQueue.findIndex(item => item.id === selected.id));
     setDjWindow(null);
     setDirection(travel.current); travel.current = 1; setChangeKind('skip');
-    setTrack(selected); clock.set(0); setDuration(selected.duration || 0); setPlaying(false); setLoading(true); setError(''); setLyrics(null); setLyricsOffset(0);
+    setTrack(selected); clock.set(0); setDuration(selected.duration || 0); setPlaying(false); setLoading(true); setError(''); setLyrics(null); updateLyricsOffset(readOffset(selected));
     setLyricsLoading(!selected.localUrl);
     const cached = prepared.current.get(selected.id);
     const lyricsRequest = showLyricsFor(selected, token, controller);
@@ -678,7 +683,7 @@ export function usePlayer() {
       setTrack(selected); setDuration(length);
       setQueueIndex(current.current.queue.findIndex(item => item.id === selected.id));
       // Pre-loaded lyrics appear at once; no "finding the words" flash mid-blend.
-      setLyrics(ready?.lyrics || null); setLyricsOffset(0); setLyricsLoading(!selected.localUrl && !ready?.lyrics); setPlaying(true); setError('');
+      setLyrics(ready?.lyrics || null); updateLyricsOffset(readOffset(selected)); setLyricsLoading(!selected.localUrl && !ready?.lyrics); setPlaying(true); setError('');
       setSourceInfo(selected.localUrl ? { kind: 'local', format: selected.format || null } : ready?.source || { kind: 'youtube', official: false });
     });
     if (!selected.localUrl && !ready?.lyrics) showLyricsFor(selected, token, controller, videoId);
@@ -776,6 +781,12 @@ export function usePlayer() {
     else if (audio.current) audio.current.volume = amount / 100;
     if (!mix.current?.kind?.startsWith('online')) player.current?.setVolume?.(amount);
   }, [cancelMix]);
+  // A lyric offset set by hand sticks to the song for next time.
+  const setLyricsOffset = useCallback(value => {
+    const offset = Math.round((Number(value) || 0) * 100) / 100;
+    updateLyricsOffset(offset);
+    saveOffset(current.current.track, offset);
+  }, []);
   const setLoudness = useCallback(value => {
     if (!LOUDNESS[value]) return;
     preferences.current.loudness = value; updateLoudness(value);
@@ -962,7 +973,15 @@ export function usePlayer() {
       // echoes out. Bass swap: song B enters without its low end, and on the beat
       // at the middle of the blend the low end moves from song A to song B, so the
       // two kick drums and bass lines never stack.
-      const mid = now + seconds / 2, swap = Math.max(.12, Math.min(.6, plan.beatSeconds || .25));
+      // The swap lands on song A's nearest bar line to the middle of the blend.
+      const mid = swapTime({ now, seconds, outPosition: outgoing.element.currentTime, outGrid: from?.outro?.grid, rate: outgoing.element.playbackRate }), swap = Math.max(.12, Math.min(.6, plan.beatSeconds || .25));
+      // Voices never clash: song B's vocal band enters 9 dB down and opens over the
+      // beat after the swap, while song A's is pulled out over that same beat.
+      const beat = Math.max(.25, Math.min(.75, plan.beatSeconds || .5));
+      incoming.presence.gain.cancelScheduledValues(now); incoming.presence.gain.setValueAtTime(-9, now);
+      incoming.presence.gain.setValueAtTime(-9, mid); incoming.presence.gain.linearRampToValueAtTime(0, mid + beat);
+      outgoing.presence.gain.cancelScheduledValues(now); outgoing.presence.gain.setValueAtTime(0, now);
+      outgoing.presence.gain.setValueAtTime(0, mid); outgoing.presence.gain.linearRampToValueAtTime(-12, mid + beat);
       outgoing.delay.delayTime.setValueAtTime(Math.min(1.5, (plan.beatSeconds || .5) * .75), now);
       // Song A keeps its full range (and the only bass) until the swap, so the mix
       // never thins out; after it, song A narrows into the hollow band and echoes out.

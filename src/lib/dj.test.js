@@ -316,3 +316,18 @@ test('a beat slip is closed with one short push, like a DJ on the platter', asyn
   assert.equal(nudgePlan(0.02, 1), null, 'a slip too small to hear as a flam is left alone');
   assert.ok(nudgePlan(0.2, 1).seconds <= 3, 'a push never lasts more than three seconds');
 });
+
+test('the bass swap lands on a bar line of the outgoing song', async () => {
+  const { swapTime } = await import('./dj.js');
+  // Song A: 120 BPM (bar = 2 s) from 0; it plays at 1.0 from position 61.3 s, blend 8 s.
+  const at = swapTime({ now: 100, seconds: 8, outPosition: 61.3, outGrid: { origin: 0, period: .5 }, rate: 1 });
+  // Midpoint is 104 (A at 65.3); the nearest bar line is A at 66 → wall 104.7.
+  assert.ok(Math.abs(at - 104.7) < 1e-9, String(at));
+  // At 1.05× song A reaches its bar line sooner in wall time.
+  const faster = swapTime({ now: 100, seconds: 8, outPosition: 61.3, outGrid: { origin: 0, period: .5 }, rate: 1.05 });
+  assert.ok(Math.abs(faster - (100 + (66 - 61.3) / 1.05)) < 1e-9, String(faster));
+  // The swap stays inside the middle of the blend; without a grid it is the midpoint.
+  assert.equal(swapTime({ now: 100, seconds: 8, outPosition: 61.3, outGrid: null, rate: 1 }), 104);
+  const late = swapTime({ now: 100, seconds: 5, outPosition: 0.9, outGrid: { origin: 0, period: 1 }, rate: 1 });
+  assert.ok(late >= 100 + 5 * .3 && late <= 100 + 5 * .7, String(late));
+});
