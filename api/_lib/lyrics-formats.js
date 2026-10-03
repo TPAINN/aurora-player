@@ -15,8 +15,36 @@ export function seconds(value) {
   if (!/^\d+(?::\d+){0,2}(?:\.\d+)?$/.test(text)) return NaN;
   return text.split(':').reduce((total, part) => total * 60 + Number(part), 0);
 }
-function finish(lines, source, duration = 0) {
-  const valid = lines.filter(line => typeof line.text === 'string' && line.text.trim() && Number.isFinite(line.time) && line.time >= 0 && line.time <= 86400).slice(0,2000).sort((a,b) => a.time-b.time);
+// Lyric files often open with the song's header and credits ("作词 : X",
+// "Lyrics by X", "Producer: X") and close with a rights notice. They are not sung,
+// so they are dropped; every remaining line keeps its own timing untouched.
+const ROLE = 'lyrics? by|words by|作词|作曲|编曲|词|曲|填词|谱曲|制作人|制作|监制|出品|出品人|发行|企划|统筹|策划|混音|缩混|母带|录音|录音师|和声|和音|配唱|演唱|原唱|翻唱|吉他|电吉他|贝斯|鼓|键盘|弦乐|钢琴|编程|人声|op|sp|lyrics?|lyricist|writers?|written by|composers?|composed by|music|music by|arrangers?|arranged by|arrangement|producers?|produced by|executive producer|co-producer|mix(?:ed)?(?: by)?|mixing(?: engineer)?|master(?:ed|ing)?(?: by| engineer)?|engineers?|recording(?: engineer)?|recorded by|vocals? by|background vocals|programming|publisher|label|copyright';
+const CREDIT = new RegExp(`^\\s*(?:${ROLE})\\s*[:：]\\s*\\S`, 'iu');
+const CREDIT_BY = /^\s*(?:lyrics|words|written|composed|produced|mixed|mastered|arranged|recorded|music)\s+by\s+\S/i;
+const NOTICE = /未经.{0,12}许可|不得翻唱|翻唱翻录|著作权|版权所有|本作品|TME享有|QQ音乐|酷狗|网易云|文曲大模型/u;
+const fold = value => String(value || '').toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]/gu, '');
+function isHeader(text, meta) {
+  if (!meta?.title) return false;
+  const [left, ...rest] = text.split(/\s+[-–—]\s+/);
+  if (!rest.length) return false;
+  const title = fold(rest.join(' ')), wanted = fold(meta.title);
+  if (!title || !(title === wanted || wanted.startsWith(title) || title.startsWith(wanted))) return false;
+  const artist = fold(meta.artist);
+  return left.split(/[^\p{L}\p{N}]+/u).some(token => token.length > 1 && artist.includes(fold(token)));
+}
+const isCredit = text => CREDIT.test(text) || CREDIT_BY.test(text) || NOTICE.test(text);
+function stripCredits(lines, meta) {
+  let leading = true;
+  return lines.filter(line => {
+    const text = line.text.trim();
+    if (isCredit(text)) return false;
+    if (leading && isHeader(text, meta)) return false;
+    leading = false;
+    return true;
+  });
+}
+function finish(lines, source, duration = 0, meta = null) {
+  const valid = stripCredits(lines.filter(line => typeof line.text === 'string' && line.text.trim() && Number.isFinite(line.time) && line.time >= 0 && line.time <= 86400).sort((a,b) => a.time-b.time), meta).slice(0,2000);
   valid.forEach((line,index) => {
     line.text = line.text.trim().slice(0,4000);
     if (!Number.isFinite(line.end) || line.end <= line.time) line.end = Math.max(line.time, valid[index+1]?.time ?? duration);
@@ -27,7 +55,7 @@ function finish(lines, source, duration = 0) {
   });
   return valid.length ? { source, sync: valid.some(line => line.words?.length) ? 'word' : 'line', lines: valid } : null;
 }
-export function parseTtml(xml, source, duration) {
+export function parseTtml(xml, source, duration, meta) {
   if (typeof xml !== 'string' || xml.length > MAX_TEXT || /<!DOCTYPE|<!ENTITY/i.test(xml)) return null;
   const parser = new XMLParser({ preserveOrder: true, ignoreAttributes: false, trimValues: false, processEntities: false, parseTagValue: false });
   const tree = parser.parse(xml);
@@ -59,9 +87,9 @@ export function parseTtml(xml, source, duration) {
     }
   }
   walk(tree);
-  return finish(lines,source,duration);
+  return finish(lines,source,duration,meta);
 }
-export function parseLrc(value, source, duration) {
+export function parseLrc(value, source, duration, meta) {
   if (typeof value !== 'string' || value.length > MAX_TEXT) return null;
   const lines = [];
   let wordCount = 0;
@@ -83,18 +111,18 @@ export function parseLrc(value, source, duration) {
     // Enhanced LRC may supply a final word start without an end marker.
     if (lastWord && !Number.isFinite(lastWord.end)) lastWord.end = Math.max(lastWord.start, lines[index+1]?.time ?? duration ?? lastWord.start);
   });
-  return finish(lines,source,duration);
+  return finish(lines,source,duration,meta);
 }
-export function parsePlus(data, source, duration) {
+export function parsePlus(data, source, duration, meta) {
   if (!Array.isArray(data?.lyrics)) return null;
   return finish(data.lyrics.slice(0,2000).filter(line => line && typeof line === 'object').map(line => ({
     time: Number(line.time)/1000, end: (Number(line.time)+Number(line.duration))/1000, text: line.text,
     words: Array.isArray(line.syllabus) ? line.syllabus.slice(0,1000).filter(Boolean).map(word => ({ text: word.text, start: Number(word.time)/1000, end: (Number(word.time)+Number(word.duration))/1000 })) : undefined,
-  })),source,duration);
+  })),source,duration,meta);
 }
-export function parseTrack(data, source, duration) {
+export function parseTrack(data, source, duration, meta) {
   if (!data || typeof data !== 'object') return null;
-  const synced = parseLrc(data.richSyncLyrics || data.syncedLyrics,source,duration);
+  const synced = parseLrc(data.richSyncLyrics || data.syncedLyrics,source,duration,meta);
   if (synced) return synced;
   if (data.instrumental === true) return { source, sync: 'plain', lines: [], instrumental: true };
   if (typeof data.plainLyrics === 'string' && data.plainLyrics.trim() && data.plainLyrics.length <= MAX_TEXT) return { source, sync: 'plain', lines: [], plainLyrics: data.plainLyrics };
@@ -115,7 +143,7 @@ export function decodeKrc(base64) {
 }
 
 // "[lineStartMs,lineDurMs]<offsetMs,durMs,0>word…" with offsets relative to the line.
-export function parseKrc(text, source, duration) {
+export function parseKrc(text, source, duration, meta) {
   if (typeof text !== 'string' || text.length > MAX_TEXT) return null;
   const lines = [];
   for (const row of text.split(/\r?\n/).slice(0, 4000)) {
@@ -128,5 +156,5 @@ export function parseKrc(text, source, duration) {
     const plain = words.length ? words.map(word => word.text).join('') : head[3];
     lines.push({ time: start, end: start + length, text: plain, ...(words.length ? { words } : {}) });
   }
-  return finish(lines, source, duration);
+  return finish(lines, source, duration, meta);
 }

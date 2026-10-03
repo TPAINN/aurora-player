@@ -112,13 +112,13 @@ test('song B eases from the shared tempo back to its own after the blend', async
 });
 
 test('a slowed incoming deck still lands its beat on the outgoing grid', async () => {
-  const { beatAlignedEntry, phaseNudge } = await import('./dj.js');
+  const { beatAlignedEntry, phaseOffset } = await import('./dj.js');
   // Next outgoing beat in 0.2 s of wall time; B plays at 0.95×, so it covers 0.19 s of media first.
   const entry = beatAlignedEntry({ introStart: 1, inGrid: { origin: 1.25, period: .5 }, outPosition: 20.3, outGrid: { origin: 0, period: .5 }, rate: 1, inRate: .95 });
   assert.ok(Math.abs(entry - (1.25 - .2 * .95)) < 1e-9);
-  // B's period at 0.95× matches A's at 1.0×: the nudge engages instead of refusing.
-  const nudge = phaseNudge({ inPosition: 10.05, inGrid: { origin: 0, period: .475 }, outPosition: 20, outGrid: { origin: 0, period: .5 }, outRate: 1, inRate: .95 });
-  assert.notEqual(nudge, 1);
+  // B's period at 0.95× matches A's at 1.0×: the offset is measured instead of refused.
+  const offset = phaseOffset({ inPosition: 10.05, inGrid: { origin: 0, period: .475 }, outPosition: 20, outGrid: { origin: 0, period: .5 }, outRate: 1, inRate: .95 });
+  assert.ok(Number.isFinite(offset) && offset !== 0);
 });
 
 test('the hollow sweep rises to the swap, then falls away into a tail', async () => {
@@ -190,15 +190,16 @@ test('playback rates snap to what the player supports', () => {
   assert.equal(quantizeRate(undefined, 1.06), 1);
 });
 
-test('phase nudge pulls a late or early incoming beat back onto the grid', async () => {
-  const { phaseNudge } = await import('./dj.js');
+test('a late or early incoming beat is pulled back onto the grid', async () => {
+  const { phaseOffset, nudgePlan } = await import('./dj.js');
   const grid = { origin: 0, period: .5 };
-  assert.equal(phaseNudge({ inPosition: 10, inGrid: grid, outPosition: 20, outGrid: grid, outRate: 1 }), 1);
-  assert.ok(phaseNudge({ inPosition: 10.05, inGrid: grid, outPosition: 20, outGrid: grid, outRate: 1 }) < 1, 'incoming ahead slows down');
-  assert.ok(phaseNudge({ inPosition: 9.95, inGrid: grid, outPosition: 20, outGrid: grid, outRate: 1 }) > 1, 'incoming behind speeds up');
-  assert.ok(Math.abs(phaseNudge({ inPosition: 10.2, inGrid: grid, outPosition: 20, outGrid: grid, outRate: 1 }) - 1) <= .04 + 1e-9);
-  assert.equal(phaseNudge({ inPosition: 10.1, inGrid: { origin: 0, period: .25 }, outPosition: 20, outGrid: grid, outRate: 1.3 }), 1, 'unrelated periods are left alone');
-  assert.equal(phaseNudge({ inPosition: 10, inGrid: null, outPosition: 20, outGrid: grid, outRate: 1 }), 1);
+  const push = inPosition => nudgePlan(phaseOffset({ inPosition, inGrid: grid, outPosition: 20, outGrid: grid, outRate: 1 }), 1);
+  assert.equal(push(10), null, 'on the beat: nothing to do');
+  assert.ok(push(10.05).rate < 1, 'incoming 50 ms ahead slows down');
+  assert.ok(push(9.95).rate > 1, 'incoming 50 ms behind speeds up');
+  assert.ok(Math.abs(push(10.2).rate - 1) <= .02 + 1e-9, 'never more than a 2% push');
+  assert.equal(phaseOffset({ inPosition: 10.1, inGrid: { origin: 0, period: .25 }, outPosition: 20, outGrid: grid, outRate: 1.3 }), null, 'unrelated periods are left alone');
+  assert.equal(phaseOffset({ inPosition: 10, inGrid: null, outPosition: 20, outGrid: grid, outRate: 1 }), null);
 });
 
 test('blends last 5–10 seconds, in whole bars when the beat is known', () => {
@@ -292,4 +293,26 @@ test('online outro and intro spans come from genuinely timed lyrics only', async
   assert.deepEqual(vocalSpans({ duration: 200, outLines: [], inLines: [{ time: 40 }], entry: 25 }), { outroSpan: Infinity, introSpan: 15 });
   const lead = [{ time: 8, words: [{ start: 11.2, end: 11.6 }] }];
   assert.equal(vocalSpans({ duration: 200, inLines: lead, entry: 0 }).introSpan, 11.2, 'the first sung word, not the line start');
+});
+
+test('beat offset is measured beat to beat, even when a grid was read at half tempo', async () => {
+  const { phaseOffset } = await import('./dj.js');
+  // Song A at 123 BPM; song B's grid was read at half its tempo (63 BPM instead of 126),
+  // played at 0.9759 so both beat at 123.
+  const outGrid = { origin: 0, period: 60 / 120 }, inGrid = { origin: 0, period: 60 / 63 };
+  const at = { inGrid, outPosition: 10 * outGrid.period, outGrid, outRate: 1.025, inRate: 0.9759 };
+  assert.ok(Math.abs(phaseOffset({ ...at, inPosition: 7 * (60 / 126) + 0.04 }) - 0.04) < 1e-9, 'B 40 ms (its own time) ahead');
+  assert.ok(Math.abs(phaseOffset({ ...at, inPosition: 7 * (60 / 126) - 0.03 }) + 0.03) < 1e-9, 'B 30 ms behind');
+  assert.equal(phaseOffset({ ...at, inGrid: { origin: 0, period: 60 / 100 } }), null, 'unrelated tempos: no lock');
+});
+
+test('a beat slip is closed with one short push, like a DJ on the platter', async () => {
+  const { nudgePlan } = await import('./dj.js');
+  const ahead = nudgePlan(0.04, 0.9759);
+  assert.ok(ahead.rate < 0.9759 && Math.abs(ahead.rate / 0.9759 - 0.98) < 1e-9, 'B ahead eases off by 2%');
+  assert.ok(Math.abs(ahead.seconds - 0.04 / (0.9759 * 0.02)) < 1e-9, 'for exactly as long as the slip needs');
+  const behind = nudgePlan(-0.03, 1);
+  assert.ok(Math.abs(behind.rate - 1.02) < 1e-9 && Math.abs(behind.seconds - 1.5) < 1e-9, 'a 30 ms slip is pushed');
+  assert.equal(nudgePlan(0.02, 1), null, 'a slip too small to hear as a flam is left alone');
+  assert.ok(nudgePlan(0.2, 1).seconds <= 3, 'a push never lasts more than three seconds');
 });

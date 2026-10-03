@@ -22,10 +22,13 @@ export const section = {
   animate: { opacity: 1, y: 0, transition: { duration: 0.8, ease: EASE } },
 };
 
+// The full player rises like a sheet (distances relative to its own height, so a
+// phone and a desktop move alike) and sinks back as it closes; opacity leads on the
+// way in and trails on the way out, so it never flashes or pops.
 export const player = {
-  initial: { opacity: 0, y: 60, scale: 0.985 },
-  animate: { opacity: 1, y: 0, scale: 1, transition: { ...SOFT_SPRING, opacity: { duration: 0.5, ease: EASE } } },
-  exit: { opacity: 0, y: 48, scale: 0.985, transition: { duration: 0.42, ease: EASE_EXIT } },
+  initial: { opacity: 0, y: '7%', scale: 0.975 },
+  animate: { opacity: 1, y: '0%', scale: 1, transition: { ...SOFT_SPRING, opacity: { duration: 0.42, ease: EASE } } },
+  exit: { opacity: 0, y: '6%', scale: 0.98, transition: { duration: 0.46, ease: EASE_EXIT, opacity: { duration: 0.34, delay: 0.08, ease: EASE_EXIT } } },
 };
 
 // Rows cascade in once; later renders keep their position without replaying.
