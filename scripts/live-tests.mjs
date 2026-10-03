@@ -954,6 +954,56 @@ if (!only || only === 'K') {
   await context.close();
 }
 
+if (!only || only === 'K') {
+  // Best parts open the backdrop up with the lyrics shown too, on desktop and phone.
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+    const phone = viewport.width < 500;
+    const { context, page, errors } = await newSession(browser, { viewport });
+    await page.goto(BASE); await wait(500);
+    if (phone) { await page.click('nav[aria-label="Mobile navigation"] button:has-text("Search")'); await wait(400); await searchFor(page, 'band'); await page.click('.top-result-play'); await wait(1500); await page.click('.player-pills button:has-text("Lyrics")'); }
+    else { await startQueue(page, []); await page.click('button[aria-label="Show lyrics"]'); }
+    await wait(1200);
+    const look = () => page.evaluate(() => { const veil = document.querySelector('.player-veil'); const art = document.querySelector('.player-art-background'); return { peak: veil?.classList.contains('is-peak'), veil: Number(getComputedStyle(veil).opacity), vignette: Number(getComputedStyle(veil, '::after').opacity), light: Number(getComputedStyle(veil, '::before').opacity), art: Number(getComputedStyle(art).opacity), lyrics: !!document.querySelector('.with-lyrics .desktop-lyrics, .immersive-player.with-lyrics') }; });
+    await setSeek(page, 12); await wait(4000); const calm = await look();
+    await setSeek(page, 26.1); await wait(2600); const peak = await look();
+    const name = phone ? 'phone' : 'desktop';
+    await check('K', `${name}: with lyrics shown, a best part is detected`, async () => ok(calm.lyrics && !calm.peak && peak.peak, JSON.stringify({ calm, peak })));
+    await check('K', `${name}: with lyrics shown, a best part brightens and adds contrast`, async () => ok(peak.veil < calm.veil - 0.1 && peak.vignette > calm.vignette + 0.3 && peak.light > calm.light && peak.art > calm.art, JSON.stringify({ calm, peak })));
+    await check('K', `${name}: no runtime errors at best parts`, async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
+if (!only || only === 'K') {
+  // Loudness: Quiet / Normal / Loud scale what every deck plays; the slider keeps the listener's own volume.
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 } });
+  await page.goto(BASE); await wait(500); await startQueue(page, []); await wait(1500);
+  const lastVolume = () => page.evaluate(() => window.__vols.filter(v => v[1] === 'AAAAAAAAAAA').at(-1)?.[2]);
+  const choose = async label => { await page.evaluate(() => document.querySelector('button[aria-label="Preferences"]')?.click()); await wait(800); await page.click(`[role="radiogroup"][aria-label="Loudness"] button:has-text("${label}")`); await wait(400); await page.keyboard.press('Escape'); await wait(500); };
+  await check('K', 'Normal leaves a little headroom', async () => ok(await lastVolume() === 68, String(await lastVolume())));
+  await check('K', 'Quiet plays softer at the same slider position', async () => { await choose('Quiet'); ok(await lastVolume() === 44, String(await lastVolume())); ok(await page.inputValue('input[aria-label="Volume"]') === '80'); });
+  await check('K', 'Loud plays at full level', async () => { await choose('Loud'); ok(await lastVolume() === 80, String(await lastVolume())); });
+  await check('K', 'the loudness choice is remembered', async () => { await page.reload(); await wait(1200); await page.evaluate(() => document.querySelector('button[aria-label="Preferences"]')?.click()); await wait(800); ok(await page.getAttribute('[role="radiogroup"][aria-label="Loudness"] button:has-text("Loud")', 'aria-checked') === 'true'); });
+  await check('K', 'no runtime errors changing loudness', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+
+if (!only || only === 'K') {
+  // The queue reads like a set list.
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 }, prefs: { 'aurora-autoplay': 'false' } });
+  await page.goto(BASE); await wait(500); await startQueue(page, ['Morning Light', 'Slow Tide']); await wait(1200);
+  await page.click('.dock-transport button[aria-label="Next track"]'); await wait(1500);
+  const openQueue = async () => { await page.click('.dock-actions button:has(svg.lucide-list-music), button[aria-label="Queue"], button[aria-label="Open queue"]').catch(() => {}); await wait(900); };
+  await openQueue();
+  if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/queue-desktop.png` });
+  const sections = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('dialog .queue-section')].map(node => [node.getAttribute('aria-label') || 'Played', [...node.querySelectorAll('.track-row strong')].map(n => n.textContent)])));
+  await check('K', 'the queue shows what plays now, next and before', async () => { const view = await sections(); ok(view['Now playing']?.[0] === 'Morning Light' && view['Up next']?.[0] === 'Slow Tide', JSON.stringify(view)); ok(await page.locator('dialog details.queue-played').count() === 1); });
+  await check('K', 'up next tells its length', async () => ok(/1 song · \d+ min/.test(await page.textContent('dialog .queue-section[aria-label="Up next"] .queue-heading small')), await page.textContent('dialog .queue-section[aria-label="Up next"] .queue-heading small')));
+  await check('K', 'removing a song from up next removes that song, not another', async () => { await page.click('dialog .queue-section[aria-label="Up next"] button[aria-label="Remove Slow Tide from queue"]'); await wait(600); const view = await sections(); ok(!JSON.stringify(view).includes('Slow Tide') && view['Now playing']?.[0] === 'Morning Light', JSON.stringify(view)); });
+  await check('K', 'no runtime errors in the queue', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+
 await browser.close();
 const failed = results.filter(result => !result.ok);
 console.log(`\n${results.length} checks · ${results.length - failed.length} passed · ${failed.length} failed`);
