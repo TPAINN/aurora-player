@@ -23,7 +23,20 @@ const writeCache = (key, value, ttlMs = 1000 * 60 * 30) => {
 // Catalogue titles often carry descriptors that uploads leave out: "(Original Mix)",
 // "- Radio Edit", "(2011 Remaster)", "(feat. X)". They are neutral for matching;
 // a named remix, extended or club mix, live or altered version is not, and stays in the title.
-const NEUTRAL_DESCRIPTOR = /^(?:(?:\d{4}\s+)?(?:digital(?:ly)?\s+)?remaster(?:ed)?(?:\s+\d{4})?(?:\s+version)?|(?:original|radio|album|single|main)\s+(?:mix|edit|version|cut)|radio edit|explicit|clean|(?:feat\.?|ft\.?|featuring|with)\s+.+)$/i;
+// A tag that marks a different recording is never neutral.
+const DIFFERENT_RECORDING = /\b(?:remix|rmx|live|acoustic|demo|instrumental|karaoke|extended|club|dub|slowed|sped|nightcore|cover|unplugged|reprise|version by)\b/i;
+const NEUTRAL_TAGS = [
+  /\bremaster(?:ed)?\b/i,                                         // "2009 Remaster", "Buddha Remastered 2001"
+  /^(?:mono|stereo)(?:\s+(?:mix|version))?$/i,
+  /^(?:original|radio|album|single|main|lp|45)\s+(?:mix|edit|version|cut)$/i,
+  /^radio edit$/i,
+  /^(?:explicit|clean)(?:\s+version)?$/i,
+  /^bonus(?:\s+track)?$/i,
+  /^from\s+.+/i,                                                   // From "Titanic"
+  /^(?:feat\.?|ft\.?|featuring|with)\s+.+/i,
+];
+const isNeutral = tag => !DIFFERENT_RECORDING.test(tag) && NEUTRAL_TAGS.some(pattern => pattern.test(tag));
+const NEUTRAL_DESCRIPTOR = { test: tag => isNeutral(String(tag).trim()) };
 // Extended, club and dub mixes are separate recordings with their own intros and outros.
 const ALTERNATE_MIX = /\b(?:extended|club|dub)\s+(?:mix|edit|version|cut)\b/;
 const unaskedMix = (candidateText, requested) => ALTERNATE_MIX.test(candidateText) && !ALTERNATE_MIX.test(cleanMatchText(requested));

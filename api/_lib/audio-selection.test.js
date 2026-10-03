@@ -82,3 +82,25 @@ test('asking for the instrumental is understood from search words', async () => 
   assert.equal(requestedVariant('blinding lights karaoke'), 'instrumental');
   assert.equal(requestedVariant('blinding lights acapella'), 'acapella');
 });
+
+test('label, year and format tags are neutral too', async () => {
+  const { coreTitle } = await import('../video/search.js');
+  const cases = {
+    'Ooh Baby Baby (Buddha Remastered 2001)': 'Ooh Baby Baby',
+    'Heroes (2017 Remaster)': 'Heroes',
+    'Yesterday - Remastered 2009': 'Yesterday',
+    'Wouldn\'t It Be Nice (Mono)': 'Wouldn\'t It Be Nice',
+    'Let It Be (Stereo Mix)': 'Let It Be',
+    'Superstition (Single Version)': 'Superstition',
+    'Respect (Album Version)': 'Respect',
+    'Space Oddity (2015 Remastered Version)': 'Space Oddity',
+    'Stay With Me (Bonus Track)': 'Stay With Me',
+    'My Heart Will Go On (From "Titanic")': 'My Heart Will Go On',
+    'Song 2 [Remastered]': 'Song 2',
+  };
+  for (const [title, core] of Object.entries(cases)) assert.equal(coreTitle(title), core, title);
+  // Still different recordings: kept.
+  assert.equal(coreTitle('Heroes (Live)'), 'Heroes (Live)');
+  assert.equal(coreTitle('Titanium (David Guetta Remix)'), 'Titanium (David Guetta Remix)');
+  assert.equal(coreTitle('Blue (Extended Mix)'), 'Blue (Extended Mix)');
+});
