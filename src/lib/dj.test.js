@@ -202,17 +202,23 @@ test('a late or early incoming beat is pulled back onto the grid', async () => {
   assert.equal(phaseOffset({ inPosition: 10, inGrid: null, outPosition: 20, outGrid: grid, outRate: 1 }), null);
 });
 
-test('blends last 5–10 seconds, in whole bars when the beat is known', () => {
+test('blends run in whole phrases: the longest 4, 8 or 16 bars that fit, up to 32 s', () => {
+  // 120 BPM: a bar is 2 s, so 4 / 8 / 16 bars are 8 / 16 / 32 s.
+  const at = (bpm, target) => planTransition({ bpm, confidence: .9 }, { bpm, confidence: .9 }, target).seconds;
+  assert.equal(at(120, 40), 32, 'room for 16 bars: 16 bars');
+  assert.equal(at(120, 31), 16, 'just short of 16 bars: 8 bars, never a ragged 15');
+  assert.equal(at(120, 12), 8, 'room for 4 bars: 4 bars');
+  assert.equal(at(120, 7), 6, 'no room for a phrase: the longest whole bars that fit, never under 5 s');
+  assert.equal(at(174, 40), 240 / 174 * 16, 'fast tempo: 16 bars is only 22 s');
+  assert.equal(at(70, 40), 240 / 70 * 8, 'slow tempo: 16 bars would be 55 s, so 8 bars');
   for (const bpm of [70, 90, 120, 128, 150, 174])
-    for (const target of [5, 8, 10]) {
-      const plan = planTransition({ bpm, confidence: .9 }, { bpm, confidence: .9 }, target);
-      assert.ok(plan.seconds >= 5 - 1e-9 && plan.seconds <= 10 + 1e-9, `${bpm} bpm, ${target} s → ${plan.seconds}`);
-      const bars = plan.seconds * bpm / 240;
-      assert.ok(Math.abs(bars - Math.round(bars)) < 1e-9 || Math.abs(plan.seconds - 10) < 1e-9 || Math.abs(plan.seconds - 5) < 1e-9);
+    for (const target of [5, 8, 16, 32]) {
+      const seconds = at(bpm, target);
+      assert.ok(seconds >= 5 - 1e-9 && seconds <= 32 + 1e-9, `${bpm} bpm, ${target} s → ${seconds}`);
+      const bars = seconds * bpm / 240;
+      assert.ok(Math.abs(bars - Math.round(bars)) < 1e-9 || Math.abs(seconds - 5) < 1e-9, `${bpm} bpm ${target} s → ${bars} bars`);
     }
-  const long = planTransition({ bpm: 120, confidence: .9 }, { bpm: 120, confidence: .9 }, 10);
-  assert.equal(long.seconds, 10);
-  assert.equal(planTransition(null, null, 8).seconds, 8);
+  assert.equal(planTransition(null, null, 8).seconds, 8, 'unknown tempo: the requested length');
   assert.equal(planOnlineCue(200, [], 8).seconds, 8);
 });
 
@@ -278,11 +284,12 @@ test('song A leaves when its last full-energy section ends, not deep in the fade
 
 test('auto blend length prefers the longest blend the music leaves room for', async () => {
   const { adaptiveBlend } = await import('./dj.js');
-  assert.equal(adaptiveBlend({}), 10, 'nothing in the way: the longest');
+  assert.equal(adaptiveBlend({}), 32, 'nothing in the way: the longest, 32 s');
+  assert.equal(adaptiveBlend({}, 16), 16, 'online, without an EQ to share the spectrum: at most 16 s');
   assert.equal(adaptiveBlend({ outroSpan: 7.2 }), 7.2, 'song A starts singing again 7.2 s before its end');
-  assert.equal(adaptiveBlend({ outroSpan: 30, introSpan: 6.5 }), 6.5, 'song B sings after 6.5 s');
+  assert.equal(adaptiveBlend({ outroSpan: 30, introSpan: 21 }), 21, 'song B sings after 21 s');
   assert.equal(adaptiveBlend({ outroSpan: 2, introSpan: 3 }), 5, 'never shorter than five seconds');
-  assert.equal(adaptiveBlend({ outroSpan: Infinity, introSpan: NaN }), 10);
+  assert.equal(adaptiveBlend({ outroSpan: Infinity, introSpan: NaN }), 32);
 });
 
 test('online outro and intro spans come from genuinely timed lyrics only', async () => {
@@ -330,4 +337,44 @@ test('the bass swap lands on a bar line of the outgoing song', async () => {
   assert.equal(swapTime({ now: 100, seconds: 8, outPosition: 61.3, outGrid: null, rate: 1 }), 104);
   const late = swapTime({ now: 100, seconds: 5, outPosition: 0.9, outGrid: { origin: 0, period: 1 }, rate: 1 });
   assert.ok(late >= 100 + 5 * .3 && late <= 100 + 5 * .7, String(late));
+});
+
+test('a long blend holds both songs through the middle and keeps its loudness', async () => {
+  const { blendCurve } = await import('./dj.js');
+  for (const seconds of [8, 16, 24, 32]) {
+    assert.deepEqual(blendCurve(0, seconds), [1, 0]);
+    const [endOut, endIn] = blendCurve(1, seconds);
+    assert.ok(endOut < 1e-9 && Math.abs(endIn - 1) < 1e-9, `${seconds} s ends on song B alone`);
+    let previous = blendCurve(0, seconds);
+    for (let i = 1; i <= 200; i++) {
+      const current = blendCurve(i / 200, seconds);
+      assert.ok(current[0] <= previous[0] + 1e-12 && current[1] >= previous[1] - 1e-12, `${seconds} s monotonic at ${i}`);
+      const power = current[0] ** 2 + current[1] ** 2;
+      assert.ok(power >= 1 - 1e-9 && power <= 1.26 + 1e-9, `${seconds} s power ${power.toFixed(3)} at ${i / 200}`);
+      previous = current;
+    }
+  }
+  // 32 s: song B is in by a third of the way; song A holds until two thirds.
+  assert.ok(blendCurve(.34, 32)[1] > .7, 'B in early');
+  assert.ok(blendCurve(.66, 32)[0] > .7, 'A held through the middle');
+  assert.ok(blendCurve(.5, 32).every(level => level > .7), 'both at full body mid-blend');
+  // 8 s keeps the short shape: A still near full a fifth of the way in.
+  assert.ok(blendCurve(.2, 8)[0] > .95);
+});
+
+test('tempo is read precisely enough to hold a 16-bar blend together', async () => {
+  const { estimateTempo } = await import('./dj.js');
+  const rate = 22050;
+  for (const bpm of [96.37, 122.1, 127.93, 140.6]) {
+    const seconds = 24, data = new Float32Array(rate * seconds);
+    for (let beat = 0; beat * 60 / bpm < seconds - .2; beat++) {
+      const start = Math.round(beat * 60 / bpm * rate);
+      for (let i = 0; i < rate * .12 && start + i < data.length; i++) data[start + i] += Math.sin(2 * Math.PI * 60 * i / rate) * Math.exp(-i / rate * 30) * (beat % 4 === 0 ? 1 : .7);
+    }
+    const found = estimateTempo(data, rate);
+    // 0.02 % keeps two songs within 6 ms over a 32-second blend. A half- or
+    // double-time reading is the same grid (the planner matches octaves).
+    const error = Math.min(...[bpm, bpm / 2, bpm * 2].map(value => Math.abs(found.bpm / value - 1)));
+    assert.ok(error < .0002, `${bpm} read as ${found.bpm}`);
+  }
 });
