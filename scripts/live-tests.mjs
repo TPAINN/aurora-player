@@ -53,7 +53,7 @@ function fakeYouTube() {
     loadVideoById(id, start = 0) { if (JSON.parse(localStorage.getItem('refused') || '[]').includes(id)) { this.vid = id; log('refused', id); setTimeout(() => this.o.events.onError?.({ target: this, data: 150 }), 120); return; } this.vid = id; this.t = start; this.dur = Number(JSON.parse(localStorage.getItem('durations') || '{}')[id] || 60); log('load', id, this.muted, start); this.set(3); setTimeout(() => this.set(1), 250); }
     playVideo() { log('play', this.vid, this.muted); setTimeout(() => this.set(1), 150); }
     pauseVideo() { log('pause', this.vid); this.set(2); }
-    stopVideo() { this.set(5); } seekTo(t) { log('seek', this.vid, Math.round(t * 10) / 10); this.t = t; }
+    stopVideo() { log('stop', this.vid); this.set(5); } seekTo(t) { log('seek', this.vid, Math.round(t * 10) / 10); this.t = t; }
     getCurrentTime() { return this.t; } getDuration() { return this.dur; } getPlayerState() { return this.state; }
     setVolume(v) { this.vol = v; window.__vols.push([Math.round(performance.now()), this.vid, Math.round(v)]); } mute() { this.muted = true; } unMute() { this.muted = false; }
     setPlaybackRate(r) { const applied = fine === '3' ? Math.round(r / .05) * .05 : fine ? r : coarse.reduce((best, rate) => Math.abs(rate - r) < Math.abs(best - r) ? rate : best, 1); this.rate = applied; log('rate', this.vid, applied); } getPlaybackRate() { return this.rate; }
@@ -910,6 +910,47 @@ if (!only || only === 'J') {
   await check('J', 'spamming open/close never re-decodes artwork colours', async () => ok(probe.decodes === 0, JSON.stringify(probe)));
   await check('J', 'spamming open/close never stacks two players', async () => ok(probe.maxOpen === 1, JSON.stringify(probe)));
   await check('J', 'no runtime errors while spamming the player', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+
+if (!only || only === 'K') {
+  // Changing song by hand never leaves silence: the playing song keeps sounding until
+  // the new one plays, then fades out under it.
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 } });
+  await page.goto(BASE); await wait(500); await startQueue(page, ['Morning Light']); await wait(1500);
+  const mark = await page.evaluate(() => performance.now());
+  await page.click('.dock-transport button[aria-label="Next track"]'); await wait(2600);
+  const rows = (await events(page)).filter(row => row[0] > mark);
+  const vols = await page.evaluate(m => window.__vols.filter(v => v[0] > m), mark);
+  const startB = rows.find(row => row[1] === 'load' && row[2] === 'BBBBBBBBBBB');
+  const silencedA = rows.find(row => (row[1] === 'stop' || row[1] === 'pause') && row[2] === 'AAAAAAAAAAA');
+  await check('K', 'the new song is playing', async () => ok((await title(page)).startsWith('Morning Light') && startB, JSON.stringify(rows.slice(0, 8))));
+  await check('K', 'a manual change never cuts the playing song before the new one sounds', async () => ok(!silencedA || silencedA[0] > startB[0] + 250, JSON.stringify(rows.slice(0, 10))));
+  await check('K', 'the old song fades out under the new one', async () => { const a = vols.filter(v => v[1] === 'AAAAAAAAAAA' && v[2] > 0 && v[2] < 75); const b = vols.filter(v => v[1] === 'BBBBBBBBBBB' && v[2] > 0 && v[2] < 75); ok(a.length >= 3 && b.length >= 3, `A:${a.length} B:${b.length}`); });
+  await check('K', 'the old song is stopped once the fade completes', async () => ok(silencedA, 'old deck still running'));
+  await check('K', 'no runtime errors on a gapless change', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'K') {
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 } });
+  await page.goto(BASE); await wait(500); await startQueue(page, ['Morning Light', 'Slow Tide']); await wait(1500);
+  const mark = await page.evaluate(() => performance.now());
+  await page.evaluate(() => { const next = document.querySelector('.dock-transport button[aria-label="Next track"]'); next.click(); setTimeout(() => next.click(), 80); });
+  await wait(2800);
+  const rows = (await events(page)).filter(row => row[0] > mark);
+  const startC = rows.find(row => row[1] === 'load' && row[2] === 'CCCCCCCCCCC');
+  const silencedA = rows.find(row => (row[1] === 'stop' || row[1] === 'pause') && row[2] === 'AAAAAAAAAAA');
+  await check('K', 'skipping twice in a row lands on the right song', async () => ok((await title(page)).startsWith('Slow Tide') && startC, `${await title(page)} ${JSON.stringify(rows.slice(0, 10))}`));
+  await check('K', 'skipping twice keeps the first song sounding until the last one plays', async () => ok(!silencedA || silencedA[0] > startC[0] + 250, JSON.stringify(rows.slice(0, 12))));
+  // Pause while a change is still crossing: neither deck may keep playing.
+  await page.evaluate(() => { document.querySelector('.dock-transport button[aria-label="Previous track"]').click(); });
+  await wait(700);
+  await page.evaluate(() => document.querySelector('.dock-transport button[aria-label="Pause"]')?.click()); await wait(1500);
+  await check('K', 'pausing mid-change leaves no deck playing', async () => {
+    const audible = await page.evaluate(() => [...document.querySelectorAll('.yt-deck iframe, iframe')].length && (window.__events || []).reduce((state, row) => { if (['play', 'load'].includes(row[1])) state[row[2]] = 'on'; if (['pause', 'stop'].includes(row[1])) state[row[2]] = 'off'; return state; }, {}));
+    ok(Object.entries(audible).every(([, state]) => state === 'off'), JSON.stringify(audible));
+  });
+  await check('K', 'no runtime errors while skipping fast', async () => ok(!errors.length, errors.join(' | ')));
   await context.close();
 }
 
