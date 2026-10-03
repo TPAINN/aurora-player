@@ -7,6 +7,7 @@ import {
   useMotionValue,
   useSpring,
   useTransform,
+  useIsPresent,
   useReducedMotion,
   usePresence,
 } from "framer-motion";
@@ -49,7 +50,7 @@ import { useNavigation } from "./hooks/useNavigation";
 import { getCollection, getFeaturedTracks, getMoodTracks, getSimilarTracks, searchCatalog } from "./lib/catalog";
 import { MOODS } from "../shared/moods.js";
 import { detectLanguage } from "../shared/language.js";
-import { extractColors } from "../shared/palette";
+import { artworkLuma, extractColors } from "../shared/palette";
 import { requestedVariant } from "../shared/audio-variants.js";
 import { artworkAt, artworkSrcSet } from "./lib/artwork";
 import { qualityLabel } from "./lib/audio-format";
@@ -380,6 +381,8 @@ function LikeHeart({ liked, size = 24 }) {
     </span>
   );
 }
+// Keyed by the song: a new song starts with a fresh slider, so a drag in progress,
+// a pending seek or the bar's transition never carry over from the previous one.
 function Seek({ player }) {
   // Dragging previews locally and seeks once on release; seeking YouTube on every
   // input event stutters playback and cancels DJ preparation repeatedly.
@@ -393,10 +396,32 @@ function Seek({ player }) {
   const zoneLabel = zone
     ? `DJ transition from ${formatTime(zone.start)} to ${formatTime(zone.end)}${zone.ready ? ", next track ready" : ""}`
     : undefined;
-  const commit = () => {
-    if (drag === null) return;
-    player.seek(drag);
+  // Only a held pointer previews; a tap, click or key seeks at once. Touch can
+  // deliver pointerup before the value changes, and a drag can end off the rail,
+  // so the release is also caught on the window.
+  const held = useRef(false);
+  const pending = useRef(null);
+  const commit = useCallback(() => {
+    held.current = false;
+    if (pending.current === null) return;
+    const value = pending.current;
+    pending.current = null;
+    player.seek(value);
     setDrag(null);
+  }, [player]);
+  useEffect(() => {
+    if (drag === null) return undefined;
+    window.addEventListener("pointerup", commit);
+    window.addEventListener("pointercancel", commit);
+    return () => {
+      window.removeEventListener("pointerup", commit);
+      window.removeEventListener("pointercancel", commit);
+    };
+  }, [drag, commit]);
+  const change = (next) => {
+    pending.current = next;
+    if (held.current) setDrag(next);
+    else commit();
   };
   return (
     <div className="seek-control">
@@ -441,9 +466,9 @@ function Seek({ player }) {
           step="0.1"
           value={value}
           className={drag !== null ? "dragging" : ""}
-          onChange={(e) => setDrag(Number(e.target.value))}
+          onChange={(e) => change(Number(e.target.value))}
+          onPointerDown={() => { held.current = true; }}
           onPointerUp={commit}
-          onKeyUp={commit}
           onBlur={commit}
           style={{ "--progress": `${Math.min(100, (value / duration) * 100)}%` }}
         />
@@ -572,9 +597,22 @@ function ArtBackdrop({ player }) {
   const peak = useStore(player.clock, (value) => peaks.length > 0 && isPeakAt(peaks, value + offset));
   const artwork = player.track?.artwork;
   const blend = player.changeKind === "blend";
+  // Every artwork sits at the same perceived brightness: bright covers are eased
+  // down and dark ones lifted, from the cover's measured mean luminance.
+  const [exposure, setExposure] = useState({ artwork: null, value: 1 });
+  useEffect(() => {
+    if (!artwork) return undefined;
+    let live = true;
+    extractColors(artwork).then(() => {
+      const light = artworkLuma(artwork);
+      if (live && light !== null) setExposure({ artwork, value: Math.min(1.45, Math.max(0.72, 0.36 / Math.max(light, 0.05))) });
+    });
+    return () => { live = false; };
+  }, [artwork]);
+  const level = exposure.artwork === artwork ? exposure.value : 1;
   return (
     <>
-      <div className={`player-art-background ${peak ? "is-peak" : ""}`}>
+      <div className={`player-art-background ${peak ? "is-peak" : ""}`} style={{ "--art-exposure": level.toFixed(3) }}>
         <AnimatePresence initial={false}>
           {artwork && (
             <Motion.div
@@ -595,6 +633,10 @@ function ArtBackdrop({ player }) {
 
 function Lyrics({ player }) {
   const reduce = useReducedMotion();
+  // While a song's lyrics fade out after a hand-over, the shared clock already
+  // belongs to the next song: the outgoing words hold their last state.
+  const present = useIsPresent();
+  const held = useRef(null);
   // State, not a ref: the list mounts after the loading state finishes exiting,
   // and the painter must start once the node actually exists.
   const container = useRef(null);
@@ -614,6 +656,7 @@ function Lyrics({ player }) {
   const lead = reduce ? 0 : LINE_LEAD;
   // Re-render only when the active line or interlude state changes, not every clock tick.
   const position = useStore(player.clock, (value) => {
+    if (!present && held.current) return held.current;
     const adjusted = value + offset;
     let current = -1;
     if (timed)
@@ -630,7 +673,8 @@ function Lyrics({ player }) {
       end - start > 4 &&
       adjusted >= start + 0.4 &&
       adjusted < end - 0.5;
-    return `${current}:${gap ? 1 : 0}`;
+    held.current = `${current}:${gap ? 1 : 0}`;
+    return held.current;
   });
   const active = Number(position.split(":")[0]);
   const inGap = position.endsWith(":1");
@@ -641,7 +685,7 @@ function Lyrics({ player }) {
   useEffect(() => {
     const box = container.current;
     const target = activeRef.current;
-    if (!following || !box || !target) return;
+    if (!following || !box || !target || !present) return;
     const top = Math.max(0, target.offsetTop + target.offsetHeight / 2 - box.clientHeight * 0.4);
     stopScroll();
     if (reduce) {
@@ -657,7 +701,7 @@ function Lyrics({ player }) {
       },
     });
     return stopScroll;
-  }, [mountedList, active, following, reduce, inGap]);
+  }, [mountedList, active, following, reduce, inGap, present]);
   // Edge fading via visibility classes: a mask on the scrolling list forced the
   // whole list to re-rasterise on every painted word.
   useEffect(() => {
@@ -671,7 +715,7 @@ function Lyrics({ player }) {
   }, [mountedList, lines]);
   const { getPlaybackTime, lyricsOffset = 0, lyricsLoading } = player;
   useEffect(() => {
-    if (!mountedList || !timed || lyricsLoading) return;
+    if (!mountedList || !timed || lyricsLoading || !present) return;
     const nodes = Array.from(mountedList.querySelectorAll(".lyric-line"));
     const words = nodes.map((line) => Array.from(line.querySelectorAll(".word-fill")));
     // Each line is painted for as long as any of its words is sung: backing
@@ -717,7 +761,7 @@ function Lyrics({ player }) {
     };
     paint();
     return () => cancelAnimationFrame(frame);
-  }, [mountedList, getPlaybackTime, lines, lyricsOffset, lyricsLoading, timed, reduce]);
+  }, [mountedList, getPlaybackTime, lines, lyricsOffset, lyricsLoading, timed, reduce, present]);
   const releaseFollow = () => {
     stopScroll();
     setFollowing(false);
@@ -1120,6 +1164,7 @@ export default function App() {
   const [recent, setRecent] = useState(() => readSaved("aurora-recent"));
   const [color, setColor] = useState("153, 93, 62");
   const [featureIndex, setFeatureIndex] = useState(0);
+  const carouselSwiped = useRef(false);
   const searchRef = useRef(null);
   // The search page animates in after the previous page leaves, so focus is
   // requested here and applied when the field actually mounts.
@@ -1207,10 +1252,31 @@ export default function App() {
       });
     return () => controller.abort();
   }, [mood, listeningLang]);
-  // Each screen starts at its top: opening the player or a page never inherits scroll.
+  // Each screen starts at its top: a page never inherits scroll, and the player opens
+  // at its top and gives the page back where it was. The position is tracked from
+  // scroll events, so opening and closing force no layout when nothing is scrolled.
+  const scrollY = useRef(0);
+  const pageScroll = useRef(0);
   useEffect(() => {
-    window.scrollTo({ top: 0, behavior: "instant" });
-  }, [immersive, page, collection]);
+    const track = () => { scrollY.current = window.scrollY; };
+    window.addEventListener("scroll", track, { passive: true });
+    return () => window.removeEventListener("scroll", track);
+  }, []);
+  useEffect(() => {
+    pageScroll.current = 0;
+    if (scrollY.current) window.scrollTo({ top: 0, behavior: "instant" });
+  }, [page, collection]);
+  useEffect(() => {
+    if (immersive) {
+      pageScroll.current = scrollY.current;
+      if (scrollY.current) window.scrollTo({ top: 0, behavior: "instant" });
+      return undefined;
+    }
+    const back = pageScroll.current;
+    if (!back) return undefined;
+    const frame = requestAnimationFrame(() => window.scrollTo({ top: back, behavior: "instant" }));
+    return () => cancelAnimationFrame(frame);
+  }, [immersive]);
   // Home adapts to what this listener plays, finishes and likes (all on-device).
   // Seeds come from listening history, then liked and recently played songs.
   const tasteList = useMemo(() => [...favorites, ...recent], [favorites, recent]);
@@ -1997,7 +2063,9 @@ export default function App() {
                 className={page === id && !immersive ? "selected" : ""}
                 onClick={() => navigate(id)}
               >
-                {page === id && !immersive && (
+                {/* Stays mounted while the player is open (hidden by CSS): opening the
+                    player then never triggers a shared-layout measurement. */}
+                {page === id && (
                   <Motion.span layoutId="sidebar-pill" className="nav-pill" transition={PILL_SPRING} />
                 )}
                 <Icon size={21} />
@@ -2145,7 +2213,11 @@ export default function App() {
                     <div className="stage-aura" />
                     {heroTrack ? (
                       <>
-                        <div className="stage-copy">
+                        <div
+                          className="stage-copy"
+                          // A long single-word name scales down to stay on one line on phones.
+                          style={{ "--title-fit": Math.min(1, Math.max(0.6, 10 / Math.max(1, ...String(heroTrack.artist || "").split(/\s+/).map((word) => word.length)))).toFixed(3) }}
+                        >
                           <span className="feature-label">
                             <span /> {moodMode ? `${activeMood.label} · picked for you` : personalized ? "Picked for you" : "In the spotlight"}
                           </span>
@@ -2164,7 +2236,25 @@ export default function App() {
                             An entirely different kind of listening.
                           </span>
                         </div>
-                        <div className="cover-carousel">
+                        {/* Swipe sideways to browse (a long fling skips two); the tap
+                            that ends a swipe never plays a song. */}
+                        <Motion.div
+                          className="cover-carousel"
+                          drag={reduce ? false : "x"}
+                          dragConstraints={{ left: 0, right: 0 }}
+                          dragElastic={0.22}
+                          dragDirectionLock
+                          dragMomentum={false}
+                          onDragStart={() => { carouselSwiped.current = true; }}
+                          onDragEnd={(_, info) => {
+                            const distance = info.offset.x, speed = info.velocity.x;
+                            if (Math.abs(distance) > 46 || Math.abs(speed) > 420) {
+                              const step = (Math.abs(distance) > 190 || Math.abs(speed) > 1500 ? 2 : 1) * (distance < 0 ? 1 : -1);
+                              setFeatureIndex((carouselIndex + step + featured.length * 2) % featured.length);
+                            }
+                            setTimeout(() => { carouselSwiped.current = false; }, 0);
+                          }}
+                        >
                           {carousel.map(({ track, offset }) => (
                             <Motion.button
                               key={track.id}
@@ -2183,16 +2273,12 @@ export default function App() {
                               }
                               className={`carousel-card offset-${offset < 0 ? `minus${Math.abs(offset)}` : offset}`}
                               style={{ "--offset": offset }}
-                              onClick={() =>
-                                offset === 0
-                                  ? play(track)
-                                  : setFeatureIndex(
-                                      (carouselIndex +
-                                        offset +
-                                        featured.length) %
-                                        featured.length,
-                                    )
-                              }
+                              onClick={() => {
+                                if (carouselSwiped.current) return;
+                                if (offset === 0) play(track);
+                                else setFeatureIndex((carouselIndex + offset + featured.length) % featured.length);
+                              }}
+                              draggable={false}
                               aria-label={`${offset === 0 ? "Play" : "Discover"} ${track.title} by ${track.artist}`}
                             >
                               <Cover track={track} eager />
@@ -2202,7 +2288,7 @@ export default function App() {
                               </span>
                             </Motion.button>
                           ))}
-                        </div>
+                        </Motion.div>
                         <div className="stage-navigation">
                           <span>
                             {String(carouselIndex + 1).padStart(2, "0")}
@@ -2213,7 +2299,7 @@ export default function App() {
                             label="Previous featured track"
                             onClick={() =>
                               setFeatureIndex(
-                                (featureIndex - 1 + featured.length) %
+                                (carouselIndex - 1 + featured.length) %
                                   featured.length,
                               )
                             }
@@ -2224,7 +2310,7 @@ export default function App() {
                             label="Next featured track"
                             onClick={() =>
                               setFeatureIndex(
-                                (featureIndex + 1) % featured.length,
+                                (carouselIndex + 1) % featured.length,
                               )
                             }
                           >
@@ -2588,7 +2674,7 @@ export default function App() {
                       </button>
                     </div>
                     <DjPill player={player} onClick={() => setSheet("dj")} label="DJ transition settings" />
-                    <Seek player={player} />
+                    <Seek key={player.track?.id || "idle"} player={player} />
                     <Transport player={player} large />
                     <Motion.button
                       drag="y"
@@ -2667,7 +2753,7 @@ export default function App() {
             )}
           </Motion.button>
           <div className="dock-seek">
-            <Seek player={player} />
+            <Seek key={player.track?.id || "idle"} player={player} />
           </div>
           <div className="dock-actions">
             <IconButton
