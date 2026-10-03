@@ -5,7 +5,7 @@ import { songKey } from '../../shared/titles.js';
 import { buildApiUrl } from '../lib/api';
 import { getSimilarTracks, getTrackTempo } from '../lib/catalog';
 import { pickSeed, recordListening, tasteFilter } from '../lib/listening';
-import { swapTime, adaptiveBlend, analyzeLocalTempo, beatAlignedEntry, blendCurve, vocalSpans, chooseEntry, equalPower, glideRate, nudgePlan, phaseOffset, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
+import { MAX_BLEND, MIN_BLEND, ONLINE_MAX_BLEND, swapTime, adaptiveBlend, analyzeLocalTempo, beatAlignedEntry, blendCurve, vocalSpans, chooseEntry, equalPower, glideRate, nudgePlan, phaseOffset, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
 import { playSweep } from '../lib/sweep';
 import { nextPlayable } from '../lib/queue';
 import { detectLanguage } from '../../shared/language.js';
@@ -88,7 +88,7 @@ const LATE_PRIME = 1.5;
 const SHORT_BLEND = 2.5;
 const START_TIMEOUT = 3000;
 // Blend lengths offered: 5–10 s, the range a DJ would ride two songs together.
-const BLENDS = ['auto', 5, 8, 10];
+const BLENDS = ['auto', 8, 16, 32];
 const readBlend = value => (value === 'auto' ? 'auto' : BLENDS.includes(Number(value)) ? Number(value) : 'auto');
 // Some embeds only play whole 0.05 speed steps; tempo plans then use that grid.
 const RATE_STEP = .05;
@@ -285,9 +285,14 @@ export function usePlayer() {
   }, []);
   // The blend length to aim for: a fixed choice, or Auto — the longest the music
   // leaves room for (5–10 s), measured from the songs themselves.
-  const blendTarget = useCallback(spans => {
+  // Online songs cannot be filtered, so their blends stop at 16 s; and a blend never
+  // takes more than a quarter of either song, so short songs keep their body.
+  const blendTarget = useCallback((spans, { online = false, lengths = [] } = {}) => {
+    const longest = online ? ONLINE_MAX_BLEND : MAX_BLEND;
     const choice = preferences.current.blendLength;
-    return choice === 'auto' ? adaptiveBlend(spans) : choice;
+    const wanted = choice === 'auto' ? adaptiveBlend(spans, longest) : Math.min(longest, choice);
+    const quarter = Math.min(...lengths.filter(value => value > 0).map(value => value / 4));
+    return Math.max(MIN_BLEND, Math.min(wanted, quarter));
   }, []);
   const setIdle = useCallback((label = IDLE.label) => {
     if (mounted.current) announce({ ...IDLE, label, mode: source.current === 'local' ? 'local' : 'online', progress: 0 });
@@ -941,7 +946,7 @@ export function usePlayer() {
     mix.current = token;
     const from = analysis.current.get(current.current.track?.id);
     const to = analysis.current.get(selected.id);
-    const plan = planTransition(from?.outro, to?.intro, blendTarget({ outroSpan: from ? from.duration - from.mixStart : Infinity }));
+    const plan = planTransition(from?.outro, to?.intro, blendTarget({}, { lengths: [from?.duration, to?.duration] }));
     try {
       if (incoming.element.src !== selected.localUrl) incoming.element.src = selected.localUrl;
       incoming.element.playbackRate = plan.inRate; incoming.element.preservesPitch = true;
@@ -958,7 +963,7 @@ export function usePlayer() {
       const outCurve = new Float32Array(65), inCurve = new Float32Array(65);
       for (let i = 0; i < outCurve.length; i++) {
         // Song B rises under a held song A, then song A gives way: no loudness hole.
-        const [out, input] = blendCurve(i / 64);
+        const [out, input] = blendCurve(i / 64, seconds);
         outCurve[i] = out * volume; inCurve[i] = input * volume;
       }
       outgoing.gain.gain.cancelScheduledValues(now); incoming.gain.gain.cancelScheduledValues(now);
@@ -1035,16 +1040,17 @@ export function usePlayer() {
     // Finish any glide the pre-roll could not complete (for example after a late seek).
     const glide = smoothstep(progress * 2);
     setRate(outgoing.element, activeMix.startRate + (plan.rate - activeMix.startRate) * glide, glide >= 1 ? 0 : RATE_GRAIN);
-    // Beat lock: once B has settled (play() latency), its slip against A's grid is
-    // measured at rest and closed with one short push; one re-check afterwards.
-    if (plan.matched) {
+    // Beat lock, as a DJ keeps a long mix locked: once B has settled (play()
+    // latency), its slip against A's grid is measured at rest and closed with one
+    // short push; then re-checked every 4 s through the blend (tiny tempo-read
+    // errors add up over 16 bars), until song A starts to leave.
+    if (plan.matched && progress < .85) {
       const now = context.current.currentTime;
-      const lock = activeMix.lock ??= { checks: 0, until: 0, next: activeMix.started + .35 };
-      if (lock.until && now >= lock.until) { setRate(incoming.element, plan.inRate, 0); lock.until = 0; lock.next = now + .5; }
-      else if (!lock.until && lock.checks < 2 && now >= lock.next) {
-        lock.checks++;
+      const lock = activeMix.lock ??= { until: 0, next: activeMix.started + .35 };
+      if (lock.until && now >= lock.until) { setRate(incoming.element, plan.inRate, 0); lock.until = 0; lock.next = now + .6; }
+      else if (!lock.until && now >= lock.next) {
         const push = nudgePlan(phaseOffset({ inPosition: incoming.element.currentTime, inGrid: to?.intro?.grid, outPosition: outgoing.element.currentTime, outGrid: from?.outro?.grid, outRate: outgoing.element.playbackRate, inRate: plan.inRate }), plan.inRate);
-        if (push) { setRate(incoming.element, push.rate, 0); lock.until = now + push.seconds; } else lock.checks = 2;
+        if (push) { setRate(incoming.element, push.rate, 0); lock.until = now + push.seconds; } else lock.next = now + 4;
       }
     }
   }, [cancelMix, setIdle, mixProgress]);
@@ -1093,7 +1099,7 @@ export function usePlayer() {
     }
     if (blend.stage === 'mixing') {
       const progress = Math.min(1, (performance.now() - blend.started) / (blend.seconds * 1000));
-      const [out, input] = preferences.current.djEnabled ? blendCurve(progress) : equalPower(progress);
+      const [out, input] = preferences.current.djEnabled ? blendCurve(progress, blend.seconds) : equalPower(progress);
       // YouTube volume is whole percent: send only real changes, at display rate.
       const outLevel = Math.round(volume * out), inLevel = Math.round(volume * input);
       if (outLevel !== blend.outLevel) { blend.outLevel = outLevel; blend.outgoing?.setVolume?.(outLevel); }
@@ -1168,7 +1174,7 @@ export function usePlayer() {
       if (!element || element.paused || !selected.localUrl || !Number.isFinite(element.duration)) return;
       const remaining = element.duration - element.currentTime;
       const from = analysis.current.get(state.track?.id);
-      const plan = planTransition(from?.outro, analysis.current.get(selected.id)?.intro, blendTarget({ outroSpan: from ? from.duration - from.mixStart : Infinity }));
+      const plan = planTransition(from?.outro, analysis.current.get(selected.id)?.intro, blendTarget({}, { lengths: [from?.duration, analysis.current.get(selected.id)?.duration] }));
       const start = Math.min(element.duration - plan.seconds, from?.mixStart ?? element.duration - plan.seconds);
       const rampStart = start - plan.rampSeconds;
       const standby = decks.current.find(deck => deck.element !== element);
@@ -1199,7 +1205,7 @@ export function usePlayer() {
     // Auto: fit the blend between song A's last sung word and song B's first.
     const timed = lyricsData => (lyricsData?.sync && lyricsData.sync !== 'plain' ? lyricsData.lines : []);
     const spans = vocalSpans({ duration: length, outLines: timed(state.lyrics), inLines: timed(prepared.current.get(selected.id)?.lyrics), entry: 0 });
-    const target = blendTarget({ outroSpan: spans.outroSpan - 2.5, introSpan: spans.introSpan });
+    const target = blendTarget({ outroSpan: spans.outroSpan - 2.5, introSpan: spans.introSpan }, { online: true, lengths: [length, selected.duration] });
     const tempoPlan = options => planTransition(tempoA ? { bpm: tempoA, confidence: 1 } : null, tempoB ? { bpm: tempoB, confidence: 1 } : null, target, options);
     let plan = tempoPlan();
     const rates = active.getAvailablePlaybackRates?.();

@@ -443,7 +443,7 @@ if (!only || only === 'F') {
   await check('F', 'Back closes the sheet, not the player', async () => { await page.goBack(); await wait(900); ok(await page.locator('dialog.sheet').count() === 0); ok(await page.locator('.immersive-player').count() === 1); });
   await check('F', 'settings → DJ → Back returns to settings', async () => { await page.click('button[aria-label="Player settings"]'); await wait(700); await page.click('.dj-settings-link >> nth=0'); await wait(800); await page.goBack(); await wait(800); ok(await page.locator('dialog[aria-label="Make it yours"]').count() === 1); });
   await check('F', 'closing a stacked sheet closes it completely', async () => { await page.click('.dj-settings-link >> nth=0'); await wait(700); await page.click('dialog[aria-label="DJ transition"] button[aria-label="Close DJ transition"]'); await wait(900); ok(await page.locator('dialog.sheet').count() === 0); await page.goBack(); await wait(900); ok(await page.locator('dialog.sheet').count() === 0, 'back reopened a sheet'); });
-  await check('F', 'blend length choice persists', async () => { await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(700); await page.click('.segmented [role=radio]:has-text("Long")'); ok(await page.evaluate(() => localStorage.getItem('aurora-blend')) === '10'); ok(await page.getAttribute('.segmented [role=radio]:has-text("Long")', 'aria-checked') === 'true'); await page.keyboard.press('Escape'); await wait(700); });
+  await check('F', 'blend length choice persists', async () => { await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(700); await page.click('.segmented [role=radio]:has-text("Extended")'); ok(await page.evaluate(() => localStorage.getItem('aurora-blend')) === '32'); ok(await page.getAttribute('.segmented [role=radio]:has-text("Extended")', 'aria-checked') === 'true'); await page.keyboard.press('Escape'); await wait(700); });
   await check('F', 'motion backdrop shows the blurred video behind the artwork', async () => { if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(900); } await page.click('button[aria-label="Player settings"]'); await wait(700); await page.click('button[aria-label="Motion backdrop"]'); await page.keyboard.press('Escape'); await wait(800); ok(await page.locator('.aurora-app.motion-art .video-surface.is-visible').count() === 1); ok(await page.locator('.now-playing-art').isVisible()); });
   await check('F', 'no runtime errors in discovery and navigation', async () => ok(!errors.length, errors.join(' | ')));
   await context.close();
@@ -631,10 +631,10 @@ if (!only || only === 'H') {
     ok(during === 2 && settled === 1, `during ${during}, settled ${settled}`);
     await page.click('.dock-transport button[aria-label="Play"]'); await wait(500);
   });
-  await check('H', '10 · blends last 5–10 s: Auto (default), Tight, Natural and Long', async () => {
+  await check('H', '10 · blends run in whole phrases: Auto (default), Short, Club and Extended', async () => {
     await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(800);
     const labels = await page.locator('.segmented [role=radio]').allTextContents();
-    ok(labels.join('|') === 'Auto5–10s|Tight5s|Natural8s|Long10s', labels.join('|'));
+    ok(labels.join('|') === 'AutoLongest fit|Short8s|Club16s|Extended32s', labels.join('|'));
     ok(await page.getAttribute('.segmented [role=radio]:has-text("Auto")', 'aria-checked') === 'true');
     await page.keyboard.press('Escape'); await wait(600);
   });

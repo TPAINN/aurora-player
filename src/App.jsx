@@ -2995,14 +2995,14 @@ export default function App() {
               <div className="setting-row">
                 <div>
                   <strong>Blend length</strong>
-                  <p>Auto fits the longest blend the music leaves room for, in whole bars.</p>
+                  <p>Auto picks the longest whole phrase the music leaves room for, up to 16 bars. Online songs blend up to 16 s.</p>
                 </div>
                 <div className="segmented" role="radiogroup" aria-label="Blend length">
                   {[
-                    ["auto", "Auto", "5–10s"],
-                    [5, "Tight", "5s"],
-                    [8, "Natural", "8s"],
-                    [10, "Long", "10s"],
+                    ["auto", "Auto", "Longest fit"],
+                    [8, "Short", "8s"],
+                    [16, "Club", "16s"],
+                    [32, "Extended", "32s"],
                   ].map(([seconds, label, hint]) => (
                     <button
                       key={seconds}
