@@ -383,6 +383,46 @@ function LikeHeart({ liked, size = 24 }) {
 }
 // Keyed by the song: a new song starts with a fresh slider, so a drag in progress,
 // a pending seek or the bar's transition never carry over from the previous one.
+// The queue reads like a set list: the song playing, what comes next (with its
+// length and a way to clear it), and what already played, folded away.
+function QueueSections({ player, trackRows }) {
+  const index = Math.max(0, player.queueIndex ?? 0);
+  const queue = player.queue || [];
+  const upNext = queue.slice(index + 1);
+  const played = queue.slice(0, index);
+  const minutes = Math.round(upNext.reduce((sum, track) => sum + (Number(track.duration) || 0), 0) / 60);
+  return (
+    <>
+      <section className="queue-section" aria-label="Now playing">
+        <h3 className="queue-heading">Now playing</h3>
+        {trackRows(queue.slice(index, index + 1), true, undefined, index)}
+      </section>
+      <section className="queue-section" aria-label="Up next">
+        <div className="queue-heading-row">
+          <h3 className="queue-heading">
+            Up next
+            <small>{upNext.length ? `${upNext.length} ${upNext.length === 1 ? "song" : "songs"} · ${minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`}` : "Nothing yet"}</small>
+          </h3>
+          {upNext.length > 0 && (
+            <button className="text-button" onClick={() => player.setQueue(queue.slice(0, index + 1))}>
+              Clear
+            </button>
+          )}
+        </div>
+        {upNext.length > 0 ? trackRows(upNext, true, undefined, index + 1) : <p className="queue-empty">{player.autoplay ? "More like this arrives as you listen." : "Add songs with + to play them next."}</p>}
+      </section>
+      {played.length > 0 && (
+        <details className="queue-section queue-played">
+          <summary className="queue-heading">
+            Recently played <small>{played.length}</small>
+          </summary>
+          {trackRows(played, true, undefined, 0)}
+        </details>
+      )}
+    </>
+  );
+}
+
 function Seek({ player }) {
   // Dragging previews locally and seeks once on release; seeking YouTube on every
   // input event stutters playback and cancels DJ preparation repeatedly.
@@ -1520,7 +1560,9 @@ export default function App() {
     player.playNext(track);
     setNotice("Plays next");
   };
-  const trackRows = (tracks, queueMode = false, context) => {
+  // In the queue, rows render a slice of it: `offset` is the slice's start in the
+  // full queue, so removing or playing a row always acts on the whole queue.
+  const trackRows = (tracks, queueMode = false, context, offset = 0) => {
     const occurrences = new Map();
     const rows = tracks.map((track, i) => {
       const occurrence = occurrences.get(track.id) || 0;
@@ -1538,7 +1580,7 @@ export default function App() {
           onDragStart={() => { swiped.current = true; }}
           onDragEnd={(_, info) => {
             if (info.offset.x < -110 || info.velocity.x < -700)
-              player.setQueue(player.queue.filter((_, index) => index !== i));
+              player.setQueue(player.queue.filter((_, index) => index !== i + offset));
             setTimeout(() => { swiped.current = false; }, 0);
           }}
           className={`track-row ${selected ? "selected" : ""} ${player.unavailable?.has(track.id) ? "is-unavailable" : ""}`}
@@ -1550,7 +1592,7 @@ export default function App() {
             className="track-main"
             onClick={() => {
               if (swiped.current) return;
-              play(track, queueMode ? tracks : context);
+              play(track, queueMode ? player.queue : context);
             }}
           >
             <span className="track-number">
@@ -1585,7 +1627,7 @@ export default function App() {
             onClick={() =>
               queueMode
                 ? player.setQueue(
-                    player.queue.filter((_, index) => index !== i),
+                    player.queue.filter((_, index) => index !== i + offset),
                   )
                 : addQueue(track)
             }
@@ -2852,7 +2894,7 @@ export default function App() {
                       {player.recommendationError}
                     </p>
                   )}
-                  {trackRows(player.queue, true)}
+                  <QueueSections player={player} trackRows={trackRows} />
                 </>
               ) : (
                 <div className="empty-state">
@@ -3060,6 +3102,30 @@ export default function App() {
                 </span>
                 <ChevronRight size={18} />
               </button>
+              <div className="setting-row">
+                <div>
+                  <strong>Loudness</strong>
+                  <p>Normal keeps a little headroom. Loud plays at full level and gently compresses your own files.</p>
+                </div>
+                <div className="segmented" role="radiogroup" aria-label="Loudness">
+                  {[
+                    ["quiet", "Quiet"],
+                    ["normal", "Normal"],
+                    ["loud", "Loud"],
+                  ].map(([level, label]) => (
+                    <button
+                      key={level}
+                      role="radio"
+                      aria-checked={player.loudness === level}
+                      className={player.loudness === level ? "selected" : ""}
+                      onClick={() => player.setLoudness(level)}
+                    >
+                      {player.loudness === level && <Motion.span layoutId="loudness-pill" className="nav-pill" transition={PILL_SPRING} />}
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div className="setting-row">
                 <div>
                   <strong>Motion backdrop</strong>

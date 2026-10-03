@@ -4574,3 +4574,75 @@ html.scroll-locked {
     font-size: calc(25px * var(--title-fit, 1));
   }
 }
+
+/* Phones with lyrics shown: the artwork sits dimmer behind the words, so a best part
+   lifts it too, not only the veil. */
+@media (max-width: 760px) {
+  .with-lyrics .player-art-background.is-peak {
+    opacity: 0.72;
+  }
+}
+
+/* Queue as a set list: now playing, up next (with its length), recently played. */
+.queue-section {
+  margin-top: 18px;
+}
+.queue-section:first-of-type {
+  margin-top: 4px;
+}
+.queue-heading-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.queue-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.queue-heading small {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: #8f9e93;
+}
+.queue-empty {
+  font-size: 12px;
+  color: #8f9e93;
+  padding: 10px 0 4px;
+}
+.queue-played summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 6px 0;
+}
+.queue-played summary::-webkit-details-marker {
+  display: none;
+}
+.queue-played summary::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  margin-left: 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 0.3s var(--ease-soft);
+}
+.queue-played[open] summary::after {
+  transform: translateY(1px) rotate(-135deg);
+}
+.queue-played .track-row {
+  opacity: 0.62;
+}
+.queue-played .track-row:hover {
+  opacity: 1;
+}

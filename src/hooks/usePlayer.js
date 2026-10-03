@@ -16,6 +16,9 @@ function readPreference(key, fallback) {
   try { const value = localStorage.getItem(key); return value === null ? fallback : value === 'true'; }
   catch { return fallback; }
 }
+function readLoudness() {
+  try { const value = localStorage.getItem('aurora-loudness'); return value in LOUDNESS ? value : 'normal'; } catch { return 'normal'; }
+}
 function savePreference(key, value) {
   try { localStorage.setItem(key, String(value)); } catch { /* Private storage can be unavailable. */ }
 }
@@ -38,6 +41,23 @@ function deckHost(index) {
   let wrap = host.querySelector(`[data-deck="${index}"]`);
   if (!wrap) { wrap = document.createElement('div'); wrap.className = 'yt-deck'; wrap.dataset.deck = String(index); host.append(wrap); }
   return wrap;
+}
+// One compressor ahead of the speakers: transparent (1:1) for Quiet and Normal,
+// gentle 3:1 for Loud.
+function applyLoudness(master, level, graph) {
+  const loud = level === 'loud', now = graph.currentTime;
+  master.threshold.setTargetAtTime(loud ? -20 : 0, now, .05);
+  master.ratio.setTargetAtTime(loud ? 3 : 1, now, .05);
+  master.knee.setTargetAtTime(loud ? 10 : 0, now, .05);
+}
+function masterOf(graph) {
+  if (!graph.master) {
+    graph.master = graph.createDynamicsCompressor();
+    graph.master.attack.value = .004; graph.master.release.value = .25;
+    applyLoudness(graph.master, readLoudness(), graph);
+    graph.master.connect(graph.destination);
+  }
+  return graph.master;
 }
 function showDeck(index) {
   for (const deck of [0, 1]) deckHost(deck)?.classList.toggle('is-active', deck === index);
@@ -71,6 +91,10 @@ const BLENDS = ['auto', 5, 8, 10];
 const readBlend = value => (value === 'auto' ? 'auto' : BLENDS.includes(Number(value)) ? Number(value) : 'auto');
 // Some embeds only play whole 0.05 speed steps; tempo plans then use that grid.
 const RATE_STEP = .05;
+// Loudness, as streaming services offer it: a level for every deck (Normal keeps a
+// little headroom so Loud is audibly louder), and on the device's own audio, Loud
+// adds gentle compression. Online audio cannot be processed, only levelled.
+export const LOUDNESS = { quiet: .55, normal: .85, loud: 1 };
 // Media elements re-seat their time-stretcher on every rate change, which briefly
 // softens a kick: rates move in steps of at least 0.3% (far below a tempo change
 // anyone hears), and the exact final value is written once it is reached.
@@ -89,6 +113,8 @@ export function usePlayer() {
   const [mixProgress] = useState(() => createStore(0));
   const [duration, setDuration] = useState(0);
   const [volume, updateVolume] = useState(80);
+  const volumeRef = useRef(80);
+  const [loudness, updateLoudness] = useState(readLoudness);
   const [queue, updateQueue] = useState([]);
   const [queueIndex, setQueueIndex] = useState(-1);
   const [shuffle, setShuffle] = useState(false);
@@ -129,7 +155,7 @@ export function usePlayer() {
   const mix = useRef(null);
   const analysis = useRef(new Map());
   const attemptedMix = useRef('');
-  const preferences = useRef({ djEnabled, autoplay, liveDjChanges, surround, blendLength, transitionFx });
+  const preferences = useRef({ djEnabled, autoplay, liveDjChanges, surround, blendLength, transitionFx, loudness });
   const manualChange = useRef(null);
   const pendingNext = useRef(null);
   const player = useRef(null);
@@ -164,7 +190,7 @@ export function usePlayer() {
     return () => clearTimeout(timer);
   }, [notice]);
 
-  useEffect(() => { current.current = { track, queue, shuffle, repeat, volume, lyrics }; }, [track, queue, shuffle, repeat, volume, lyrics]);
+  useEffect(() => { current.current = { track, queue, shuffle, repeat, volume: Math.round(volume * LOUDNESS[loudness]), lyrics }; }, [track, queue, shuffle, repeat, volume, lyrics, loudness]);
   useEffect(() => {
     const retained = new Set([track, ...queue].filter(Boolean).map(item => item.localUrl));
     for (const url of localUrls.current) {
@@ -332,9 +358,9 @@ export function usePlayer() {
       const wet = graph.createGain(); wet.gain.value = 0;
       input.connect(dry).connect(gain);
       input.connect(highpass).connect(lowpass).connect(wet).connect(gain);
-      gain.connect(graph.destination);
+      gain.connect(masterOf(graph));
       lowpass.connect(echoSend).connect(delay).connect(tone).connect(feedback).connect(delay);
-      tone.connect(graph.destination);
+      tone.connect(masterOf(graph));
       const element = deck.element;
       // Audio elements are imperative resources held in refs, not React state.
       // eslint-disable-next-line react-hooks/immutability
@@ -739,8 +765,10 @@ export function usePlayer() {
     loadTrack(state.queue[(index - 1 + state.queue.length) % state.queue.length], state.queue);
   }, [loadTrack, seek]);
   const setVolume = useCallback(value => {
-    const amount = Math.min(100, Math.max(0, Number(value) || 0));
-    current.current.volume = amount; updateVolume(amount);
+    const chosen = Math.min(100, Math.max(0, Number(value) || 0));
+    updateVolume(chosen); volumeRef.current = chosen;
+    const amount = Math.round(chosen * LOUDNESS[preferences.current.loudness]);
+    current.current.volume = amount;
     // Online mixes read the live volume on every tick; local curves are pre-scheduled.
     if (mix.current?.kind === 'local') cancelMix();
     const deck = decks.current.find(item => item.element === audio.current);
@@ -748,6 +776,14 @@ export function usePlayer() {
     else if (audio.current) audio.current.volume = amount / 100;
     if (!mix.current?.kind?.startsWith('online')) player.current?.setVolume?.(amount);
   }, [cancelMix]);
+  const setLoudness = useCallback(value => {
+    if (!LOUDNESS[value]) return;
+    preferences.current.loudness = value; updateLoudness(value);
+    savePreference('aurora-loudness', value);
+    const master = context.current?.master;
+    if (master) applyLoudness(master, value, context.current);
+    setVolume(volumeRef.current);
+  }, [setVolume]);
   const setQueue = useCallback(value => {
     const before = current.current.queue;
     const result = typeof value === 'function' ? value(before) : value;
@@ -1330,6 +1366,6 @@ export function usePlayer() {
     return playhead.current.head.read({ raw: deck?.getCurrentTime?.(), playing: deck?.getPlayerState?.() === 1, rate: deck?.getPlaybackRate?.() ?? 1, now: performance.now() });
   }, []);
 
-  return { warm, notice, unavailable, changeKind, direction, transitionFx, setTransitionFx, blendLength, setBlendLength, sourceInfo, surround, setSurround, audioOutput, track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, setLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime };
+  return { loudness, setLoudness, warm, notice, unavailable, changeKind, direction, transitionFx, setTransitionFx, blendLength, setBlendLength, sourceInfo, surround, setSurround, audioOutput, track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, setLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime };
 }
 export default usePlayer;
