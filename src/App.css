@@ -4646,3 +4646,11 @@ html.scroll-locked {
 .queue-played .track-row:hover {
   opacity: 1;
 }
+
+/* The page never scrolls sideways: a sliding layout (the sidebar glide moves the
+   page with a transform) is clipped instead of flashing a horizontal scrollbar.
+   `clip`, unlike `hidden`, keeps sticky positioning working. */
+html,
+body {
+  overflow-x: clip;
+}
