@@ -1,3 +1,4 @@
+import { songKey } from '../../shared/titles.js';
 import { readJson } from './recommendations.js';
 import { detectTitleLanguage } from '../../shared/language.js';
 import { MOODS } from '../../shared/moods.js';
@@ -26,7 +27,8 @@ export async function fetchMood(moodId, { lang = null, fetcher = fetch, signal =
     for (const list of lists) {
       const item = list.data?.[index];
       if (!item || !Number.isSafeInteger(item.id) || !item.title || !item.artist?.name) continue;
-      const key = `${fold(item.artist.name)}|${fold(item.title)}`;
+      // One song once, whatever the version or credit spelling.
+      const key = songKey(item.title);
       const artist = fold(item.artist.name);
       if (seen.has(key) || (perArtist.get(artist) || 0) >= 2) continue;
       // With a listening language, drop titles that clearly read as another one.

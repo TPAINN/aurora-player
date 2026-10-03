@@ -1,13 +1,16 @@
+import { songKey } from '../../shared/titles.js';
 import { compatibleFamilies, detectLanguage, detectTitleLanguage, genreFamily, genreLanguageHint } from '../../shared/language.js';
 
 const fold = value => String(value || '').normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 const titleKey = value => fold(String(value || '').replace(/\([^)]*\)|\[[^\]]*\]/g, '').replace(/\s+-\s+(?:remaster|radio|live|explicit|clean|album|single|deluxe).*$/i, ''));
 
+// One song once: versions and differently spelled credits of a title count as the
+// same song, and the playing song is never recommended back in any version.
 export function selectRecommendations(candidates, current, limit = 8) {
-  const seen = new Set([`${fold(current.artist)}:${titleKey(current.title)}`]);
+  const seen = new Set([songKey(current.title)]);
   return candidates.filter(track => {
     if (!track.id || !track.title || !track.artist || !Number.isFinite(track.duration) || track.duration <= 0) return false;
-    const key = `${fold(track.artist)}:${titleKey(track.title)}`;
+    const key = songKey(track.title);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

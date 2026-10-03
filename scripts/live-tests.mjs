@@ -227,7 +227,7 @@ if (!only || only === 'C') {
   await check('C', 'ArrowLeft seeks back 5 s', async () => { const before = await playerTime(page); await page.locator('body').press('ArrowLeft'); await wait(350); ok(await playerTime(page) <= before - 3); });
   await check('C', 'seek slider commits once per drag', async () => {
     const before = (await events(page)).filter(row => row[1] === 'seek').length;
-    await page.evaluate(() => { const input = document.querySelector('.dock-seek input'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; for (const v of [10, 11, 12, 13, 14]) { set.call(input, String(v)); input.dispatchEvent(new Event('input', { bubbles: true })); } input.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); });
+    await page.evaluate(() => { const input = document.querySelector('.dock-seek input'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; input.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); for (const v of [10, 11, 12, 13, 14]) { set.call(input, String(v)); input.dispatchEvent(new Event('input', { bubbles: true })); } input.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); });
     await wait(300); ok((await events(page)).filter(row => row[1] === 'seek').length === before + 1);
   });
   await check('C', 'volume slider sets volume', async () => { await page.fill('input[aria-label="Volume"]', '40').catch(async () => { await page.evaluate(() => { const input = document.querySelector('input[aria-label="Volume"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '40'); input.dispatchEvent(new Event('input', { bubbles: true })); }); }); await wait(200); ok(await page.inputValue('input[aria-label="Volume"]') === '40'); });
@@ -750,6 +750,167 @@ if (!only || only === 'I') {
     ok(await phone.page.evaluate(() => { const row = document.querySelector('.mood-chips'); return row.scrollWidth > row.clientWidth; }), 'chips should scroll');
   });
   await phone.context.close();
+}
+
+if (!only || only === 'J') {
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 } });
+  await page.goto(BASE); await wait(500); await startQueue(page, ['Slow Tide']); await wait(1200);
+  const seekInput = '.dock-seek input[aria-label="Seek in track"]';
+  const tap = (value, order) => page.evaluate(([value, order, selector]) => {
+    const input = document.querySelector(selector);
+    const set = () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, String(value)); input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true })); };
+    input.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    if (order === 'touch') { input.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); set(); } else { set(); input.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); }
+  }, [value, order, seekInput]);
+  await check('J', 'a tap on the timeline seeks and the slider keeps moving', async () => {
+    await tap(20, 'touch'); await wait(300);
+    const rows = await events(page); ok(rows.some(row => row[1] === 'seek' && Math.abs(row[3] - 20) < .2), 'no seek to 20');
+    const first = await playerTime(page); await wait(1500); const later = await playerTime(page);
+    ok(first >= 19.5 && later > first + .8, `slider stuck: ${first} → ${later}`);
+  });
+  await check('J', 'a click on the timeline seeks and the slider keeps moving', async () => {
+    await tap(30, 'mouse'); await wait(300);
+    const first = await playerTime(page); await wait(1500); const later = await playerTime(page);
+    ok(first >= 29.5 && later > first + .8, `slider stuck: ${first} → ${later}`);
+  });
+  await check('J', 'a drag released outside the timeline still seeks and resumes', async () => {
+    await page.evaluate(selector => { const input = document.querySelector(selector); input.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '12'); input.dispatchEvent(new Event('input', { bubbles: true })); window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); }, seekInput);
+    await wait(300); const first = await playerTime(page); await wait(1500); const later = await playerTime(page);
+    ok(first >= 11.5 && first < 20 && later > first + .8, `slider stuck: ${first} → ${later}`);
+  });
+  await check('J', 'changing song mid-drag leaves the slider following the new song', async () => {
+    await page.evaluate(selector => { const input = document.querySelector(selector); input.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '40'); input.dispatchEvent(new Event('input', { bubbles: true })); }, seekInput);
+    await page.evaluate(() => document.querySelector('.dock-transport button[aria-label="Next track"]').click());
+    await wait(1800); const first = await playerTime(page); await wait(1200); const later = await playerTime(page);
+    ok((await title(page)).startsWith('Slow Tide'), await title(page));
+    ok(first < 5 && later > first + .5, `slider not following the new song: ${first} → ${later}`);
+  });
+  await check('J', 'no runtime errors on the timeline', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'J') {
+  // Phones: the home carousel follows a swipe; a swipe never plays a song by accident.
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 390, height: 844 } });
+  await page.goto(BASE); await wait(1800);
+  const counter = () => page.evaluate(() => document.querySelector('.stage-navigation span')?.textContent?.slice(0, 2));
+  const swipe = async (from, to) => { const box = await page.locator('.cover-carousel').boundingBox(); const y = box.y + box.height / 2; await page.mouse.move(box.x + box.width * from, y); await page.mouse.down(); await page.mouse.move(box.x + box.width * ((from + to) / 2), y + 3, { steps: 4 }); await page.mouse.move(box.x + box.width * to, y + 4, { steps: 4 }); await page.mouse.up(); await wait(900); };
+  const start = await counter();
+  await check('J', 'swiping the home carousel left shows the next song', async () => { await swipe(0.8, 0.25); ok(await counter() === String(Number(start) + 1).padStart(2, '0'), `${start} → ${await counter()}`); });
+  await check('J', 'swiping right goes back', async () => { await swipe(0.25, 0.8); ok(await counter() === start, `${start} → ${await counter()}`); });
+  await check('J', 'a swipe never starts playback', async () => ok(await page.locator('.immersive-player').count() === 0 && !(await page.evaluate(() => (window.__events || []).some(row => row[1] === 'load')))));
+  await check('J', 'no runtime errors swiping the carousel', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'J') {
+  // The queue grows from what is heard, and never with another version of a queued song.
+  const rec = (id, title, artist = 'Other Band') => ({ id, title, artist, album: 'LP', artwork: 'https://img.test/c/r.jpg', duration: 60, recommended: true });
+  const recommendations = [rec('r1', 'Night Drive (Sousa Remix)', 'BAND x Friend'), rec('r2', 'Slow Tide [Ultra Records]'), rec('r3', 'Harbour Lights'), rec('r4', 'NIGHT DRIVE (YUMA REMIX)'), rec('r5', 'Glass City'), rec('r6', 'Paper Moons')];
+  const { context, page, errors, requests } = await newSession(browser, { viewport: { width: 1280, height: 800 }, prefs: { 'aurora-autoplay': 'true' }, recommendations });
+  await page.goto(BASE); await wait(500); await startQueue(page, ['Morning Light', 'Slow Tide']); await wait(1500);
+  const asked = () => requests.filter(url => url.includes('/api/recommendations')).length;
+  // The opening refill already seeded from the first song; the next song heard grows it.
+  await page.click('.dock-transport button[aria-label="Next track"]'); await wait(1500);
+  const before = asked();
+  await setSeek(page, 27); await wait(2500);
+  await check('J', 'hearing a song for a while asks for more like it', async () => ok(asked() > before, `requests before ${before}, after ${asked()}`));
+  await page.click('.dock-actions button:has(svg.lucide-list-music), button[aria-label="Queue"], button[aria-label="Open queue"]').catch(() => {}); await wait(900);
+  const rows = await page.locator('dialog .track-row strong, dialog .track-row .track-title').allTextContents();
+  await check('J', 'a song heard for a while adds more like it to the queue', async () => ok(rows.some(text => /Harbour Lights|Glass City|Paper Moons/.test(text)), JSON.stringify(rows)));
+  await check('J', 'the queue never adds another version of a queued song', async () => ok(!rows.some(text => /Remix|Ultra Records/i.test(text)), JSON.stringify(rows)));
+  await check('J', 'no runtime errors while the queue grows', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'J') {
+  // Phones: the screen stays awake while music plays, and the lock screen shows a full player.
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 390, height: 844 } });
+  await context.addInitScript(() => {
+    window.__locks = { taken: 0, released: 0 };
+    Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: { request: async () => { window.__locks.taken++; const listeners = []; return { released: false, addEventListener: (_, fn) => listeners.push(fn), release: async () => { window.__locks.released++; listeners.forEach(fn => fn()); } }; } } });
+  });
+  await page.goto(BASE); await wait(500);
+  await page.click('nav[aria-label="Mobile navigation"] button:has-text("Search")'); await wait(400); await searchFor(page, 'band'); await page.click('.top-result-play'); await wait(1800);
+  await check('J', 'the screen stays awake while a song plays', async () => ok((await page.evaluate(() => window.__locks)).taken >= 1, JSON.stringify(await page.evaluate(() => window.__locks))));
+  await check('J', 'the lock-screen player shows the song with sized artwork', async () => {
+    const meta = await page.evaluate(() => ({ title: navigator.mediaSession.metadata?.title, sizes: (navigator.mediaSession.metadata?.artwork || []).map(item => item.sizes), state: navigator.mediaSession.playbackState }));
+    ok(meta.title === 'Night Drive' && meta.sizes.includes('512x512') && meta.state === 'playing', JSON.stringify(meta));
+  });
+  await check('J', 'pausing lets the screen sleep again', async () => { await page.evaluate(() => document.querySelector('.dock-transport button[aria-label="Pause"], button[aria-label="Pause"]')?.click()); await wait(700); const locks = await page.evaluate(() => window.__locks); ok(locks.released >= 1, JSON.stringify(locks)); });
+  await check('J', 'no runtime errors with the lock-screen player', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'J') {
+  // After a DJ hand-over the incoming lyrics keep following the incoming song.
+  const { context, page, errors } = await djSession({ 'aurora-live-dj': 'true' }, { longIntro: true });
+  await page.click('button[aria-label="Show lyrics"]').catch(() => {});
+  await wait(7000); await setSeek(page, 31);
+  // Watch the outgoing lyrics while they fade: they must hold their last line, not
+  // follow the incoming song's clock.
+  await page.evaluate(() => {
+    window.__outgoing = [];
+    const watch = () => {
+      const outgoing = [...document.querySelectorAll('.lyrics-handover')].find(node => node.textContent.includes('Under') && !node.textContent.includes('Sunrise'));
+      if (outgoing && document.querySelectorAll('.lyrics-handover').length > 1) window.__outgoing.push((outgoing.querySelector('.lyric-line.current')?.textContent || '').replace(/\s/g, '') + '#' + [...outgoing.querySelectorAll('.word-fill')].map(node => Math.round(Number(node.style.getPropertyValue('--fill') || 0) * 10)).join(''));
+      if (performance.now() < window.__watchUntil) requestAnimationFrame(watch);
+    };
+    window.__watchUntil = performance.now() + 20000;
+    requestAnimationFrame(watch);
+  });
+  for (let i = 0; i < 40 && !(await title(page)).startsWith('Morning Light'); i++) await wait(300);
+  const seen = [];
+  for (let i = 0; i < 28; i++) { seen.push([Math.round(await playerTime(page)), await page.textContent('.desktop-lyrics .lyric-line.current').catch(() => '')]); await wait(500); }
+  await check('J', 'lyrics keep moving after a DJ hand-over', async () => {
+    const lines = [...new Set(seen.map(([, text]) => text).filter(Boolean))];
+    ok(lines.length >= 2, JSON.stringify(seen));
+    ok(lines.some(text => /Sunrise|Waking|Morning/.test(text)), JSON.stringify(lines));
+  });
+  await check('J', 'outgoing lyrics hold still while they fade out', async () => { const frames = await page.evaluate(() => window.__outgoing); ok(frames.length > 0, 'no overlap observed'); ok(new Set(frames).size === 1, JSON.stringify([...new Set(frames)])); });
+  await check('J', 'no runtime errors through the lyric hand-over', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'J') {
+  // Seeking into the marked blend region re-plans the blend from there instead of fading out.
+  const { context, page, errors } = await djSession({ 'aurora-live-dj': 'true' });
+  // Before the standby has been prepared (it primes from 6 s here, 90 s ahead in a long song).
+  ok(!(await events(page)).some(row => row[1] === 'load' && row[2] === 'BBBBBBBBBBB'), 'standby already primed');
+  // Land inside the marked zone: its label reads "DJ transition from m:ss to m:ss".
+  await setSeek(page, 45); await wait(400);
+  const zoneLabel = await page.getAttribute('.dock-seek .dj-seek-zone', 'aria-label');
+  const [zoneStart] = [...zoneLabel.matchAll(/(\d+):(\d+)/g)].map(m => Number(m[1]) * 60 + Number(m[2]));
+  await setSeek(page, zoneStart + 1.5);
+  const mark = await page.evaluate(() => performance.now());
+  await check('J', 'seeking into the DJ zone still blends into the next song', async () => {
+    await wait(6500);
+    const rows = await events(page);
+    ok(rows.some(row => row[1] === 'play' && row[2] === 'BBBBBBBBBBB' && row[0] > mark), JSON.stringify(rows.filter(row => row[0] > mark).slice(0, 8)));
+    ok((await title(page)).startsWith('Morning Light'), await title(page));
+  });
+  await check('J', 'both songs overlap after a seek into the zone', async () => { await wait(4000); const vols = await page.evaluate(m => window.__vols.filter(v => v[0] > m), mark); const a = vols.filter(v => v[1] === 'AAAAAAAAAAA' && v[2] > 5 && v[2] < 75); const b = vols.filter(v => v[1] === 'BBBBBBBBBBB' && v[2] > 5 && v[2] < 75); ok(a.length > 3 && b.length > 3, `A:${a.length} B:${b.length}`); });
+  await check('J', 'no runtime errors seeking into the zone', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'J') {
+  // Opening and closing the player repeatedly stays cheap: no forced scroll layout,
+  // no artwork re-decoding, never more than one player on screen.
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 390, height: 844 } });
+  await page.goto(BASE); await wait(500);
+  await page.click('nav[aria-label="Mobile navigation"] button:has-text("Search")'); await wait(400); await searchFor(page, 'band'); await page.click('.top-result-play'); await wait(1500);
+  await page.evaluate(() => {
+    window.__scrolls = 0; window.__decodes = 0; window.__maxOpen = 0;
+    const scroll = window.scrollTo; window.scrollTo = (...args) => { window.__scrolls++; return scroll.apply(window, args); };
+    const read = CanvasRenderingContext2D.prototype.getImageData; CanvasRenderingContext2D.prototype.getImageData = function (...args) { window.__decodes++; return read.apply(this, args); };
+    const watch = () => { window.__maxOpen = Math.max(window.__maxOpen, document.querySelectorAll('.immersive-player').length); if (!window.__stop) requestAnimationFrame(watch); }; requestAnimationFrame(watch);
+  });
+  for (let i = 0; i < 10; i++) {
+    await page.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))); await wait(120);
+    await page.evaluate(() => document.querySelector('.dock-track')?.click()); await wait(120);
+  }
+  await wait(1200);
+  const probe = await page.evaluate(() => { window.__stop = true; return { scrolls: window.__scrolls, decodes: window.__decodes, maxOpen: window.__maxOpen }; });
+  await check('J', 'spamming open/close forces no scroll layout', async () => ok(probe.scrolls === 0, JSON.stringify(probe)));
+  await check('J', 'spamming open/close never re-decodes artwork colours', async () => ok(probe.decodes === 0, JSON.stringify(probe)));
+  await check('J', 'spamming open/close never stacks two players', async () => ok(probe.maxOpen === 1, JSON.stringify(probe)));
+  await check('J', 'no runtime errors while spamming the player', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
 }
 
 await browser.close();
