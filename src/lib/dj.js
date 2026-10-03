@@ -145,6 +145,19 @@ export function equalPower(progress) {
   return [Math.cos(phase), Math.sin(phase)];
 }
 
+// The bass swap belongs on a downbeat: the bar line of song A nearest the middle
+// of the blend (in wall time, at A's playback rate), kept within the middle 40%
+// so each song still has the floor for a while. Without a grid: the midpoint.
+export function swapTime({ now, seconds, outPosition, outGrid, rate = 1 }) {
+  const middle = now + seconds / 2;
+  if (!outGrid?.period || !(rate > 0)) return middle;
+  const bar = outGrid.period * 4;
+  const atMiddle = outPosition + (middle - now) * rate;
+  const line = outGrid.origin + Math.round((atMiddle - outGrid.origin) / bar) * bar;
+  const wall = now + (line - outPosition) / rate;
+  return Math.min(now + seconds * .7, Math.max(now + seconds * .3, wall));
+}
+
 export function smoothstep(progress) {
   const p = Math.max(0, Math.min(1, progress));
   return p * p * (3 - 2 * p);

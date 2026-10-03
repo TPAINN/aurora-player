@@ -1004,6 +1004,80 @@ if (!only || only === 'K') {
   await context.close();
 }
 
+if (!only || only === 'L') {
+  // 100 unexpected actions (50 desktop, 50 phone), seeded so a failure replays exactly.
+  // After every action the app must stay consistent.
+  let seed = Number(process.env.SEED || 7);
+  const random = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  const pick = list => list[Math.floor(random() * list.length)];
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+    const phone = viewport.width < 500;
+    const name = phone ? 'phone' : 'desktop';
+    const { context, page, errors } = await newSession(browser, { viewport, prefs: { 'aurora-autoplay': 'false' } });
+    await page.goto(BASE); await wait(600);
+    if (phone) { await page.click('nav[aria-label="Mobile navigation"] button:has-text("Search")'); await wait(400); await searchFor(page, 'band'); for (const song of ['Morning Light', 'Slow Tide']) await page.click(`.search-results .track-row:has-text("${song}") button[aria-label^="Add"]`).catch(() => {}); await page.click('.top-result-play'); await wait(1200); }
+    else { await startQueue(page, ['Morning Light', 'Slow Tide']); await wait(1000); }
+    const click = selector => page.locator(`${selector} >> visible=true`).first().click({ timeout: 900 }).then(() => true, () => false);
+    const key = code => page.keyboard.press(code).catch(() => {});
+    const actions = {
+      next: () => click('button[aria-label="Next track"]'),
+      previous: () => click('button[aria-label="Previous track"]'),
+      playPause: () => click('button[aria-label="Pause"], button[aria-label="Play"]'),
+      seek: () => setSeek(page, Math.round(random() * 55)).catch(() => {}),
+      arrows: () => key(pick(['ArrowLeft', 'ArrowRight'])),
+      space: () => key('Space'),
+      openPlayer: () => click('.dock-track'),
+      escape: () => key('Escape'),
+      lyrics: () => click('button[aria-label="Show lyrics"], button[aria-label="Hide lyrics"], .player-pills button'),
+      queue: () => click('.dock-actions button:has(svg.lucide-list-music), button[aria-label="Queue"], button[aria-label="Open queue"], .player-pills button:has-text("Queue")'),
+      removeFromQueue: () => click('dialog button[aria-label^="Remove"]'),
+      settings: () => click('button[aria-label="Preferences"]'),
+      loudness: () => click(`[aria-label="Loudness"] button:nth-child(${1 + Math.floor(random() * 3)})`),
+      search: async () => { if (phone) await click('nav[aria-label="Mobile navigation"] button:has-text("Search")'); else await click('nav[aria-label="Main navigation"] button[aria-label="Search"]'); await page.fill('input[aria-label="Search songs or artists"]', pick(['band', 'night', 'φω', 'zz', ''])).catch(() => {}); },
+      home: () => phone ? click('nav[aria-label="Mobile navigation"] button:has-text("Listen")') : click('nav[aria-label="Main navigation"] button[aria-label="Listen"], nav[aria-label="Main navigation"] button:first-child'),
+      mood: () => click(`.mood-chip:nth-child(${1 + Math.floor(random() * 10)})`),
+      carousel: () => click(pick(['button[aria-label="Next featured track"]', 'button[aria-label="Previous featured track"]'])),
+      sidebar: () => phone ? Promise.resolve() : click('button[aria-label="Minimize sidebar"], button[aria-label="Expand sidebar"]'),
+      resize: () => page.setViewportSize(phone ? pick([{ width: 390, height: 844 }, { width: 360, height: 740 }, { width: 430, height: 932 }]) : pick([{ width: 1280, height: 800 }, { width: 1024, height: 700 }, { width: 1440, height: 900 }])),
+      doubleTap: async () => { await click('.dock-track'); await click('.dock-track'); },
+    };
+    const names = Object.keys(actions);
+    const problems = [];
+    const log = [];
+    for (let step = 0; step < 50; step++) {
+      const action = pick(names);
+      log.push(action);
+      try { await actions[action](); } catch (error) { problems.push(`${step}:${action} threw ${String(error.message).slice(0, 80)}`); }
+      await wait(320);
+      const state = await page.evaluate(() => {
+        const decks = (window.__events || []).reduce((map, row) => { if (['play', 'load'].includes(row[1])) map[row[2]] = 'on'; if (['pause', 'stop'].includes(row[1])) map[row[2]] = 'off'; return map; }, {});
+        const seekInput = document.querySelector('input[aria-label="Seek in track"]');
+        return {
+          players: document.querySelectorAll('.immersive-player').length,
+          sheets: document.querySelectorAll('dialog[open]').length,
+          overflow: document.scrollingElement.scrollWidth - innerWidth,
+          seekOk: !seekInput || (Number(seekInput.value) >= 0 && Number(seekInput.value) <= Number(seekInput.max) + 0.5),
+          decksOn: Object.values(decks).filter(value => value === 'on').length,
+          titleOk: !document.querySelector('.dock-track strong') || document.title.startsWith(document.querySelector('.dock-track strong').textContent.trim()) || document.title === 'Aurora',
+        };
+      });
+      if (state.players > 1) problems.push(`${step}:${action} two players`);
+      if (state.sheets > 1) problems.push(`${step}:${action} two sheets`);
+      if (state.overflow > 1) problems.push(`${step}:${action} page overflows by ${state.overflow}px`);
+      if (!state.seekOk) problems.push(`${step}:${action} seek out of range`);
+      if (state.decksOn > 2) problems.push(`${step}:${action} ${state.decksOn} decks sounding`);
+      if (!state.titleOk) problems.push(`${step}:${action} title out of sync`);
+      if (process.env.SHOTS && step % 10 === 9) await page.screenshot({ path: `${process.env.SHOTS}/fuzz-${name}-${step + 1}.png` });
+    }
+    await wait(2200);
+    const settled = await page.evaluate(() => Object.values((window.__events || []).reduce((map, row) => { if (['play', 'load'].includes(row[1])) map[row[2]] = 'on'; if (['pause', 'stop'].includes(row[1])) map[row[2]] = 'off'; return map; }, {})).filter(value => value === 'on').length);
+    await check('L', `${name}: 50 random actions keep the app consistent`, async () => ok(!problems.length, `${problems.slice(0, 6).join(' | ')} — actions: ${log.join(',')}`));
+    await check('L', `${name}: once settled, at most one song sounds`, async () => ok(settled <= 1, `${settled} decks on — actions: ${log.join(',')}`));
+    await check('L', `${name}: no runtime errors in 50 random actions`, async () => ok(!errors.length, `${errors.slice(0, 3).join(' | ')} — actions: ${log.join(',')}`));
+    await context.close();
+  }
+}
+
 await browser.close();
 const failed = results.filter(result => !result.ok);
 console.log(`\n${results.length} checks · ${results.length - failed.length} passed · ${failed.length} failed`);
