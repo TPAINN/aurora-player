@@ -205,13 +205,17 @@ export function usePlayer() {
   // One resolver for playback and preparation: shared in-flight requests, and the
   // runner-up uploads kept as alternates.
   // `search` looks up other uploads even for a song that arrived with its own video.
-  const resolveSource = useCallback((selected, signal, { search = false } = {}) => {
+  const resolveSource = useCallback((selected, { search = false } = {}) => {
     const cached = prepared.current.get(selected.id);
     if (cached?.videoId && !search) return Promise.resolve(cached);
     if (selected.videoId && !search) return Promise.resolve({ videoId: selected.videoId, source: { kind: 'youtube', official: false, video: true, channel: selected.artist } });
     if (resolving.current.has(selected.id)) return resolving.current.get(selected.id);
+    // The lookup is shared by every caller (playback, preparation, prefetch), so no
+    // single caller's cancellation may abort it: a cancelled preparation once took the
+    // playback request waiting on the same lookup down with it, and the song never
+    // started. Callers drop results they no longer need.
     const request = (async () => {
-      const response = await fetch(buildApiUrl('/api/video/search', { artist: selected.artist, title: selected.title, duration: selected.duration, variant: selected.variant }), { signal });
+      const response = await fetch(buildApiUrl('/api/video/search', { artist: selected.artist, title: selected.title, duration: selected.duration, variant: selected.variant }));
       if (!response.ok) throw new Error('The music source could not connect. Please retry.');
       const data = await response.json();
       if (!data.videoId) { markUnplayable(selected); return { videoId: null }; }
@@ -232,7 +236,7 @@ export function usePlayer() {
   const searchAlternates = useCallback(async (selected, refused) => {
     searched.current.add(selected.id);
     try {
-      const found = await resolveSource(selected, undefined, { search: true });
+      const found = await resolveSource(selected, { search: true });
       const spare = [found.videoId, ...(alternates.current.get(selected.id) || [])].filter(id => id && id !== refused && id !== selected.videoId);
       alternates.current.set(selected.id, [...new Set(spare)]);
       return spare.length ? 'found' : 'none';
@@ -443,6 +447,36 @@ export function usePlayer() {
     return lyricsRequest;
   }, [fetchLyrics]);
 
+  // A hand-made song change: the outgoing deck plays on at full level until the
+  // incoming one sounds, then they cross in 0.9 s (equal power) and the outgoing
+  // stops. A deck that never starts is given up after 8 s so nothing plays on.
+  const handoff = useRef(null);
+  const finishHandoff = useCallback(() => {
+    const active = handoff.current;
+    if (!active) return;
+    handoff.current = null;
+    clearInterval(active.timer);
+    active.outgoing?.pauseVideo?.(); active.outgoing?.mute?.();
+    if (player.current === active.incoming) active.incoming.setVolume?.(current.current.volume);
+  }, []);
+  const runHandoff = useCallback(() => {
+    const active = handoff.current;
+    if (!active) return;
+    active.timer = setInterval(() => {
+      if (handoff.current !== active) { clearInterval(active.timer); return; }
+      const now = performance.now();
+      if (!active.started) {
+        if (active.incoming.getPlayerState?.() === 1) { active.started = now; showDeck(active.index); }
+        else if (now - active.requested > 8000) finishHandoff();
+        return;
+      }
+      const progress = Math.min(1, (now - active.started) / 900);
+      const volume = current.current.volume;
+      active.outgoing.setVolume?.(Math.round(volume * Math.cos(progress * Math.PI / 2)));
+      active.incoming.setVolume?.(Math.round(volume * Math.sin(progress * Math.PI / 2)));
+      if (progress >= 1) finishHandoff();
+    }, 40);
+  }, [finishHandoff]);
   const loadTrack = useCallback(async (selected, list, fadeIn = false, auto = false) => {
     if (!selected) return;
     // A song chosen by hand (or retried) gets a fresh chance to resolve.
@@ -457,7 +491,20 @@ export function usePlayer() {
     request.current?.abort();
     const controller = new AbortController(); request.current = controller;
     activeVideo.current = null;
-    audio.current?.pause(); player.current?.stopVideo?.();
+    // Gapless: a playing online song keeps sounding while the next one loads on the
+    // other deck, and fades out under it once it plays. Anything else stops now.
+    // Skipping again before the incoming song sounds: the song still heard carries on
+    // as the outgoing one and the half-loaded deck is dropped.
+    const pending = handoff.current;
+    let carried = null;
+    if (pending && !pending.started) {
+      handoff.current = null; clearInterval(pending.timer);
+      pending.incoming.stopVideo?.();
+      ytActive.current = 1 - pending.index; player.current = pending.outgoing; carried = pending.outgoing;
+    } else finishHandoff();
+    const outgoing = !selected.localUrl && (carried || (source.current === 'youtube' && player.current?.getPlayerState?.() === 1 ? player.current : null));
+    audio.current?.pause();
+    if (!outgoing) player.current?.stopVideo?.();
     source.current = selected.localUrl ? 'local' : 'youtube';
     current.current.track = selected;
     const nextQueue = list?.length ? list : current.current.queue.some(item => item.id === selected.id) ? current.current.queue : [...current.current.queue, selected];
@@ -478,7 +525,7 @@ export function usePlayer() {
         audio.current.volume = graph ? 1 : current.current.volume / 100;
         await audio.current.play();
       } else {
-        const { videoId, source } = await resolveSource(selected, controller.signal);
+        const { videoId, source } = await resolveSource(selected);
         if (mounted.current && token === generation.current) setSourceInfo(source || { kind: 'youtube', official: false });
         if (!mounted.current || token !== generation.current) return;
         if (!videoId) {
@@ -505,23 +552,30 @@ export function usePlayer() {
             setLyricsLoading(false);
           });
         }
-        const instance = await ensurePlayer(videoId);
-        if (!mounted.current || token !== generation.current) return;
+        const index = outgoing ? standbyIndex() : ytActive.current;
+        const instance = await ensurePlayer(videoId, index);
+        if (!mounted.current || token !== generation.current) { if (outgoing && handoff.current?.outgoing !== outgoing) outgoing.stopVideo?.(); return; }
+        if (outgoing && instance !== outgoing) {
+          ytActive.current = index;
+          handoff.current = { outgoing, incoming: instance, index, started: null, requested: performance.now() };
+        } else if (outgoing) outgoing.stopVideo?.();
         player.current = instance;
         activeVideo.current = videoId;
         instance.unMute?.();
         instance.setPlaybackRate?.(1);
-        if (fadeIn && preferences.current.djEnabled) {
+        if (handoff.current?.incoming === instance) instance.setVolume(0);
+        else if (fadeIn && preferences.current.djEnabled) {
           mix.current = { kind: 'online-in', started: null };
           instance.setVolume(0);
           announce({ phase: 'mixing', label: 'Gentle fade in', mode: 'online', progress: 0 });
         } else instance.setVolume(current.current.volume);
         instance.loadVideoById(videoId);
+        if (handoff.current?.incoming === instance) runHandoff();
       }
     } catch (err) {
       if (mounted.current && token === generation.current && err.name !== 'AbortError') { setError(err instanceof TypeError ? 'Could not reach the music service. Check your connection and retry.' : err.message || 'Playback failed.'); setPlaying(false); }
     } finally { if (mounted.current && token === generation.current) setLoading(false); }
-  }, [ensurePlayer, cancelMix, ensureAudioGraph, flushListening, showLyricsFor, fetchLyrics, announce, clock, resolveSource, markUnplayable, upcoming]);
+  }, [ensurePlayer, cancelMix, ensureAudioGraph, flushListening, showLyricsFor, fetchLyrics, announce, clock, resolveSource, markUnplayable, upcoming, finishHandoff, runHandoff]);
   useEffect(() => { actions.current.load = loadTrack; }, [loadTrack]);
   const activeError = useCallback(() => {
     const selected = current.current.track;
@@ -614,6 +668,7 @@ export function usePlayer() {
     clock.set(seconds);
   }, [cancelMix, clock]);
   const togglePlay = useCallback(async () => {
+    finishHandoff();
     cancelMix();
     attemptedMix.current = '';
     setError('');
@@ -622,7 +677,7 @@ export function usePlayer() {
       else if (player.current && activeVideo.current) { if (player.current.getPlayerState() === 1) { intendsToPlay.current = false; player.current.pauseVideo(); } else { intendsToPlay.current = true; player.current.playVideo(); } }
       else if (current.current.track) { intendsToPlay.current = true; await loadTrack(current.current.track); }
     } catch (err) { setError(err.message || 'Playback was blocked. Press play to retry.'); }
-  }, [loadTrack, cancelMix]);
+  }, [loadTrack, cancelMix, finishHandoff]);
 
   const beginOnlineBlend = useCallback((blend, seconds) => {
     const incoming = yt.current[blend.index].player;
@@ -818,7 +873,7 @@ export function usePlayer() {
     } else if (!prepared.current.get(selected.id)?.lyrics) {
       void (async () => {
         try {
-          const entry = await resolveSource(selected, controller.signal);
+          const entry = await resolveSource(selected);
           if (!entry?.videoId || controller.signal.aborted) return;
           const response = await fetch(buildApiUrl('/api/lyrics/structured', { artist: selected.artist, title: selected.title, album: selected.album, duration: selected.duration, videoId: entry.videoId }), { signal: controller.signal });
           if (response.ok && !controller.signal.aborted) prepared.current.set(selected.id, { ...(prepared.current.get(selected.id) || entry), lyrics: await response.json() });
@@ -1016,6 +1071,8 @@ export function usePlayer() {
   }, [cancelMix, commitIncoming, setIdle, announce, mixProgress]);
 
   const tickMix = useCallback(() => {
+    // A hand-made change is still fading on the other deck: nothing is prepared there yet.
+    if (handoff.current) return;
     const dj = preferences.current.djEnabled;
     // Without DJ, online songs still hand over seamlessly through the standby deck.
     if (!dj) setDjWindow(previous => previous === null ? previous : null);
@@ -1206,6 +1263,7 @@ export function usePlayer() {
     const onlineDecks = yt.current;
     return () => {
       flushListening();
+      clearInterval(handoff.current?.timer); handoff.current = null;
       mounted.current = false; if (manualChange.current) clearInterval(manualChange.current); request.current?.abort(); recommendationRequest.current?.abort(); clearInterval(timer); clearInterval(mixTimer);
       cleanups.forEach(cleanup => cleanup()); audio.current = null; decks.current = []; mix.current = null;
       void context.current?.close().catch(() => {}); context.current = null;
