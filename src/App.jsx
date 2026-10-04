@@ -654,13 +654,17 @@ function BestPartChip({ player }) {
   );
 }
 
+const PULSE_DELAY = 1.6;
+
 // The artwork backdrop opens up (a slow zoom and lift) through the song's peaks:
 // its refrain and long held notes, read from genuinely timed lyrics only.
 function ArtBackdrop({ player }) {
   const peaks = usePeaks(player);
   const offset = player.lyricsOffset || 0;
   const peak = useStore(player.clock, (value) => peaks.length > 0 && isPeakAt(peaks, value + offset));
-  const peakIndex = useStore(player.clock, (value) => peaks.findIndex((range) => value + offset >= range.start && value + offset < range.end));
+  // The pulse joins once the opening zoom has mostly settled, so the two never
+  // compete for frames; the zoom marks the moment the peak hits.
+  const peakIndex = useStore(player.clock, (value) => peaks.findIndex((range) => value + offset >= range.start + PULSE_DELAY && value + offset < range.end));
   const period = pulsePeriod(player.bpm);
   const reduce = useReducedMotion();
   const artwork = player.track?.artwork;
