@@ -43,3 +43,82 @@ test('no clear lock, no phase: syncopated, sparse or untimed vocals change nothi
   assert.equal(beatPhase([], 0.5), null);
   assert.equal(beatPhase(Array.from({ length: 30 }, (_, i) => ({ start: i * 0.5, end: i * 0.5 + 0.3 })), null), null);
 });
+
+// A deterministic pseudo-random sequence, so the vocal fixtures are repeatable.
+function rng(seed) {
+  let value = seed;
+  return () => ((value = (value * 1664525 + 1013904223) % 4294967296) / 4294967296);
+}
+// A sung vocal on a beat grid: most syllables on beats or half beats, a few pickups,
+// timing jitter of a few tens of milliseconds.
+function vocal({ bpm, origin = 0.37, seconds = 150, seed = 7 }) {
+  const random = rng(seed), beat = 60 / bpm, words = [];
+  for (let t = origin + 8 * beat; t < seconds; t += beat / 2) {
+    const onBeat = Math.round((t - origin) / beat * 2) % 2 === 0;
+    if (random() > (onBeat ? 0.75 : 0.45)) continue;
+    const start = t + (random() - 0.5) * 0.05;
+    words.push({ start, end: start + (onBeat ? beat * 0.8 : beat * 0.3) });
+  }
+  return words;
+}
+
+test('without a catalogue tempo, the beat is measured from word-timed vocals', async () => {
+  const { lyricBeat } = await import('./pulse.js');
+  for (const bpm of [78, 96, 120, 128, 140]) {
+    const grid = lyricBeat(vocal({ bpm, seed: bpm }));
+    assert.ok(grid, `${bpm} BPM found`);
+    // The same pulse as the song: the beat, or a whole multiple or division of it,
+    // locked tightly enough to stay on the beat for a minute.
+    const ratio = grid.period / (60 / bpm);
+    const nearest = [0.5, 1, 2].reduce((best, value) => Math.abs(value - ratio) < Math.abs(best - ratio) ? value : best);
+    assert.ok(Math.abs(ratio / nearest - 1) < 0.002, `${bpm}: period ${grid.period} (ratio ${ratio.toFixed(4)})`);
+    const beat = 60 / bpm;
+    const offset = ((grid.origin - 0.37) % beat + beat) % beat;
+    assert.ok(Math.min(offset, beat - offset) < 0.04, `${bpm}: phase off by ${offset.toFixed(3)} s`);
+  }
+});
+
+test('scattered or sparse vocals give no measured beat', async () => {
+  const { lyricBeat } = await import('./pulse.js');
+  const random = rng(3), scattered = [];
+  for (let i = 0; i < 260; i++) { const start = random() * 160; scattered.push({ start, end: start + 0.2 + random() * 0.4 }); }
+  assert.equal(lyricBeat(scattered), null);
+  assert.equal(lyricBeat(vocal({ bpm: 120 }).slice(0, 20)), null);
+  assert.equal(lyricBeat([]), null);
+});
+
+test('line-timed lyrics still place a known tempo on the beat', async () => {
+  const { linePhase } = await import('./pulse.js');
+  const beat = 0.5, origin = 0.21;
+  // Lines start on downbeats (every 4 or 8 beats), give or take a little.
+  const random = rng(11), lines = [];
+  for (let bar = 4; bar < 80; bar += random() > 0.5 ? 2 : 1) lines.push({ time: origin + bar * 4 * beat + (random() - 0.5) * 0.06 });
+  const phase = linePhase(lines, beat);
+  assert.ok(phase && Math.abs(phase.origin - origin) < 0.04, JSON.stringify(phase));
+  // Lines that ignore the beat give nothing.
+  const loose = Array.from({ length: 40 }, () => ({ time: random() * 160 }));
+  assert.equal(linePhase(loose, beat), null);
+});
+
+// Off-beat-heavy rap, fast verses and drifting live takes.
+function phrased({ bpm, jitter = 0.05, keep, sixteenths = false, drift = 0, seed = 5 }) {
+  const random = rng(seed), words = [];
+  let beat = 60 / bpm, t = 0.37;
+  const step = sixteenths ? 4 : 2;
+  for (let i = 0; t < 150; i++) {
+    const onBeat = i % step === 0;
+    if (random() <= (onBeat ? keep[0] : keep[1])) { const start = t + (random() - 0.5) * jitter * 2; words.push({ start, end: start + (onBeat ? beat * 0.7 : (beat / step) * 0.8) }); }
+    t += beat / step; beat *= 1 + drift / ((150 / beat) * step);
+  }
+  return words;
+}
+test('a measured pulse lands on beats, never off-beats, and a drifting take gets none', async () => {
+  const { lyricBeat } = await import('./pulse.js');
+  for (const [bpm, options] of [[92, { keep: [0.7, 0.6], sixteenths: true }], [150, { keep: [0.8, 0.5], sixteenths: true }]]) {
+    const grid = lyricBeat(phrased({ bpm, ...options }));
+    const beat = 60 / bpm, off = (((grid.origin - 0.37) % beat) + beat) % beat;
+    assert.ok(Math.min(off, beat - off) < 0.03, `${bpm} BPM rap: ${(off * 1000).toFixed(0)} ms off the beat`);
+  }
+  assert.equal(lyricBeat(phrased({ bpm: 100, keep: [0.75, 0.45], drift: 0.02 })), null, 'a 2 % drifting live take');
+  assert.equal(lyricBeat(phrased({ bpm: 100, keep: [0.75, 0.45], drift: 0.06, jitter: 0.08 })), null, 'rubato');
+});

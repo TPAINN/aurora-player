@@ -108,7 +108,22 @@ function gridRates(outBpm, targetBpm, step) {
   return best;
 }
 
-export function planTransition(outro, intro, target = TARGET_OVERLAP, { step = 0 } = {}) {
+// Which song carries a tempo change: 'outgoing' (A slows or speeds into B's tempo
+// before the blend), 'incoming' (A stays as it is; B enters at A's tempo and eases
+// back to its own after) or 'split' (each moves half the way). A tempo change is
+// least heard where nobody sings, so the timed lyrics decide: B's instrumental
+// opening takes it, else A's instrumental ending; with voices on both sides each
+// moves half as far. Unknown spans are not instrumental: then A, the song being
+// heard, is left alone, as a DJ matches the incoming deck.
+export function chooseBend({ outroSpan, introSpan, seconds = 8, ramp = 8, recover = 8 } = {}) {
+  const known = value => Number.isFinite(value);
+  if (known(introSpan) && introSpan >= seconds + recover * 0.5) return 'incoming';
+  if (known(outroSpan) && outroSpan >= ramp + seconds * 0.5) return 'outgoing';
+  if (known(introSpan)) return 'split';
+  return 'incoming';
+}
+
+export function planTransition(outro, intro, target = TARGET_OVERLAP, { step = 0, bend = 'outgoing' } = {}) {
   const known = outro?.bpm > 0 && intro?.bpm > 0;
   const confident = known && outro.confidence >= .7 && intro.confidence >= .7;
   const targetBpm = known ? octaveTarget(outro.bpm, intro.bpm) : null;
@@ -118,10 +133,13 @@ export function planTransition(outro, intro, target = TARGET_OVERLAP, { step = 0
     const pair = gridRates(outro.bpm, targetBpm, step);
     if (pair) ({ rate, inRate } = pair), matched = true;
   } else if (confident) {
-    const split = Math.abs(ratio - 1) > SPLIT_ABOVE;
-    matched = Math.abs(ratio - 1) <= (split ? 2 * MAX_TEMPO_SHIFT : MAX_TEMPO_SHIFT) + 1e-9;
-    rate = matched ? (split ? Math.sqrt(ratio) : ratio) : 1;
-    inRate = matched && split ? 1 / Math.sqrt(ratio) : 1;
+    // Beyond SPLIT_ABOVE neither song bends alone.
+    const share = Math.abs(ratio - 1) > SPLIT_ABOVE ? 'split' : bend;
+    matched = Math.abs(ratio - 1) <= (share === 'split' ? 2 * MAX_TEMPO_SHIFT : MAX_TEMPO_SHIFT) + 1e-9;
+    if (matched) {
+      rate = share === 'split' ? Math.sqrt(ratio) : share === 'outgoing' ? ratio : 1;
+      inRate = share === 'split' ? 1 / Math.sqrt(ratio) : share === 'incoming' ? 1 / ratio : 1;
+    }
   }
   const blendBpm = matched ? outro.bpm * rate : outro?.confidence >= .7 && outro.bpm > 0 ? outro.bpm : null;
   // Whole phrases at the shared blend tempo: the longest of 16, 8 or 4 bars that

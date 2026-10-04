@@ -7,7 +7,7 @@
 //   BASE=http://localhost:5188/ CHROMIUM_PATH=... node scripts/render-transitions.mjs [outDir]
 import { chromium } from 'playwright-core';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { analyzeSamples, planTransition } from '../src/lib/dj.js';
+import { analyzeSamples, chooseBend, planTransition } from '../src/lib/dj.js';
 
 const BASE = process.env.BASE || 'http://localhost:5188/';
 const OUT = process.argv[2] || 'transitions';
@@ -216,6 +216,7 @@ const pairs = [
   { name: '9-probe-wide-100-to-112', a: { bpm: 100, root: 1000, seed: 17, style: 'probe' }, b: { bpm: 112, root: 2500, seed: 18, style: 'probe' } },
   { name: '10-probe-meet-118-to-132', a: { bpm: 118, root: 1000, seed: 19, style: 'probe' }, b: { bpm: 132, root: 2500, seed: 20, style: 'probe' } },
   { name: '11-probe-double-time-87-to-174', a: { bpm: 87, root: 1000, seed: 21, style: 'probe' }, b: { bpm: 174, root: 2500, seed: 22, style: 'probe' } },
+  { name: '12-probe-close-122-to-125', a: { bpm: 122, root: 1000, seed: 23, style: 'probe' }, b: { bpm: 125, root: 2500, seed: 24, style: 'probe' } },
   { name: '5-half-time-87-to-174', a: { bpm: 87, root: 55, seed: 9, style: 'breaks' }, b: { bpm: 174, root: 49, seed: 10, style: 'breaks' } },
 ];
 
@@ -224,7 +225,7 @@ const report = [];
 for (const pair of pairs.filter(item => !ONLY || ONLY.test(item.name))) {
   const a = song(pair.a), b = song(pair.b);
   const from = analyzeSamples(a, RATE), to = analyzeSamples(b, RATE);
-  const plan = planTransition(from.outro, to.intro, Math.min(MAX_BLEND, from.duration / 4, to.duration / 4));
+  const plan = planTransition(from.outro, to.intro, Math.min(MAX_BLEND, from.duration / 4, to.duration / 4), { bend: chooseBend() });
   const exit = Math.min(from.duration - plan.seconds, from.mixStart);
   // Ten seconds of song A before anything moves, then glide, blend, recovery and song B alone.
   const start = Math.max(0, exit - plan.rampSeconds - 10);

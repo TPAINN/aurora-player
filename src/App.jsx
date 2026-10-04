@@ -51,7 +51,7 @@ import {
 } from "lucide-react";
 import { usePlayer } from "./hooks/usePlayer";
 import { useStore } from "./hooks/useStore";
-import { beatPhase, pulsePeriod, pulsePhase } from "./lib/pulse";
+import { beatPhase, linePhase, lyricBeat, pulsePeriod, pulsePhase } from "./lib/pulse";
 import { useNavigation } from "./hooks/useNavigation";
 import { getCollection, getFeaturedTracks, getMoodTracks, getSimilarTracks, searchCatalog } from "./lib/catalog";
 import { MOODS } from "../shared/moods.js";
@@ -296,6 +296,8 @@ function SwipeCover({ player, onClose, children }) {
   return (
     <Motion.div
       className="now-playing-art"
+      layout="position"
+      transition={{ layout: LYRICS_GLIDE }}
       drag
       dragDirectionLock
       dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
@@ -656,13 +658,18 @@ function useMoments(player) {
     const lyricPeaks = lines ? peakMoments(lines) : [];
     // Replays describe one upload: trusted only when it is as long as what is playing.
     const replays = insight?.replays?.length && Math.abs(insight.replays.at(-1).end - duration) <= 8 ? insight.replays : null;
-    // Online songs only know their tempo: the beat phase comes from the sung words
-    // (playback time). Device audio already carries a measured grid.
+    // Device audio carries a measured grid. Online songs know at most a catalogue
+    // tempo, so the beat phase comes from the sung words (or, for line-timed lyrics,
+    // from where the lines start); with no catalogue tempo at all, word-timed vocals
+    // still show the beat. Everything is in playback time.
     let grid = insight?.grid || null;
+    const words = lines ? lines.flatMap((line) => line.words || []).map((word) => ({ start: word.start - offset, end: word.end - offset })) : [];
     if (grid?.period && !Number.isFinite(grid.origin) && lines) {
-      const words = lines.flatMap((line) => line.words || []).map((word) => ({ start: word.start - offset, end: word.end - offset }));
-      const phase = beatPhase(words, grid.period);
+      const phase = beatPhase(words, grid.period) || linePhase(lines.map((line) => ({ time: line.time - offset })), grid.period);
       if (phase) grid = { ...grid, origin: phase.origin };
+    } else if (!grid?.period && words.length) {
+      const measured = lyricBeat(words);
+      if (measured) grid = { period: measured.period, origin: measured.origin, source: "lyrics" };
     }
     const { peaks, best } = bestMoments({
       lyricPeaks: lyricPeaks.map((range) => ({ start: range.start - offset, end: range.end - offset })),
@@ -708,6 +715,10 @@ function BestPartChip({ player }) {
 }
 
 const PULSE_DELAY = 1.6;
+// Showing or hiding lyrics is one movement: the cover and the song's name glide to
+// their new places on the same curve and duration as the lyrics emerge beside them
+// (or fold away), so the layout never jumps and the two never feel separate.
+const LYRICS_GLIDE = { duration: 0.8, ease: EASE };
 // The song's name gliding between the player and its place under the cover in focus.
 const TITLE_GLIDE = { type: "spring", stiffness: 140, damping: 22, mass: 0.9 };
 
@@ -720,7 +731,8 @@ function ArtBackdrop({ player }) {
   // The pulse joins once the opening zoom has mostly settled, so the two never
   // compete for frames; the zoom marks the moment the peak hits.
   const peakIndex = useStore(player.clock, (value) => peaks.findIndex((range) => value + offset >= range.start + PULSE_DELAY && value + offset < range.end));
-  const period = pulsePeriod(player.bpm);
+  // The catalogue or measured tempo; failing that, the beat the sung words show.
+  const period = pulsePeriod(player.bpm) || (beat ? pulsePeriod(60 / beat.period) : null);
   const reduce = useReducedMotion();
   const artwork = player.track?.artwork;
   const blend = player.changeKind === "blend";
@@ -2948,19 +2960,17 @@ export default function App() {
                       </Motion.div>
                     )}
                   </SwipeCover>
-                  <AnimatePresence>
+                  {/* popLayout takes closing lyrics out of the layout at once, so the cover
+                      glides back while they fade instead of after them. */}
+                  <AnimatePresence mode="popLayout">
                     {showLyrics && (
                       <Motion.div
                         key="lyrics"
-                        exit={{
-                          opacity: 0,
-                          x: 24,
-                          filter: "blur(6px)",
-                          transition: { duration: 0.4, ease: EASE_EXIT },
-                        }}
-                        initial={{ opacity: 0, x: 40, filter: "blur(8px)" }}
-                        animate={{ opacity: 1, x: 0, filter: "blur(0px)" }}
-                        transition={{ duration: 0.8, ease: EASE }}
+                        initial={phoneLayout ? { opacity: 0, y: 28, filter: "blur(8px)" } : { opacity: 0, x: -56, scale: 0.97, filter: "blur(8px)" }}
+                        animate={{ opacity: 1, x: 0, y: 0, scale: 1, filter: "blur(0px)", transition: { ...LYRICS_GLIDE, delay: 0.06 } }}
+                        exit={{ ...(phoneLayout ? { y: 18 } : { x: -40, scale: 0.97 }), opacity: 0, filter: "blur(6px)", transition: { duration: 0.42, ease: EASE_EXIT } }}
+                        layout="position"
+                        transition={{ layout: LYRICS_GLIDE }}
                         className="desktop-lyrics"
                       >
                         {/* Song changes crossfade the lyrics; a DJ blend hands over slower. */}
@@ -2978,7 +2988,7 @@ export default function App() {
                       </Motion.div>
                     )}
                   </AnimatePresence>
-                  <div className="mobile-player-info">
+                  <Motion.div className="mobile-player-info" layout="position" transition={{ layout: LYRICS_GLIDE }}>
                     {/* Phones show the artwork as the backdrop; focus adds a small cover beside the name. */}
                     <AnimatePresence>
                       {focused && (
@@ -3037,9 +3047,9 @@ export default function App() {
                       <span />
                       Your queue <ChevronRight size={15} />
                     </Motion.button>
-                  </div>
+                  </Motion.div>
                 </div>
-                <div className="immersive-track-meta">
+                <Motion.div className="immersive-track-meta" layout="position" transition={{ layout: LYRICS_GLIDE }}>
                   <div>
                     {!(focused && !phoneLayout) && (
                       <Motion.div layoutId="now-title" className="now-title" transition={{ layout: TITLE_GLIDE }}>
@@ -3058,7 +3068,7 @@ export default function App() {
                   >
                     <LikeHeart liked={!!currentFavorite} />
                   </IconButton>
-                </div>
+                </Motion.div>
               </Motion.section>
           )}
           </AnimatePresence>
@@ -3282,7 +3292,7 @@ export default function App() {
                   <span />
                 </button>
               </div>
-              <div className="setting-row">
+              <div className={`setting-row ${player.djEnabled ? "" : "is-dormant"}`}>
                 <div>
                   <strong>Live DJ changes</strong>
                   <p>Blend when you choose the next track.</p>
@@ -3299,7 +3309,7 @@ export default function App() {
                   <span />
                 </button>
               </div>
-              <div className="setting-row">
+              <div className={`setting-row ${player.djEnabled ? "" : "is-dormant"}`}>
                 <div>
                   <strong>Deep sweep</strong>
                   <p>A low, warm swell with a sub drop under online blends, whose audio YouTube keeps unfiltered.</p>
@@ -3314,7 +3324,7 @@ export default function App() {
                   <span />
                 </button>
               </div>
-              <div className="setting-row">
+              <div className={`setting-row ${player.djEnabled ? "" : "is-dormant"}`}>
                 <div>
                   <strong>Blend length</strong>
                   <p>Auto picks the longest whole phrase the music leaves room for, up to 16 bars. Online songs blend up to 16 s.</p>

@@ -6,7 +6,7 @@ A transition has three parts: **choose the cue**, **glide the tempo**, **blend**
 
 - **Cue selection.** Each file is decoded once (≤ 32 MB). Within the final 30 seconds, song A leaves where its last full-energy section ends (after the last chorus, before any fade), on a 4-bar phrase when the beat is known, and early enough that the blend plays over music rather than the silent tail. Steady music keeps its natural ending. The incoming cue skips silence and noise floors relative to the song's own intro loudness (about −24 dB below its loud passages, at most 12 s); soft musical intros are kept.
 - **Tempo.** An onset-envelope autocorrelation measures BPM with sub-frame refinement and beat phase, and refuses low-confidence results. Pitch is always preserved, and no song is stretched more than ±8 %.
-  - Gaps up to 4 %: song A glides to song B's tempo *before* the overlap (smoothstep, roughly 1 % per second, 3–8 s).
+  - Gaps up to 4 %: one song carries the change, chosen by where the voices are (timed lyrics), because a tempo change is least heard where nobody sings. If song B opens instrumental, song A is left as it is: B enters at A's tempo and eases back to its own after the blend. If song A ends instrumental, A slows or speeds into B's tempo before the overlap. With voices on both sides each moves half the way; with nothing known, A (the song being heard) is left alone, as a DJ matches the incoming deck. Every glide and recovery lasts at least four bars (about 8 s at 120 BPM, up to 12 s), in even steps of at most 0.3 % that land exactly on the target.
   - Wider gaps, up to 16 % (octave-equivalent): the tempos **meet in the middle**. Song A glides halfway, song B enters at that same tempo, and after the blend song B eases back to its own tempo. Both songs share one beat throughout the overlap.
 - **Entry.** Song B's entry is chosen from its first 30 seconds: on a 4-bar phrase boundary, the section whose loudness best continues song A's exit energy wins. A quiet fade meets B's soft intro; a driving outro meets B's first full section. Earlier points are preferred, so intros are never skipped for a marginal gain.
 - **Blend.** A bar-quantised overlap of about five seconds (4–7 s) at the shared tempo. The incoming deck starts so its first beat lands on the outgoing beat grid, and a bounded phase nudge (≤ 4 %) absorbs `play()` latency. Gains follow equal-power curves.
@@ -42,7 +42,7 @@ Tempo reading uses a log-compressed onset envelope and confirms a beat by its ba
 
 `scripts/render-transitions.mjs` records five transitions through the real engine (synthesized test songs) as WAV files for listening.
 
-Live DJ changes (optional) makes a manual Next overlap too: a primed online deck blends in 3 seconds, local audio in 3 seconds, otherwise a short fade. Pause, seek, disabling DJ and queue edits that change the next song cancel scheduled work and restore levels and tempo; a seek or resume re-arms the transition. Radio additions that do not change the next song leave a prepared transition alone. The timeline highlights the planned region, including the glide.
+Live DJ changes (optional) makes a manual Next overlap too. Song A keeps playing at full level while song B buffers on the standby deck (no dip), then they blend for 5 s on A's beat; a primed deck blends at once. Pressing Next again, or B not being ready within 5 s, changes gaplessly instead. Without a ready standby at a natural ending, song B starts on the other deck while A plays on and they cross over once B sounds, never a fade to silence and back.
 
 ## Radio
 
