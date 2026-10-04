@@ -5111,3 +5111,27 @@ body {
     font-size: 12px;
   }
 }
+
+/* Unfolding lines and sections clip while their height grows. */
+.dj-entry,
+.dj-effects,
+.queue-played {
+  overflow: hidden;
+}
+.dj-effects {
+  display: flex;
+  /* Spacing as padding: it unfolds with the height instead of jumping. */
+  margin-top: 0;
+  padding-top: 10px;
+}
+.sheet-back {
+  display: inline-flex;
+}
+.track-number {
+  display: inline-grid;
+  place-items: center;
+}
+.queue-played.queue-section {
+  margin-top: 0;
+  padding-top: 18px;
+}
