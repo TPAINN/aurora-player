@@ -4878,3 +4878,85 @@ body {
     transition: none;
   }
 }
+
+/* ── Lyric lines on the compositor ───────────────────────────────────────────
+   Line states used to animate colour and a hairline blur, and neither runs on the
+   compositor: two or three lines repainted every frame for 1.5 s at each change.
+   Now each line keeps one colour and its state is carried by opacity and scale
+   alone; the opacities reproduce the earlier effective brightness exactly
+   (colour alpha × opacity), so the look is unchanged and the motion is free. */
+.lyric-line {
+  color: #fff;
+  filter: none;
+  opacity: 0.14;
+  transition:
+    opacity 1.3s var(--ease-soft),
+    transform 1.5s var(--ease-soft);
+}
+.lyric-line.upcoming {
+  opacity: 0.2;
+}
+.lyric-line.past {
+  opacity: 0.084;
+}
+.lyric-line.past.is-singing {
+  opacity: 0.185;
+}
+.lyric-line.current,
+.lyric-line.plain {
+  opacity: 1;
+}
+.lyric-line.plain {
+  color: #e6ede5;
+}
+.lyric-line.at-edge:not(.current) {
+  opacity: 0.028;
+}
+/* Word-timed lines: the unsung text is 36% white; sung words fill to full white. */
+.lyric-line.has-words,
+.lyric-line.has-words.current {
+  color: #ffffff5c;
+  opacity: 0.39;
+}
+.lyric-line.has-words.upcoming {
+  opacity: 0.56;
+}
+.lyric-line.has-words.past {
+  opacity: 0.3;
+}
+.lyric-line.has-words.past.is-singing {
+  opacity: 0.51;
+}
+.lyric-line.has-words.current {
+  opacity: 1;
+}
+.lyric-line.has-words.at-edge:not(.current) {
+  opacity: 0.078;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lyric-line {
+    transition: opacity 0.2s linear;
+  }
+}
+
+/* Lyrics timing: a fine stepper with a live readout. */
+.offset-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.offset-stepper output {
+  min-width: 56px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  font-size: 13px;
+}
+.offset-stepper .icon-button {
+  width: 36px;
+  height: 36px;
+}
+.offset-stepper .small-pill {
+  margin-left: 4px;
+}

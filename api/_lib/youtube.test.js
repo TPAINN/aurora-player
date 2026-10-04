@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSearch, parsePlaylist, splitVideoTitle, searchYouTube, parseReplays, videoReplays } from './youtube.js';
+import { parseSearch, parsePlaylist, splitVideoTitle, searchYouTube, parseReplays, videoReplays, captionTrackUrls } from './youtube.js';
 
 const run = text => ({ runs: [{ text }] });
 const video = (id, title, channel, length) => ({ videoRenderer: { videoId: id, title: run(title), ownerText: run(channel), lengthText: { simpleText: length }, thumbnail: { thumbnails: [{ url: `https://i.ytimg.com/vi/${id}/hq720.jpg`, width: 720 }] }, viewCountText: { simpleText: '1,234,567 views' } } });
@@ -77,4 +77,18 @@ test('videos without enough views, or malformed markers, have no replay data', (
 
 test('replays are requested for one validated video id only', async () => {
   await assert.rejects(() => videoReplays('../../etc'), /video id/i);
+});
+
+const playerFixture = { captions: { playerCaptionsTracklistRenderer: { captionTracks: [
+  { baseUrl: 'https://www.youtube.com/api/timedtext?v=abcdefghijk&kind=asr&lang=en', kind: 'asr', languageCode: 'en' },
+  { baseUrl: 'https://www.youtube.com/api/timedtext?v=abcdefghijk&lang=en', languageCode: 'en' },
+  { baseUrl: 'https://evil.example/api/timedtext?v=x', languageCode: 'en' },
+] } } };
+
+test('caption tracks: official captions first, then speech recognition, only from youtube.com', () => {
+  assert.deepEqual(captionTrackUrls(playerFixture), [
+    'https://www.youtube.com/api/timedtext?v=abcdefghijk&lang=en&fmt=json3',
+    'https://www.youtube.com/api/timedtext?v=abcdefghijk&kind=asr&lang=en&fmt=json3',
+  ]);
+  assert.deepEqual(captionTrackUrls({}), []);
 });

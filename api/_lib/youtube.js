@@ -14,7 +14,7 @@ const HEADERS = {
 };
 
 export async function innertube(endpoint, body, { timeout = 4500, signal } = {}) {
-  if (!['search', 'browse', 'next'].includes(endpoint)) throw new Error('Unsupported endpoint');
+  if (!['search', 'browse', 'next', 'player'].includes(endpoint)) throw new Error('Unsupported endpoint');
   const response = await fetch(`https://www.youtube.com/youtubei/v1/${endpoint}?key=${INNERTUBE_KEY}`, {
     method: 'POST', headers: HEADERS, redirect: 'error',
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout),
@@ -140,4 +140,31 @@ export function parseReplays(data) {
 export async function videoReplays(videoId, options) {
   if (typeof videoId !== 'string' || !VIDEO_ID.test(videoId)) throw new Error('Invalid video id');
   return parseReplays(await innertube('next', { videoId }, options));
+}
+
+// Caption tracks of one video, as json3 URLs: uploaded captions (often official
+// lyric captions) before speech recognition. Only youtube.com timedtext is fetched.
+export function captionTrackUrls(data) {
+  const tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+  return (Array.isArray(tracks) ? tracks : [])
+    .filter(track => {
+      try {
+        const url = new URL(track?.baseUrl);
+        return url.protocol === 'https:' && url.hostname === 'www.youtube.com' && url.pathname === '/api/timedtext';
+      } catch { return false; }
+    })
+    .sort((a, b) => (a.kind === 'asr') - (b.kind === 'asr'))
+    .map(track => `${track.baseUrl}&fmt=json3`);
+}
+
+// The first caption track that answers, as json3; null when the video has none.
+export async function videoCaptions(videoId, { timeout = 3000, signal } = {}) {
+  if (typeof videoId !== 'string' || !VIDEO_ID.test(videoId)) throw new Error('Invalid video id');
+  for (const url of captionTrackUrls(await innertube('player', { videoId }, { timeout, signal })).slice(0, 2)) {
+    const response = await fetch(url, { headers: HEADERS, redirect: 'error', signal: AbortSignal.timeout(timeout) }).catch(() => null);
+    const text = response?.ok ? await response.text() : '';
+    if (!text || text.length > MAX_BYTES) continue;
+    try { return JSON.parse(text); } catch { /* an empty or HTML answer: try the next track */ }
+  }
+  return null;
 }
