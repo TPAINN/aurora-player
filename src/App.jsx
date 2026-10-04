@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import {
   AnimatePresence,
   MotionConfig,
@@ -17,6 +17,7 @@ import {
   ArrowRight,
   ChevronDown,
   ChevronRight,
+  Focus,
   Disc3,
   AudioLines,
   Headphones,
@@ -24,6 +25,8 @@ import {
   House,
   Library,
   ListMusic,
+  Minimize2,
+  Minus,
   LoaderCircle,
   Music2,
   Pause,
@@ -46,6 +49,7 @@ import {
 } from "lucide-react";
 import { usePlayer } from "./hooks/usePlayer";
 import { useStore } from "./hooks/useStore";
+import { pulsePeriod, pulsePhase } from "./lib/pulse";
 import { useNavigation } from "./hooks/useNavigation";
 import { getCollection, getFeaturedTracks, getMoodTracks, getSimilarTracks, searchCatalog } from "./lib/catalog";
 import { MOODS } from "../shared/moods.js";
@@ -55,7 +59,9 @@ import { requestedVariant } from "../shared/audio-variants.js";
 import { artworkAt, artworkSrcSet } from "./lib/artwork";
 import { qualityLabel } from "./lib/audio-format";
 import { homeSeeds, onRepeat, recordLike, rotateForDay, tasteFilter, topArtists } from "./lib/listening";
-import { bestPart, isPeakAt, lineSpan, peakMoments, splitBackingVocals } from "./lib/lyrics";
+import { isPeakAt, lineSpan, peakMoments, splitBackingVocals } from "./lib/lyrics";
+import { bestMoments } from "./lib/best-part";
+import { litArtwork } from "./lib/lit-artwork";
 import Welcome from "./components/Welcome";
 import { shouldWelcome } from "./lib/welcome";
 import FluidText from "./components/FluidText";
@@ -67,6 +73,7 @@ import {
   SHEET_SPRING,
   blendSwap,
   coverSwap,
+  textSwap,
   crossfade,
   HEART_SPRING,
   MAGNET_SPRING,
@@ -307,7 +314,9 @@ function Magnetic({ children, strength = 0.22, limit = 10 }) {
   const x = useSpring(0, MAGNET_SPRING);
   const y = useSpring(0, MAGNET_SPRING);
   const move = (event) => {
-    if (event.pointerType !== "mouse" || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    // Only on the wide layout: on the phone layout the button inside is absolutely
+    // placed, and a transform here would re-anchor it to this zero-size wrapper.
+    if (event.pointerType !== "mouse" || !window.matchMedia?.("(min-width: 761px)").matches || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
     const box = event.currentTarget.getBoundingClientRect();
     const clamp = (value) => Math.max(-limit, Math.min(limit, value));
     x.set(clamp((event.clientX - box.left - box.width / 2) * strength));
@@ -383,6 +392,46 @@ function LikeHeart({ liked, size = 24 }) {
 }
 // Keyed by the song: a new song starts with a fresh slider, so a drag in progress,
 // a pending seek or the bar's transition never carry over from the previous one.
+// The queue reads like a set list: the song playing, what comes next (with its
+// length and a way to clear it), and what already played, folded away.
+function QueueSections({ player, trackRows }) {
+  const index = Math.max(0, player.queueIndex ?? 0);
+  const queue = player.queue || [];
+  const upNext = queue.slice(index + 1);
+  const played = queue.slice(0, index);
+  const minutes = Math.round(upNext.reduce((sum, track) => sum + (Number(track.duration) || 0), 0) / 60);
+  return (
+    <>
+      <section className="queue-section" aria-label="Now playing">
+        <h3 className="queue-heading">Now playing</h3>
+        {trackRows(queue.slice(index, index + 1), true, undefined, index)}
+      </section>
+      <section className="queue-section" aria-label="Up next">
+        <div className="queue-heading-row">
+          <h3 className="queue-heading">
+            Up next
+            <small>{upNext.length ? `${upNext.length} ${upNext.length === 1 ? "song" : "songs"} · ${minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`}` : "Nothing yet"}</small>
+          </h3>
+          {upNext.length > 0 && (
+            <button className="text-button" onClick={() => player.setQueue(queue.slice(0, index + 1))}>
+              Clear
+            </button>
+          )}
+        </div>
+        {upNext.length > 0 ? trackRows(upNext, true, undefined, index + 1) : <p className="queue-empty">{player.autoplay ? "More like this arrives as you listen." : "Add songs with + to play them next."}</p>}
+      </section>
+      {played.length > 0 && (
+        <details className="queue-section queue-played">
+          <summary className="queue-heading">
+            Recently played <small>{played.length}</small>
+          </summary>
+          {trackRows(played, true, undefined, 0)}
+        </details>
+      )}
+    </>
+  );
+}
+
 function Seek({ player }) {
   // Dragging previews locally and seeks once on release; seeking YouTube on every
   // input event stutters playback and cancels DJ preparation repeatedly.
@@ -556,16 +605,36 @@ function Interlude({ clock, offset, start, end }) {
 }
 
 // Peaks (refrain, held notes) come from genuinely timed lyrics only.
+// Best parts: refrains and held notes from timed lyrics, weighed against what the
+// music itself says (listener replays, measured energy) and landed on the beat.
+// Audio evidence runs on playback time; results are in lyric time like the lines.
+function useMoments(player) {
+  const lines = player.lyrics?.sync && player.lyrics.sync !== "plain" ? player.lyrics.lines : null;
+  const insight = player.songInsight;
+  const offset = player.lyricsOffset || 0;
+  const duration = player.duration;
+  return useMemo(() => {
+    const lyricPeaks = lines ? peakMoments(lines) : [];
+    // Replays describe one upload: trusted only when it is as long as what is playing.
+    const replays = insight?.replays?.length && Math.abs(insight.replays.at(-1).end - duration) <= 8 ? insight.replays : null;
+    const { peaks, best } = bestMoments({
+      lyricPeaks: lyricPeaks.map((range) => ({ start: range.start - offset, end: range.end - offset })),
+      replays,
+      energy: insight?.energy,
+      grid: insight?.grid,
+      duration,
+    });
+    const toLyricTime = (range) => range && { start: range.start + offset, end: range.end + offset };
+    return { peaks: peaks.map(toLyricTime), best: toLyricTime(best) };
+  }, [lines, insight, offset, duration]);
+}
 function usePeaks(player) {
-  return useMemo(
-    () => (player.lyrics?.sync && player.lyrics.sync !== "plain" ? peakMoments(player.lyrics.lines) : []),
-    [player.lyrics],
-  );
+  return useMoments(player).peaks;
 }
 
 // Jumps to the song's best part (its longest refrain) and hides while it plays.
 function BestPartChip({ player }) {
-  const best = bestPart(usePeaks(player));
+  const { best } = useMoments(player);
   const offset = player.lyricsOffset || 0;
   const inside = useStore(player.clock, (value) => !!best && value + offset >= best.start - 1 && value + offset < best.end);
   return (
@@ -589,12 +658,19 @@ function BestPartChip({ player }) {
   );
 }
 
+const PULSE_DELAY = 1.6;
+
 // The artwork backdrop opens up (a slow zoom and lift) through the song's peaks:
 // its refrain and long held notes, read from genuinely timed lyrics only.
 function ArtBackdrop({ player }) {
   const peaks = usePeaks(player);
   const offset = player.lyricsOffset || 0;
   const peak = useStore(player.clock, (value) => peaks.length > 0 && isPeakAt(peaks, value + offset));
+  // The pulse joins once the opening zoom has mostly settled, so the two never
+  // compete for frames; the zoom marks the moment the peak hits.
+  const peakIndex = useStore(player.clock, (value) => peaks.findIndex((range) => value + offset >= range.start + PULSE_DELAY && value + offset < range.end));
+  const period = pulsePeriod(player.bpm);
+  const reduce = useReducedMotion();
   const artwork = player.track?.artwork;
   const blend = player.changeKind === "blend";
   // Every artwork sits at the same perceived brightness: bright covers are eased
@@ -610,6 +686,17 @@ function ArtBackdrop({ player }) {
     return () => { live = false; };
   }, [artwork]);
   const level = exposure.artwork === artwork ? exposure.value : 1;
+  const [lit, setLit] = useState({ key: null, url: null });
+  const litKey = artwork ? `${artwork}|${level}` : null;
+  useEffect(() => {
+    if (!artwork) return undefined;
+    let live = true;
+    litArtwork(artworkAt(artwork, 300), { brightness: 1.22 * level, saturate: 1.38, contrast: 1.16 }).then((url) => {
+      if (live) setLit({ key: `${artwork}|${level}`, url });
+    });
+    return () => { live = false; };
+  }, [artwork, level]);
+  const litUrl = lit.key === litKey ? lit.url : null;
   return (
     <>
       <div className={`player-art-background ${peak ? "is-peak" : ""}`} style={{ "--art-exposure": level.toFixed(3) }}>
@@ -626,10 +713,113 @@ function ArtBackdrop({ player }) {
           )}
         </AnimatePresence>
       </div>
+      {/* The cover pre-lit (brighter, richer, more contrast) fades in through a peak:
+          drawn once, soft and small, so the fade never redraws a blur. */}
+      <div
+        className={`player-art-boost ${peak ? "is-peak" : ""}`}
+        aria-hidden="true"
+        style={{
+          "--lit-soft": litUrl ? `url("${litUrl}")` : "none",
+          "--lit-sharp": artwork ? `url("${artworkAt(artwork, 1000)}")` : "none",
+          "--art-exposure": level.toFixed(3),
+        }}
+      />
       <div className={`player-veil ${peak ? "is-peak" : ""}`} />
+      <AnimatePresence>
+        {peakIndex >= 0 && period && player.playing && !reduce && (
+          <BeatPulse key={`${player.track?.id}:${peakIndex}`} player={player} anchor={peaks[peakIndex].start} period={period} />
+        )}
+      </AnimatePresence>
     </>
   );
 }
+
+// Through a peak the backdrop breathes with the music: a glow that kicks on each
+// beat (fast attack, slow decay) and a soft ring that travels out once a bar, both
+// phase-locked to the peak's start. Opacity and scale only, so they stay on the
+// compositor. Realigned only when the playhead jumps (a seek).
+function BeatPulse({ player, anchor, period }) {
+  const wave = useRef(null);
+  const ring = useRef(null);
+  const offset = player.lyricsOffset || 0;
+  useEffect(() => {
+    const element = wave.current;
+    if (!element) return undefined;
+    let origin = null;
+    const align = () => {
+      const phase = pulsePhase(player.clock.get() + offset, anchor, period);
+      const now = performance.now() / 1000;
+      if (origin !== null) {
+        const drift = Math.abs(pulsePhase(now - origin, 0, period) - phase);
+        if (Math.min(drift, period - drift) < 0.12) return;
+      }
+      origin = now - phase;
+      const bar = pulsePhase(player.clock.get() + offset, anchor, period * 4);
+      for (const [node, delay] of [[element, phase], [ring.current, bar]]) {
+        if (!node) continue;
+        node.style.animation = "none";
+        void node.offsetWidth;
+        node.style.animation = "";
+        node.style.animationDelay = `${-delay}s`;
+      }
+    };
+    align();
+    return player.clock.subscribe(align);
+  }, [player.clock, offset, anchor, period]);
+  return (
+    <Motion.div
+      className="beat-pulse"
+      aria-hidden="true"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1, transition: { duration: 2.4, ease: EASE } }}
+      exit={{ opacity: 0, transition: { duration: 1.6, ease: EASE_IN_OUT } }}
+    >
+      <div ref={wave} className="beat-pulse-wave" style={{ "--pulse-period": `${period}s` }} />
+      <div ref={ring} className="beat-pulse-ring" style={{ "--pulse-bar": `${period * 4}s` }} />
+    </Motion.div>
+  );
+}
+
+// One lyric line. Memoized on its own data and state, so a song change or a new
+// active line re-renders only the lines whose state actually changed, never every
+// word of the song; the word wipe itself is painted outside React.
+const LyricLine = memo(function LyricLine({ line, index, state, timed, backing, lineRef, onSeek, gap }) {
+  return (
+    <div className="lyric-block" data-index={index}>
+      <button
+        ref={lineRef}
+        className={`lyric-line ${state} ${!timed ? "plain" : ""} ${line.words?.length ? "has-words" : ""}`}
+        disabled={!timed}
+        onClick={() => onSeek(line.time)}
+        aria-label={timed ? `Seek to ${formatTime(line.time)}: ${line.text}` : undefined}
+      >
+        {line.words?.length
+          ? line.words.map((word, wi) => (
+              <span
+                key={wi}
+                className={`lyric-word${backing?.[wi] ? " backing" : ""}${word.end - word.start >= HELD_WORD ? " held" : ""}`}
+              >
+                <span>{word.text}</span>
+                <span aria-hidden="true" className="word-fill">
+                  {word.text}
+                </span>
+              </span>
+            ))
+          : line.text}
+      </button>
+      {gap && (
+        <AnimatePresence initial={false}>
+          {gap.open && <Interlude key="gap" clock={gap.clock} offset={gap.offset} start={gap.start} end={gap.end} />}
+        </AnimatePresence>
+      )}
+    </div>
+  );
+}, (before, after) => {
+  // The gap is a fresh object each render; compare what it carries.
+  const { gap: a, ...restBefore } = before, { gap: b, ...restAfter } = after;
+  const sameGap = a === b || (!!a && !!b && a.open === b.open && a.clock === b.clock && a.offset === b.offset && a.start === b.start && a.end === b.end);
+  return sameGap && Object.keys(restAfter).every((key) => restBefore[key] === restAfter[key]) && Object.keys(restBefore).length === Object.keys(restAfter).length;
+});
 
 function Lyrics({ player }) {
   const reduce = useReducedMotion();
@@ -682,6 +872,11 @@ function Lyrics({ player }) {
   const gapEnd = lines[active + 1]?.time;
   const interlude = { clock: player.clock, offset, start: gapStart, end: gapEnd };
   const stopScroll = () => scrolling.current?.stop();
+  const { seek } = player;
+  const seekToLine = useCallback((time) => {
+    seek(Math.max(0, time - offset));
+    setFollowing(true);
+  }, [seek, offset]);
   useEffect(() => {
     const box = container.current;
     const target = activeRef.current;
@@ -817,39 +1012,17 @@ function Lyrics({ player }) {
             {inGap && active === -1 && <Interlude key="intro" {...interlude} />}
           </AnimatePresence>
           {lines.map((line, i) => (
-            <div key={`${i}-${line.time}`} className="lyric-block">
-              <button
-                ref={i === active ? activeRef : null}
-                className={`lyric-line ${i === active ? "current" : ""} ${i < active ? "past" : ""} ${i === active + 1 ? "upcoming" : ""} ${!timed ? "plain" : ""} ${line.words?.length ? "has-words" : ""}`}
-                disabled={!timed}
-                onClick={() => {
-                  player.seek(Math.max(0, line.time - (player.lyricsOffset || 0)));
-                  setFollowing(true);
-                }}
-                aria-label={
-                  timed
-                    ? `Seek to ${formatTime(line.time)}: ${line.text}`
-                    : undefined
-                }
-              >
-                {line.words?.length
-                  ? line.words.map((word, wi) => (
-                      <span
-                        key={wi}
-                        className={`lyric-word${backing[i]?.[wi] ? " backing" : ""}${word.end - word.start >= HELD_WORD ? " held" : ""}`}
-                      >
-                        <span>{word.text}</span>
-                        <span aria-hidden="true" className="word-fill">
-                          {word.text}
-                        </span>
-                      </span>
-                    ))
-                  : line.text}
-              </button>
-              <AnimatePresence initial={false}>
-                {inGap && i === active && <Interlude key="gap" {...interlude} />}
-              </AnimatePresence>
-            </div>
+            <LyricLine
+              key={`${i}-${line.time}`}
+              line={line}
+              index={i}
+              state={i === active ? "current" : i < active ? "past" : i === active + 1 ? "upcoming" : ""}
+              timed={timed}
+              backing={backing[i]}
+              lineRef={i === active ? activeRef : null}
+              onSeek={seekToLine}
+              gap={i === active ? { open: inGap, clock: player.clock, offset, start: gapStart, end: gapEnd } : null}
+            />
           ))}
           <div className="lyrics-spacer" />
         </div>
@@ -861,6 +1034,13 @@ function Lyrics({ player }) {
               : timed
                 ? "Line sync"
                 : "Unsynced"}
+            {/* Timing for another edit of the song: said plainly, never guessed at. */}
+            {timed && player.lyricsTiming === "captions"
+              ? ` · synced to this video (${player.lyricsOffset > 0 ? "+" : ""}${player.lyricsOffset.toFixed(1)} s)`
+              : ""}
+            {timed && player.lyricsTiming === "published" && player.lyrics?.versionGap
+              ? ` · timed for a ${Math.abs(player.lyrics.versionGap).toFixed(1)} s ${player.lyrics.versionGap > 0 ? "shorter" : "longer"} edit`
+              : ""}
           </span>
           <AnimatePresence>
             {!following && timed && (
@@ -898,6 +1078,18 @@ function useMediaQuery(query) {
     return () => list.removeEventListener("change", update);
   }, [query]);
   return matches;
+}
+
+// The playing song's name. Its letters morph between songs only where it is on
+// screen (each letter's move is a layout measurement, so the hidden layout's copy
+// stays plain); the artist line fades in, compositor only.
+function TrackName({ track, live }) {
+  return (
+    <>
+      {live ? <FluidText as="h1">{track.title}</FluidText> : <h1>{track.title}</h1>}
+      <p key={track.artist} className="swap-in">{track.artist}</p>
+    </>
+  );
 }
 
 function Sheet({ title, close, back, children }) {
@@ -1122,6 +1314,8 @@ function DjStatus({ player }) {
 export default function App() {
   const player = usePlayer();
   const reduce = useReducedMotion();
+  // Which of the player's two layouts is on screen (phone below 761 px).
+  const phoneLayout = useMediaQuery("(max-width: 760px)");
   const [notice, setNotice] = useState("");
   const nav = useNavigation({ onLeaveHint: useCallback(() => setNotice("Press back again to leave Aurora"), []) });
   const { page, immersive, sheet, collection } = nav.view;
@@ -1155,6 +1349,8 @@ export default function App() {
   );
   const [showLyrics, setShowLyrics] = useState(false);
   const [video, setVideo] = useState(false);
+  // Lyrics focus: only the cover, the song's name and its lyrics stay on screen.
+  const [focusMode, setFocusMode] = useState(false);
   const ambientVideo = motionArt && !video && immersive && !!player.track && !player.track.localUrl;
   const sheetParent = nav.view.sheetDepth > 1 ? "settings" : null;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -1470,6 +1666,16 @@ export default function App() {
       setNotice("Muted");
     } else player.setVolume(mutedVolume.current || 80);
   };
+  // Leaving the player also leaves focus, so it never reopens in it.
+  if (focusMode && !immersive) setFocusMode(false);
+  const focused = focusMode && immersive && !!player.track;
+  const toggleFocus = () => {
+    if (focused) return setFocusMode(false);
+    setShowLyrics(true);
+    setVideo(false);
+    setImmersive(true);
+    setFocusMode(true);
+  };
   // Always reads the latest player and handlers without re-binding the listener.
   const onShortcut = useEffectEvent((e) => {
     if (!player.track && e.key !== "/") return;
@@ -1480,6 +1686,7 @@ export default function App() {
       m: () => toggleMute(),
       l: () => { setShowLyrics((value) => !value); setImmersive(true); },
       f: () => toggleFavorite(player.track),
+      i: () => toggleFocus(),
       "/": () => navigate("search"),
     }[e.key.length === 1 ? e.key.toLowerCase() : e.key];
     if (!handled) return;
@@ -1492,8 +1699,11 @@ export default function App() {
         navigate("search");
         focusSearch();
       }
-      if (e.key === "Escape" && !sheet && !e.target.closest?.("input, textarea, select"))
-        setImmersive(false);
+      // Escape steps back one level: out of lyrics focus first, then the player.
+      if (e.key === "Escape" && !sheet && !e.target.closest?.("input, textarea, select")) {
+        if (focused) setFocusMode(false);
+        else setImmersive(false);
+      }
       // Media shortcuts never steal keys from fields, controls or open dialogs.
       // Fields keep every key; sliders keep their arrows; buttons keep Space.
       if (sheet || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -1520,7 +1730,9 @@ export default function App() {
     player.playNext(track);
     setNotice("Plays next");
   };
-  const trackRows = (tracks, queueMode = false, context) => {
+  // In the queue, rows render a slice of it: `offset` is the slice's start in the
+  // full queue, so removing or playing a row always acts on the whole queue.
+  const trackRows = (tracks, queueMode = false, context, offset = 0) => {
     const occurrences = new Map();
     const rows = tracks.map((track, i) => {
       const occurrence = occurrences.get(track.id) || 0;
@@ -1538,7 +1750,7 @@ export default function App() {
           onDragStart={() => { swiped.current = true; }}
           onDragEnd={(_, info) => {
             if (info.offset.x < -110 || info.velocity.x < -700)
-              player.setQueue(player.queue.filter((_, index) => index !== i));
+              player.setQueue(player.queue.filter((_, index) => index !== i + offset));
             setTimeout(() => { swiped.current = false; }, 0);
           }}
           className={`track-row ${selected ? "selected" : ""} ${player.unavailable?.has(track.id) ? "is-unavailable" : ""}`}
@@ -1550,7 +1762,7 @@ export default function App() {
             className="track-main"
             onClick={() => {
               if (swiped.current) return;
-              play(track, queueMode ? tracks : context);
+              play(track, queueMode ? player.queue : context);
             }}
           >
             <span className="track-number">
@@ -1585,7 +1797,7 @@ export default function App() {
             onClick={() =>
               queueMode
                 ? player.setQueue(
-                    player.queue.filter((_, index) => index !== i),
+                    player.queue.filter((_, index) => index !== i + offset),
                   )
                 : addQueue(track)
             }
@@ -2025,7 +2237,7 @@ export default function App() {
     <MotionConfig reducedMotion="user">
       <Welcome onLeave={reveal} />
       <div
-        className={`aurora-app ${revealed ? "" : "is-veiled"} ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${immersive ? "is-immersive" : ""} ${video && immersive ? "has-video" : ""} ${video && showLyrics ? "video-with-lyrics" : ""} ${ambientVideo ? "motion-art" : ""}`}
+        className={`aurora-app ${revealed ? "" : "is-veiled"} ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${immersive ? "is-immersive" : ""} ${video && immersive ? "has-video" : ""} ${video && showLyrics ? "video-with-lyrics" : ""} ${ambientVideo ? "motion-art" : ""} ${focused ? "is-focus" : ""}`}
         style={{ "--art-color": color }}
       >
         <div
@@ -2122,7 +2334,7 @@ export default function App() {
         </aside>
         <Motion.main
           layout="position"
-          layoutDependency={sidebarCollapsed}
+          layoutDependency={`${sidebarCollapsed}:${focused}`}
           transition={{ layout: { duration: 0.6, ease: EASE } }}
           className="main-content"
         >
@@ -2593,6 +2805,9 @@ export default function App() {
                         <Video size={19} />
                       </IconButton>
                     </div>
+                    <IconButton label="Lyrics focus" onClick={toggleFocus}>
+                      <Focus size={19} />
+                    </IconButton>
                     <IconButton
                       label="Player settings"
                       onClick={() => setSheet("settings")}
@@ -2601,6 +2816,21 @@ export default function App() {
                     </IconButton>
                   </div>
                 </header>
+                <AnimatePresence>
+                  {focused && (
+                    <Motion.button
+                      key="focus-exit"
+                      type="button"
+                      className="focus-exit"
+                      onClick={() => setFocusMode(false)}
+                      initial={{ opacity: 0, y: -8 }}
+                      animate={{ opacity: 1, y: 0, transition: { duration: 0.6, ease: EASE, delay: 0.35 } }}
+                      exit={{ opacity: 0, y: -8, transition: { duration: 0.25, ease: EASE_EXIT } }}
+                    >
+                      <Minimize2 size={15} /> Exit focus
+                    </Motion.button>
+                  )}
+                </AnimatePresence>
                 <div className="now-playing-body">
                   <SwipeCover player={player} onClose={() => setImmersive(false)}>
                     <FadingCover track={player.track} eager size={1200} direction={player.direction} blend={player.changeKind === "blend"} />
@@ -2648,8 +2878,22 @@ export default function App() {
                     )}
                   </AnimatePresence>
                   <div className="mobile-player-info">
-                    <FluidText as="h1">{player.track.title}</FluidText>
-                    <p>{player.track.artist}</p>
+                    {/* Phones show the artwork as the backdrop; focus adds a small cover beside the name. */}
+                    {focused && (
+                      <span className="focus-thumb" aria-hidden="true">
+                        <AnimatePresence initial={false}>
+                          <Motion.img
+                            key={player.track.artwork || player.track.id}
+                            src={player.track.artwork ? artworkAt(player.track.artwork, 200) : undefined}
+                            alt=""
+                            initial={{ opacity: 0, scale: 1.06 }}
+                            animate={{ opacity: 1, scale: 1, transition: { duration: 0.7, ease: EASE } }}
+                            exit={{ opacity: 0, transition: { duration: 0.5, ease: EASE_IN_OUT } }}
+                          />
+                        </AnimatePresence>
+                      </span>
+                    )}
+                    <TrackName track={player.track} live={phoneLayout} />
                     <div className="meta-chips">
                       <QualityChip player={player} onClick={() => setSheet("audio")} />
                       <BestPartChip player={player} />
@@ -2694,8 +2938,7 @@ export default function App() {
                 </div>
                 <div className="immersive-track-meta">
                   <div>
-                    <FluidText as="h1">{player.track.title}</FluidText>
-                    <p>{player.track.artist}</p>
+                    <TrackName track={player.track} live={!phoneLayout} />
                     <div className="meta-chips">
                       <QualityChip player={player} onClick={() => setSheet("audio")} />
                       <BestPartChip player={player} />
@@ -2738,11 +2981,23 @@ export default function App() {
             }
           >
             <FadingCover track={player.track} size={160} />
-            <span>
-              <strong>{player.track?.title || "Make yourself at home"}</strong>
-              <small>
-                {player.track?.artist || "Find something you love. Press play."}
-              </small>
+            {/* The name travels with the cover: in from the side the listener is heading, the old one drifting out. */}
+            <span className="dock-text">
+              <AnimatePresence initial={false} mode="popLayout" custom={player.direction || 1}>
+                <Motion.span
+                  key={player.track?.id || "idle"}
+                  custom={player.direction || 1}
+                  variants={textSwap}
+                  initial="initial"
+                  animate="animate"
+                  exit="exit"
+                >
+                  <strong>{player.track?.title || "Make yourself at home"}</strong>
+                  <small>
+                    {player.track?.artist || "Find something you love. Press play."}
+                  </small>
+                </Motion.span>
+              </AnimatePresence>
             </span>
             {player.playing && (
               <span className="equalizer">
@@ -2852,7 +3107,7 @@ export default function App() {
                       {player.recommendationError}
                     </p>
                   )}
-                  {trackRows(player.queue, true)}
+                  <QueueSections player={player} trackRows={trackRows} />
                 </>
               ) : (
                 <div className="empty-state">
@@ -2953,14 +3208,14 @@ export default function App() {
               <div className="setting-row">
                 <div>
                   <strong>Blend length</strong>
-                  <p>Auto fits the longest blend the music leaves room for, in whole bars.</p>
+                  <p>Auto picks the longest whole phrase the music leaves room for, up to 16 bars. Online songs blend up to 16 s.</p>
                 </div>
                 <div className="segmented" role="radiogroup" aria-label="Blend length">
                   {[
-                    ["auto", "Auto", "5–10s"],
-                    [5, "Tight", "5s"],
-                    [8, "Natural", "8s"],
-                    [10, "Long", "10s"],
+                    ["auto", "Auto", "Longest fit"],
+                    [8, "Short", "8s"],
+                    [16, "Club", "16s"],
+                    [32, "Extended", "32s"],
                   ].map(([seconds, label, hint]) => (
                     <button
                       key={seconds}
@@ -3062,6 +3317,31 @@ export default function App() {
               </button>
               <div className="setting-row">
                 <div>
+                  <strong>Loudness</strong>
+                  <p>Normal keeps a little headroom. Loud plays at full level and gently compresses your own files.</p>
+                </div>
+                <div className="segmented" role="radiogroup" aria-label="Loudness">
+                  {[
+                    ["quiet", "Quiet", "Softer"],
+                    ["normal", "Normal", "Balanced"],
+                    ["loud", "Loud", "Full"],
+                  ].map(([level, label, hint]) => (
+                    <button
+                      key={level}
+                      role="radio"
+                      aria-checked={player.loudness === level}
+                      className={player.loudness === level ? "selected" : ""}
+                      onClick={() => player.setLoudness(level)}
+                    >
+                      {player.loudness === level && <Motion.span layoutId="loudness-pill" className="nav-pill" transition={PILL_SPRING} />}
+                      {label}
+                      <small>{hint}</small>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="setting-row">
+                <div>
                   <strong>Motion backdrop</strong>
                   <p>The song’s own video, softly blurred behind the artwork.</p>
                 </div>
@@ -3082,22 +3362,50 @@ export default function App() {
               <div className="setting-row">
                 <div>
                   <strong>Lyrics timing</strong>
-                  <p>Fine-tune words to your audio.</p>
+                  <p>
+                    {player.lyricsTiming === "captions"
+                      ? "Matched to this video’s captions. Nudge it if it still feels off."
+                      : player.lyricsTiming === "manual"
+                        ? "Your timing, remembered for this song."
+                        : "As published. Nudge words earlier or later; it is remembered."}
+                  </p>
                 </div>
-                <select
-                  aria-label="Lyrics timing offset"
-                  value={player.lyricsOffset || 0}
-                  onChange={(e) =>
-                    player.setLyricsOffset(Number(e.target.value))
-                  }
-                >
-                  {[-2, -1, -0.5, 0, 0.5, 1, 2].map((value) => (
-                    <option key={value} value={value}>
-                      {value > 0 ? "+" : ""}
-                      {value}s
-                    </option>
-                  ))}
-                </select>
+                <div className="offset-stepper" role="group" aria-label="Lyrics timing offset">
+                  <IconButton
+                    label="Show lyrics later"
+                    onClick={() => player.setLyricsOffset(Math.round((player.lyricsOffset - 0.1) * 10) / 10)}
+                    disabled={player.lyricsOffset <= -10}
+                  >
+                    <Minus size={16} />
+                  </IconButton>
+                  <output aria-live="polite" aria-label="Current lyrics offset">
+                    {player.lyricsOffset > 0 ? "+" : ""}
+                    {player.lyricsOffset.toFixed(1)} s
+                  </output>
+                  <IconButton
+                    label="Show lyrics earlier"
+                    onClick={() => player.setLyricsOffset(Math.round((player.lyricsOffset + 0.1) * 10) / 10)}
+                    disabled={player.lyricsOffset >= 10}
+                  >
+                    <Plus size={16} />
+                  </IconButton>
+                  <AnimatePresence initial={false}>
+                    {player.lyricsTiming === "manual" && (
+                      <Motion.button
+                        key="auto"
+                        type="button"
+                        className="small-pill"
+                        onClick={player.autoLyricsOffset}
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.9 }}
+                        transition={{ duration: 0.3, ease: EASE }}
+                      >
+                        Auto
+                      </Motion.button>
+                    )}
+                  </AnimatePresence>
+                </div>
               </div>
               <div className="setting-row">
                 <div>

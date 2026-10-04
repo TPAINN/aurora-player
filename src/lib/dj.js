@@ -52,7 +52,20 @@ export function estimateTempo(samples, sampleRate) {
   // Parabolic interpolation around the peak recovers tempos between whole frames.
   const [a, b, c] = [scores.get(lag - 1), best, scores.get(lag + 1)];
   const curvature = a - 2 * b + c;
-  const period = lag + (curvature < 0 ? Math.max(-.5, Math.min(.5, .5 * (a - c) / curvature)) : 0);
+  let period = lag + (curvature < 0 ? Math.max(-.5, Math.min(.5, .5 * (a - c) / curvature)) : 0);
+  // Refine against the repeat 16 or 32 beats on: the same peak, read that many
+  // periods out, pins the period that many times more finely (a 0.1 BPM error is
+  // nothing over 8 seconds, but 50 ms of drift over a 16-bar blend).
+  for (const beats of [32, 16]) {
+    const far = Math.round(period * beats);
+    if (far + 2 >= envelope.length * .6) continue;
+    let top = far, value = -Infinity;
+    for (let offset = far - 2; offset <= far + 2; offset++) { const score = ac(offset); if (score > value) { value = score; top = offset; } }
+    const [left, mid, right] = [ac(top - 1), value, ac(top + 1)];
+    const bend = left - 2 * mid + right;
+    const refined = (top + (bend < 0 ? Math.max(-.5, Math.min(.5, .5 * (left - right) / bend)) : 0)) / beats;
+    if (Math.abs(refined / period - 1) < .01) { period = refined; break; }
+  }
   // The beat position follows the loud hits (kick, snare), so phase uses the raw strength.
   const strength = raw.map((value, i) => .25 * (raw[i - 1] || 0) + .5 * value + .25 * (raw[i + 1] || 0));
   let phaseFrame = 0, strongest = -1;
@@ -61,7 +74,7 @@ export function estimateTempo(samples, sampleRate) {
     for (let n = 0; k + n * period < strength.length; n++) sum += strength[Math.round(k + n * period)] || 0;
     if (sum > strongest) { strongest = sum; phaseFrame = k; }
   }
-  return { bpm: Math.round(600 * frameRate / period) / 10, confidence: best, phase: phaseFrame / frameRate };
+  return { bpm: Math.round(6000 * frameRate / period) / 100, confidence: best, phase: phaseFrame / frameRate };
 }
 
 // Nearest octave equivalent: autocorrelation can hear a half- or double-time pulse.
@@ -73,8 +86,10 @@ function octaveTarget(outBpm, inBpm) {
 // enters at that same tempo and eases back to its own after the blend.
 const SPLIT_ABOVE = .04;
 
-// Blends last 5–10 seconds: long enough to hear both songs, short enough to keep the energy.
-export const MIN_BLEND = 5, MAX_BLEND = 10;
+// Blends run 5–32 seconds, as a DJ mixes: whole phrases, up to 16 bars, where the
+// EQ shares the spectrum between two songs at full level. Online songs cannot be
+// filtered, so their blends stop at 16 seconds.
+export const MIN_BLEND = 5, MAX_BLEND = 32, ONLINE_MAX_BLEND = 16;
 
 // Players that only accept coarse speed steps (e.g. 0.05): pick the pair of
 // rates on that grid, each within the stretch bound, that lines the tempos up
@@ -109,16 +124,18 @@ export function planTransition(outro, intro, target = TARGET_OVERLAP, { step = 0
     inRate = matched && split ? 1 / Math.sqrt(ratio) : 1;
   }
   const blendBpm = matched ? outro.bpm * rate : outro?.confidence >= .7 && outro.bpm > 0 ? outro.bpm : null;
-  // Whole bars at the shared blend tempo, as close to the preferred length as 5–10 s allows.
-  let seconds = target;
+  // Whole phrases at the shared blend tempo: the longest of 16, 8 or 4 bars that
+  // fits the room (a ragged 15-bar blend never sounds deliberate); with no room
+  // for a phrase, the longest whole bars that fit, never under 5 s.
+  let seconds = Math.min(MAX_BLEND, Math.max(MIN_BLEND, target));
   if (blendBpm) {
-    const bar = 240 / blendBpm;
-    let best = null;
-    for (let bars = 1; bars * bar <= MAX_BLEND + 1e-9; bars++) {
-      const length = bars * bar;
-      if (length >= MIN_BLEND - 1e-9 && (best === null || Math.abs(length - target) < Math.abs(best - target) - 1e-9)) best = length;
+    const bar = 240 / blendBpm, room = Math.min(MAX_BLEND, Math.max(MIN_BLEND, target)) + 1e-9;
+    const phrase = [16, 8, 4].map(bars => bars * bar).find(length => length <= room && length >= MIN_BLEND - 1e-9);
+    if (phrase) seconds = phrase;
+    else {
+      const bars = Math.floor(room / bar);
+      seconds = bars * bar >= MIN_BLEND - 1e-9 ? bars * bar : Math.min(MAX_BLEND, Math.ceil(MIN_BLEND / bar - 1e-9) * bar);
     }
-    seconds = best ?? Math.min(MAX_BLEND, Math.max(MIN_BLEND, target));
   }
   // Roughly one percent per second, never rushed and never dragged out.
   const easeFor = value => value !== 1 ? Math.min(8, Math.max(3, Math.abs(value - 1) * 120)) : 0;
@@ -134,15 +151,36 @@ export function recoverRate(elapsed, seconds, inRate) {
 // DJ-style overlap: the incoming song rises under a held outgoing song, then the
 // outgoing one gives way. Both follow equal-power quarter-sine laws on offset,
 // smoothed windows, so combined power never dips below one (no hole mid-blend).
-export function blendCurve(progress) {
+// Longer blends ride the faders like a DJ: song B comes up early, both songs play
+// at full body through the middle while the EQ shares the spectrum, and song A
+// leaves at the end. Short blends keep the quick overlap. The sum is held within
+// +1 dB, so the overlap never swells or sags.
+export function blendCurve(progress, seconds = 8) {
   const p = Math.max(0, Math.min(1, progress));
-  const incoming = smoothstep(p / .8), outgoing = smoothstep((p - .2) / .8);
-  return [Math.cos(outgoing * Math.PI / 2), Math.sin(incoming * Math.PI / 2)];
+  const long = Math.max(0, Math.min(1, (seconds - 8) / 16));
+  const rise = .8 - .5 * long, leave = .2 + .5 * long;
+  const incoming = smoothstep(p / rise), outgoing = smoothstep((p - leave) / (1 - leave));
+  const out = Math.cos(outgoing * Math.PI / 2), into = Math.sin(incoming * Math.PI / 2);
+  const scale = Math.min(1, Math.sqrt(1.26 / (out * out + into * into)));
+  return [out * scale, into * scale];
 }
 
 export function equalPower(progress) {
   const phase = Math.max(0, Math.min(1, progress)) * Math.PI / 2;
   return [Math.cos(phase), Math.sin(phase)];
+}
+
+// The bass swap belongs on a downbeat: the bar line of song A nearest the middle
+// of the blend (in wall time, at A's playback rate), kept within the middle 40%
+// so each song still has the floor for a while. Without a grid: the midpoint.
+export function swapTime({ now, seconds, outPosition, outGrid, rate = 1 }) {
+  const middle = now + seconds / 2;
+  if (!outGrid?.period || !(rate > 0)) return middle;
+  const bar = outGrid.period * 4;
+  const atMiddle = outPosition + (middle - now) * rate;
+  const line = outGrid.origin + Math.round((atMiddle - outGrid.origin) / bar) * bar;
+  const wall = now + (line - outPosition) / rate;
+  return Math.min(now + seconds * .7, Math.max(now + seconds * .3, wall));
 }
 
 export function smoothstep(progress) {
@@ -205,7 +243,7 @@ export function analyzeSamples(data, sampleRate) {
   const intro = introTempo && { ...introTempo, grid: { origin: introTempo.phase, period: 60 / introTempo.bpm } };
   const outro = outroTempo && { ...outroTempo, grid: { origin: windowStart + outroTempo.phase, period: 60 / outroTempo.bpm } };
   const mixStart = findMixPoint(data, sampleRate, TARGET_OVERLAP, outro?.grid);
-  return { introStart: findIntroStart(data, sampleRate), mixStart, intro, outro, duration: data.length / sampleRate, levels: loudness(data, sampleRate, 0, 35), exitLevel: average(loudness(data, sampleRate, mixStart, TARGET_OVERLAP)) };
+  return { introStart: findIntroStart(data, sampleRate), mixStart, intro, outro, duration: data.length / sampleRate, levels: loudness(data, sampleRate, 0, 35), energy: { hop: 1, levels: loudness(data, sampleRate, 0, data.length / sampleRate, 1) }, exitLevel: average(loudness(data, sampleRate, mixStart, TARGET_OVERLAP)) };
 }
 
 // The exit a DJ would pick in the final 30 seconds: where the song's last
@@ -352,12 +390,12 @@ export function loudness(samples, sampleRate, from, seconds, hop = .5) {
 }
 const average = values => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
 
-// Auto blend length: the longest blend (up to 10 s) that fits both the room song A
+// Auto blend length: the longest blend (up to 32 s, 16 s online) that fits both the room song A
 // leaves after its last sung word and the room song B leaves before its first,
 // so two voices never overlap; never shorter than 5 s. Unknown room is no limit.
-export function adaptiveBlend({ outroSpan = Infinity, introSpan = Infinity } = {}) {
+export function adaptiveBlend({ outroSpan = Infinity, introSpan = Infinity } = {}, longest = MAX_BLEND) {
   const room = [outroSpan, introSpan].filter(value => Number.isFinite(value) && value > 0);
-  return Math.max(MIN_BLEND, Math.min(MAX_BLEND, ...room));
+  return Math.max(MIN_BLEND, Math.min(longest, ...room));
 }
 
 // Online, only timed lyrics tell where the voices are: song A's instrumental tail

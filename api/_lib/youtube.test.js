@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSearch, parsePlaylist, splitVideoTitle, searchYouTube } from './youtube.js';
+import { parseSearch, parsePlaylist, splitVideoTitle, searchYouTube, parseReplays, videoReplays, captionTrackUrls } from './youtube.js';
 
 const run = text => ({ runs: [{ text }] });
 const video = (id, title, channel, length) => ({ videoRenderer: { videoId: id, title: run(title), ownerText: run(channel), lengthText: { simpleText: length }, thumbnail: { thumbnails: [{ url: `https://i.ytimg.com/vi/${id}/hq720.jpg`, width: 720 }] }, viewCountText: { simpleText: '1,234,567 views' } } });
@@ -46,4 +46,49 @@ test('search posts to the fixed InnerTube endpoint with the requested filter', a
   assert.ok(seen[0][0].startsWith('https://www.youtube.com/youtubei/v1/search'));
   assert.equal(seen[0][1].params, 'EgIQAQ==');
   assert.equal(result.videos.length, 2);
+});
+
+// "Most replayed": the current entity format and the older player-bar format.
+const heat = (i, score) => ({ startMillis: String(i * 2000), durationMillis: '2000', intensityScoreNormalized: score });
+const entityFixture = { frameworkUpdates: { entityBatchUpdate: { mutations: [
+  { payload: { somethingElse: { markers: [heat(0, 1)] } } },
+  { payload: { macroMarkersListEntity: { markersList: { markerType: 'MARKER_TYPE_CHAPTERS', markers: [heat(0, 1)] } } } },
+  { payload: { macroMarkersListEntity: { markersList: { markerType: 'MARKER_TYPE_HEATMAP', markers: [heat(0, 1), heat(1, 0.25), heat(2, 0.5)] } } } },
+] } } };
+const playerBarFixture = { playerOverlays: { playerOverlayRenderer: { decoratedPlayerBarRenderer: { decoratedPlayerBarRenderer: { playerBar: { multiMarkersPlayerBarRenderer: { markersMap: [{ key: 'HEATSEEKER', value: { heatmap: { heatmapRenderer: { heatMarkers: [
+  { heatMarkerRenderer: { timeRangeStartMillis: 0, markerDurationMillis: 2500, heatMarkerIntensityScoreNormalized: 0.4 } },
+  { heatMarkerRenderer: { timeRangeStartMillis: 2500, markerDurationMillis: 2500, heatMarkerIntensityScoreNormalized: 1 } },
+] } } } }] } } } } } } };
+
+test('most-replayed markers are read from the entity format, never from chapters', () => {
+  assert.deepEqual(parseReplays(entityFixture), [{ start: 0, end: 2, score: 1 }, { start: 2, end: 4, score: 0.25 }, { start: 4, end: 6, score: 0.5 }]);
+});
+
+test('most-replayed markers are read from the older player-bar format', () => {
+  assert.deepEqual(parseReplays(playerBarFixture), [{ start: 0, end: 2.5, score: 0.4 }, { start: 2.5, end: 5, score: 1 }]);
+});
+
+test('videos without enough views, or malformed markers, have no replay data', () => {
+  assert.deepEqual(parseReplays({}), []);
+  assert.deepEqual(parseReplays(null), []);
+  const bad = { frameworkUpdates: { entityBatchUpdate: { mutations: [{ payload: { macroMarkersListEntity: { markersList: { markerType: 'MARKER_TYPE_HEATMAP', markers: [{ startMillis: 'x', durationMillis: '2000', intensityScoreNormalized: 1 }, heat(1, 7), heat(2, -1)] } } } }] } } };
+  assert.deepEqual(parseReplays(bad), []);
+});
+
+test('replays are requested for one validated video id only', async () => {
+  await assert.rejects(() => videoReplays('../../etc'), /video id/i);
+});
+
+const playerFixture = { captions: { playerCaptionsTracklistRenderer: { captionTracks: [
+  { baseUrl: 'https://www.youtube.com/api/timedtext?v=abcdefghijk&kind=asr&lang=en', kind: 'asr', languageCode: 'en' },
+  { baseUrl: 'https://www.youtube.com/api/timedtext?v=abcdefghijk&lang=en', languageCode: 'en' },
+  { baseUrl: 'https://evil.example/api/timedtext?v=x', languageCode: 'en' },
+] } } };
+
+test('caption tracks: official captions first, then speech recognition, only from youtube.com', () => {
+  assert.deepEqual(captionTrackUrls(playerFixture), [
+    'https://www.youtube.com/api/timedtext?v=abcdefghijk&lang=en&fmt=json3',
+    'https://www.youtube.com/api/timedtext?v=abcdefghijk&kind=asr&lang=en&fmt=json3',
+  ]);
+  assert.deepEqual(captionTrackUrls({}), []);
 });
