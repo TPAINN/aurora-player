@@ -56,7 +56,15 @@ test('with a measured beat grid peaks start on the nearest beat and last whole b
   const snapped = snapToGrid({ start: 121.4, end: 149.6 }, grid);
   near(snapped.start, 121.25);
   near((snapped.end - snapped.start) / 2 % 1, 0); // 2 s bars
-  assert.ok(Math.abs(snapped.end - 149.6) <= 1.01, JSON.stringify(snapped));
+  // Never cut the last sung word: release on the first bar line after it.
+  assert.ok(snapped.end >= 149.6 && snapped.end < 149.6 + 2, JSON.stringify(snapped));
+});
+
+test('a held note shorter than a bar still lasts until its bar line, never shorter', () => {
+  const snapped = snapToGrid({ start: 26.2, end: 28.5 }, { period: 0.5 });
+  near(snapped.end, 30.2);
+  // Within a hair of a bar line, the line itself is the end.
+  near(snapToGrid({ start: 40, end: 52.1 }, { period: 0.5 }).end, 52);
 });
 
 test('with tempo but no phase only the length is counted in bars from the real start', () => {
