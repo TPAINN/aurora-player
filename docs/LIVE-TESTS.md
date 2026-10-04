@@ -1,13 +1,13 @@
 # Live interaction tests
 
-`scripts/live-tests.mjs` drives the real app in Chromium. The catalogue, lyrics and tempo APIs are stubbed (some deliberately slow or failing), and a simulated YouTube player records loads, plays, pauses, seeks, volumes and playback rates. Group G decodes real generated WAV audio. 364 checks in seventeen groups (plus three run on demand: P, a frame-timing profile; R, an opening/closing audit; V, a phone screenshot tour):
+`scripts/live-tests.mjs` drives the real app in Chromium. The catalogue, lyrics and tempo APIs are stubbed (some deliberately slow or failing), and a simulated YouTube player records loads, plays, pauses, seeks, volumes and playback rates. Group G decodes real generated WAV audio. 371 checks in eighteen groups (plus four run on demand: P, a frame-timing profile; R, an opening/closing audit; V, a phone screenshot tour; T, a frame-by-frame film of the lyrics toggle):
 
 | Group | Covers | Checks |
 | --- | --- | --- |
 | A | Home, carousel, navigation, sidebar, shortcuts | 16 |
 | B | Search: ideas, dedupe, stale results, skeletons, keys, retry, recents, Play next, 8D variant | 23 |
 | C | Playback, keyboard, seek, volume, likes, lyrics sync/scroll/interlude, backing vocals past the next line, peak backdrop, beat kick and bar ring on peaks with the lifted backdrop (tempo, running, frame rate, locked to the beat within 25 ms), the player never scrolling into its backdrop overscan, cover direction on Next/Previous, queue and sheets, a11y names | 58 |
-| D | DJ priming, overlap, a real blend (both songs within 6 dB of full for most of it, not a fade-out then fade-in), blend curve, deep sweep, tempo glide bounds, rate read-back, tempos meeting in the middle, manual blend, song B entry past a long intro, 0.05-step embeds, seamless mode, main-thread load | 42 |
+| D | DJ priming, overlap, a real blend (both songs within 6 dB of full for most of it, not a fade-out then fade-in), blend curve, deep sweep, tempo glide bounds, rate read-back, tempos meeting in the middle, manual blend, song B entry past a long intro, 0.05-step embeds, seamless mode, main-thread load, an early manual Next that keeps song A at full level while B buffers and then blends | 45 |
 | E | Mobile (390 px), tablet (900 px), reduced motion | 15 |
 | F | Search categories, collections, Back gestures, adaptive radio and home (spotlight, Made for you, Daily rotation), quality chip and audio sheet, blend length, motion backdrop, opening, favicons, local file format | 39 |
 | G | Local DJ transition with real decoded WAV audio (120 → 126 BPM): glide, bound, shared tempo, entry at B's first full section, hand-over, easing back, completion | 10 |
@@ -21,12 +21,18 @@
 | O | Lyric timing that adapts to the upload: caption-matched timing applies by itself and is named; the line on screen follows it; settings name the source; a nudge by hand wins and Auto hands back; another edit asks for lyrics timed for its own length and the footer says so otherwise | 8 |
 | Q | Interaction audit on desktop and phone (home, search, player, settings): every visible button answers a press and none moves while pressed | 6 |
 | S | Scroll reveal on desktop and phone: cards that arrive after their section came into view still reveal | 4 |
+| W | A song with no catalogue tempo pulses on the beat measured from its word-timed vocal; with no beat evidence, no pulse | 4 |
 
-Result on the production build (`npm run preview`): **363 / 364 passed**; the one miss is C's held-note frame rate under software rendering (28.7 fps against 30), which varies between runs without a GPU. The hand-over now renders as a React transition, so the long-task check at the blend also passes in development mode.
+Result on the production build (`npm run preview`): **370 / 371 passed**; the one miss is C's held-note frame rate under software rendering (24.7–29 fps against 30 across runs), which varies without a GPU. The hand-over now renders as a React transition, so the long-task check at the blend also passes in development mode.
 
 A separate responsive sweep drives home, search, album, player and lyrics at 13 viewports (320×568 to 2560×1440, including landscape phones). It fails on any element that spills off-screen, then checks that the player never runs under the dock.
 
 ## Defects the suite found and fixed
+
+Round six:
+- Lyrics on and off jumped: the cover snapped across before the lyrics faded in, and back after they faded out; on phones the name block jumped and blanked. Filmed frame by frame (group T), it is now one glide.
+- Most online songs never pulsed: a phase needed word-timed lyrics and a tempo needed catalogue BPM. Line starts now place a known tempo, and word-timed vocals reveal an unknown one.
+- A manual Next with Live DJ changes faded song A to silence while B loaded (A fell from 68 to 53 before B sounded); B now buffers under A at full level.
 
 Round five:
 - Home cards that arrived after their section had scrolled into view stayed invisible (the reveal only reached children present when it fired). Sections now reveal from state.
