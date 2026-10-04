@@ -137,8 +137,11 @@ export function planTransition(outro, intro, target = TARGET_OVERLAP, { step = 0
       seconds = bars * bar >= MIN_BLEND - 1e-9 ? bars * bar : Math.min(MAX_BLEND, Math.ceil(MIN_BLEND / bar - 1e-9) * bar);
     }
   }
-  // Roughly one percent per second, never rushed and never dragged out.
-  const easeFor = value => value !== 1 ? Math.min(8, Math.max(3, Math.abs(value - 1) * 120)) : 0;
+  // A DJ rides the tempo fader over whole phrases, so the change is felt, not heard:
+  // at least four bars of the blend tempo, about 0.6 % per second for larger
+  // changes, never longer than twelve seconds.
+  const bars = blendBpm ? (4 * 240) / blendBpm : 4;
+  const easeFor = value => value !== 1 ? Math.min(12, Math.max(bars, Math.abs(value - 1) * 160)) : 0;
   return { rate, inRate, matched, seconds, rampSeconds: easeFor(rate), recoverSeconds: easeFor(inRate), targetBpm: matched ? targetBpm : null, blendBpm, beatSeconds: blendBpm ? 60 / blendBpm : null };
 }
 
@@ -193,6 +196,18 @@ export function glideRate(time, rampStart, rampSeconds, rate) {
   if (time < rampStart) return 1;
   if (!(rampSeconds > 0)) return rate;
   return 1 + (rate - 1) * smoothstep((time - rampStart) / rampSeconds);
+}
+
+// Rate changes on media elements are applied in small steps (each one costs a
+// resample). Snapping a glide to an even grid between its two ends keeps every
+// step within `grain` and makes the last step land exactly on the target, instead
+// of stalling one sub-grain step short of it.
+export function gridRate(value, from, to, grain) {
+  const span = to - from;
+  const steps = Math.ceil(Math.abs(span) / grain - 1e-9);
+  if (!steps) return to;
+  const k = Math.min(steps, Math.max(0, Math.round(((value - from) / span) * steps)));
+  return Number((from + (span * k) / steps).toFixed(6));
 }
 
 export function snapToBeat(time, grid) {
