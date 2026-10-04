@@ -3,6 +3,7 @@
 //   npm i --no-save playwright-core && node scripts/live-tests.mjs [A|B|C|D|E]
 // BASE=http://localhost:5188/ targets `npm run preview`; CHROMIUM_PATH selects a browser.
 import { chromium } from 'playwright-core';
+import { mkdir } from 'node:fs/promises';
 
 const BASE = process.env.BASE || 'http://localhost:5187/';
 const only = process.argv[2];
@@ -152,6 +153,7 @@ async function check(group, name, fn) {
 const events = page => page.evaluate(() => window.__events);
 const title = page => page.evaluate(() => document.title);
 const searchFor = async (page, text) => { await page.fill('input[aria-label="Search songs or artists"]', text); await wait(700); };
+const goPage = (page, desktop, mobile) => page.locator(`nav[aria-label="Main navigation"] button[aria-label="${desktop}"] >> visible=true`).or(page.locator(`nav[aria-label="Mobile navigation"] button:has-text("${mobile}") >> visible=true`)).first().click();
 const goSearch = page => page.locator('nav[aria-label="Main navigation"] button[aria-label="Search"] >> visible=true').or(page.locator('nav[aria-label="Mobile navigation"] button:has-text("Search") >> visible=true')).first().click();
 const playerTime = page => page.evaluate(() => Number(document.querySelector('.dock-seek input')?.value || 0));
 async function setSeek(page, seconds) {
@@ -1354,9 +1356,10 @@ if (only === 'R') {
     const observer = new MutationObserver(records => {
       for (const record of records) {
         for (const node of record.addedNodes) {
-          if (node.nodeType !== 1 || node.closest('iframe, .yt-deck, .toast, svg') || [...tracked.keys()].some(other => other !== node && other.contains?.(node))) continue;
+          if (node.nodeType !== 1 || node.closest('iframe, .yt-deck, .toast, svg') || [...tracked].some(([other, past]) => other !== node && performance.now() - past.added < 300 && other.contains?.(node))) continue;
           const first = chain(node).map(sig);
           const history = [];
+          history.added = performance.now();
           tracked.set(node, history);
           setTimeout(() => { if (!node.isConnected || !visible(node)) return; history.push(chain(node).map(sig).join('#')); }, 20);
           setTimeout(() => { if (!node.isConnected || !visible(node)) return; const later = chain(node).map(sig); if (later.join('#') === first.join('#') && history[0] === later.join('#')) window.__audit.pops.push(label(node)); }, 160);
@@ -1397,11 +1400,54 @@ if (only === 'R') {
     await step('unfocus', () => page.keyboard.press('Escape'));
     await step('next song', () => page.keyboard.press('Shift+ArrowRight'), 2200);
     await step('close player', () => page.keyboard.press('Escape'));
-    await step('library', () => page.locator('nav button:has-text("Library") >> visible=true, nav button[aria-label="Your library"] >> visible=true').first().click());
-    await step('home', () => page.locator('nav button:has-text("Listen") >> visible=true, nav button[aria-label="Listen now"] >> visible=true').first().click(), 1800);
+    await step('library', () => goPage(page, 'Your library', 'Library'));
+    await step('home', () => goPage(page, 'Listen now', 'Listen'), 1800);
     const found = await page.evaluate(() => ({ pops: [...new Set(window.__audit.pops)], vanishes: [...new Set(window.__audit.vanishes)] }));
     console.log(`AUDIT-R ${label} pops in (${found.pops.length}):\n  ${found.pops.join('\n  ')}\nAUDIT-R ${label} vanishes (${found.vanishes.length}):\n  ${found.vanishes.join('\n  ')}`);
     await check('R', `${label}: no runtime errors in the transition audit`, async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
+// Cards that arrive after their section has revealed still appear (phones load the
+// recommendations late, often after the shelf has scrolled into view).
+if (!only || only === 'S') {
+  for (const [label, viewport] of [['phone', { width: 390, height: 844 }], ['desktop', { width: 1440, height: 900 }]]) {
+    const { context, page, errors } = await newSession(browser, { viewport });
+    await page.goto(BASE); await wait(1500);
+    await page.mouse.wheel(0, 900); await wait(3200);
+    await check('S', `${label}: every card in view has revealed`, async () => {
+      const hidden = await page.evaluate(() => [...document.querySelectorAll('.album-card, .video-card, .mood-card')].filter(node => { const box = node.getBoundingClientRect(); return box.bottom > 0 && box.top < innerHeight - 120 && box.width > 0 && Number(getComputedStyle(node).opacity) < .99; }).map(node => node.textContent.trim().slice(0, 24)));
+      ok(!hidden.length, hidden.join(', '));
+    });
+    await check('S', `${label}: no runtime errors`, async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
+// On demand: a screenshot tour of the main screens at phone sizes, for visual review.
+if (only === 'V') {
+  const dir = process.env.SHOTS || 'shots'; await mkdir(dir, { recursive: true });
+  for (const [label, viewport] of [['phone', { width: 390, height: 844 }], ['small', { width: 360, height: 740 }], ['landscape', { width: 844, height: 390 }]]) {
+    const { context, page, errors } = await newSession(browser, { viewport });
+    const shot = async name => { await wait(1300); await page.screenshot({ path: `${dir}/v-${label}-${name}.png` }); };
+    const step = async (name, act) => { try { await act(); await shot(name); } catch (error) { console.log(`TOUR-FAIL ${label} ${name}: ${error.message.split('\n')[0]}`); } };
+    await page.goto(BASE); await wait(2500); await shot('home');
+    await page.mouse.wheel(0, 900); await shot('home-scrolled'); await wait(2500); await shot('home-scrolled-late');
+    console.log('TOUR-CARDS', label, JSON.stringify(await page.evaluate(() => [...document.querySelectorAll('.album-card, .video-card')].slice(0, 4).map(node => { const box = node.getBoundingClientRect(); return [Math.round(box.top), Math.round(box.height), getComputedStyle(node).opacity, getComputedStyle(node.closest('section') || node).opacity]; }))));
+    await step('search', async () => { await goSearch(page); await searchFor(page, 'band'); });
+    await step('player', async () => { await page.click('.top-result-play'); await wait(1500); if (!await page.locator('.immersive-player').count()) await page.click('.dock-track'); });
+    await step('lyrics', () => page.keyboard.press('l'));
+    await step('queue', () => page.locator('button:has-text("Queue") >> visible=true').first().click());
+    await page.keyboard.press('Escape'); await wait(600);
+    await step('settings', () => page.click('button[aria-label="Player settings"]'));
+    await page.keyboard.press('Escape'); await wait(600);
+    await step('dj', () => page.locator('button[aria-label="DJ transition settings"] >> visible=true').first().click());
+    await page.keyboard.press('Escape'); await wait(600);
+    await page.keyboard.press('Escape'); await wait(900);
+    await step('dock', async () => {});
+    await step('library', () => goPage(page, 'Your library', 'Library'));
+    if (errors.length) console.log(`TOUR-ERRORS ${label}: ${errors.join(' | ')}`);
     await context.close();
   }
 }

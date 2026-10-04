@@ -11,6 +11,7 @@ import {
   useIsPresent,
   useReducedMotion,
   usePresence,
+  useInView,
 } from "framer-motion";
 import {
   ArrowDown,
@@ -256,10 +257,15 @@ function PlayButton({ player, large = false }) {
 
 // Its own presence boundary: the page switcher skips entrance states on first
 // load (initial={false}), which would leave nothing for the scroll reveal to play.
+// The reveal is driven by state rather than whileInView: cards that arrive after
+// the section has come into view (recommendations load late) then inherit "shown"
+// and cascade in, instead of staying hidden.
 function RevealSection(props) {
+  const ref = useRef(null);
+  const inView = useInView(ref, revealSection.viewport);
   return (
     <AnimatePresence>
-      <Motion.section {...revealSection} {...props} />
+      <Motion.section ref={ref} variants={revealSection.variants} initial="hidden" animate={inView ? "shown" : "hidden"} {...props} />
     </AnimatePresence>
   );
 }
@@ -2974,20 +2980,22 @@ export default function App() {
                   </AnimatePresence>
                   <div className="mobile-player-info">
                     {/* Phones show the artwork as the backdrop; focus adds a small cover beside the name. */}
-                    {focused && (
-                      <span className="focus-thumb" aria-hidden="true">
-                        <AnimatePresence initial={false}>
-                          <Motion.img
-                            key={player.track.artwork || player.track.id}
-                            src={player.track.artwork ? artworkAt(player.track.artwork, 200) : undefined}
-                            alt=""
-                            initial={{ opacity: 0, scale: 1.06 }}
-                            animate={{ opacity: 1, scale: 1, transition: { duration: 0.7, ease: EASE } }}
-                            exit={{ opacity: 0, transition: { duration: 0.5, ease: EASE_IN_OUT } }}
-                          />
+                    <AnimatePresence>
+                      {focused && (
+                        <Motion.span key="focus-thumb" className="focus-thumb" aria-hidden="true" {...pop}>
+                          <AnimatePresence initial={false}>
+                            <Motion.img
+                              key={player.track.artwork || player.track.id}
+                              src={player.track.artwork ? artworkAt(player.track.artwork, 200) : undefined}
+                              alt=""
+                              initial={{ opacity: 0, scale: 1.06 }}
+                              animate={{ opacity: 1, scale: 1, transition: { duration: 0.7, ease: EASE } }}
+                              exit={{ opacity: 0, transition: { duration: 0.5, ease: EASE_IN_OUT } }}
+                            />
                         </AnimatePresence>
-                      </span>
+                      </Motion.span>
                     )}
+                    </AnimatePresence>
                     <TrackName track={player.track} live={phoneLayout} />
                     <div className="meta-chips">
                       <QualityChip player={player} onClick={() => setSheet("audio")} />
@@ -3098,13 +3106,15 @@ export default function App() {
                 </Motion.span>
               </AnimatePresence>
             </span>
-            {player.playing && (
-              <span className="equalizer">
-                <i />
-                <i />
-                <i />
-              </span>
-            )}
+            <AnimatePresence initial={false}>
+              {player.playing && (
+                <Motion.span key="equalizer" className="equalizer" {...pop}>
+                  <i />
+                  <i />
+                  <i />
+                </Motion.span>
+              )}
+            </AnimatePresence>
           </Motion.button>
           <div className="dock-seek">
             <Seek key={player.track?.id || "idle"} player={player} />
