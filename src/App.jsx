@@ -49,7 +49,7 @@ import {
 } from "lucide-react";
 import { usePlayer } from "./hooks/usePlayer";
 import { useStore } from "./hooks/useStore";
-import { pulsePeriod, pulsePhase } from "./lib/pulse";
+import { beatPhase, pulsePeriod, pulsePhase } from "./lib/pulse";
 import { useNavigation } from "./hooks/useNavigation";
 import { getCollection, getFeaturedTracks, getMoodTracks, getSimilarTracks, searchCatalog } from "./lib/catalog";
 import { MOODS } from "../shared/moods.js";
@@ -617,15 +617,25 @@ function useMoments(player) {
     const lyricPeaks = lines ? peakMoments(lines) : [];
     // Replays describe one upload: trusted only when it is as long as what is playing.
     const replays = insight?.replays?.length && Math.abs(insight.replays.at(-1).end - duration) <= 8 ? insight.replays : null;
+    // Online songs only know their tempo: the beat phase comes from the sung words
+    // (playback time). Device audio already carries a measured grid.
+    let grid = insight?.grid || null;
+    if (grid?.period && !Number.isFinite(grid.origin) && lines) {
+      const words = lines.flatMap((line) => line.words || []).map((word) => ({ start: word.start - offset, end: word.end - offset }));
+      const phase = beatPhase(words, grid.period);
+      if (phase) grid = { ...grid, origin: phase.origin };
+    }
     const { peaks, best } = bestMoments({
       lyricPeaks: lyricPeaks.map((range) => ({ start: range.start - offset, end: range.end - offset })),
       replays,
       energy: insight?.energy,
-      grid: insight?.grid,
+      grid,
       duration,
     });
     const toLyricTime = (range) => range && { start: range.start + offset, end: range.end + offset };
-    return { peaks: peaks.map(toLyricTime), best: toLyricTime(best) };
+    // The beat grid in lyric time, for the pulse (null when its phase is unknown).
+    const beat = Number.isFinite(grid?.origin) ? { period: grid.period, origin: grid.origin + offset } : null;
+    return { peaks: peaks.map(toLyricTime), best: toLyricTime(best), beat };
   }, [lines, insight, offset, duration]);
 }
 function usePeaks(player) {
@@ -663,7 +673,7 @@ const PULSE_DELAY = 1.6;
 // The artwork backdrop opens up (a slow zoom and lift) through the song's peaks:
 // its refrain and long held notes, read from genuinely timed lyrics only.
 function ArtBackdrop({ player }) {
-  const peaks = usePeaks(player);
+  const { peaks, beat } = useMoments(player);
   const offset = player.lyricsOffset || 0;
   const peak = useStore(player.clock, (value) => peaks.length > 0 && isPeakAt(peaks, value + offset));
   // The pulse joins once the opening zoom has mostly settled, so the two never
@@ -727,7 +737,7 @@ function ArtBackdrop({ player }) {
       <div className={`player-veil ${peak ? "is-peak" : ""}`} />
       <AnimatePresence>
         {peakIndex >= 0 && period && player.playing && !reduce && (
-          <BeatPulse key={`${player.track?.id}:${peakIndex}`} player={player} anchor={peaks[peakIndex].start} period={period} />
+          <BeatPulse key={`${player.track?.id}:${peakIndex}`} player={player} anchor={peaks[peakIndex].start} beatOrigin={beat?.origin ?? peaks[peakIndex].start} period={period} />
         )}
       </AnimatePresence>
     </>
@@ -735,37 +745,36 @@ function ArtBackdrop({ player }) {
 }
 
 // Through a peak the backdrop breathes with the music: a glow that kicks on each
-// beat (fast attack, slow decay) and a soft ring that travels out once a bar, both
-// phase-locked to the peak's start. Opacity and scale only, so they stay on the
-// compositor. Realigned only when the playhead jumps (a seek).
-function BeatPulse({ player, anchor, period }) {
+// beat (fast attack, slow decay) and a soft ring that travels out once a bar. The
+// kick is locked to the song's beat grid (measured for device audio, read from the
+// sung words online) on the smooth playhead, checked every frame; drift over 20 ms is
+// corrected by setting
+// the running animation's time, so a correction never restarts it. Opacity and
+// scale only, so it stays on the compositor.
+function BeatPulse({ player, anchor, beatOrigin, period }) {
   const wave = useRef(null);
   const ring = useRef(null);
   const offset = player.lyricsOffset || 0;
+  const { getPlaybackTime } = player;
   useEffect(() => {
-    const element = wave.current;
-    if (!element) return undefined;
-    let origin = null;
+    // The two running animations, looked up once they exist (not every frame).
+    const tracks = [[wave, period, beatOrigin], [ring, period * 4, anchor]].map(([ref, cycle, from]) => ({ ref, cycle, from, animation: null }));
     const align = () => {
-      const phase = pulsePhase(player.clock.get() + offset, anchor, period);
-      const now = performance.now() / 1000;
-      if (origin !== null) {
-        const drift = Math.abs(pulsePhase(now - origin, 0, period) - phase);
-        if (Math.min(drift, period - drift) < 0.12) return;
-      }
-      origin = now - phase;
-      const bar = pulsePhase(player.clock.get() + offset, anchor, period * 4);
-      for (const [node, delay] of [[element, phase], [ring.current, bar]]) {
-        if (!node) continue;
-        node.style.animation = "none";
-        void node.offsetWidth;
-        node.style.animation = "";
-        node.style.animationDelay = `${-delay}s`;
+      const time = getPlaybackTime() + offset;
+      for (const track of tracks) {
+        track.animation ||= track.ref.current?.getAnimations?.()[0] || null;
+        const { animation, cycle, from } = track;
+        if (!animation) continue;
+        const want = pulsePhase(time, from, cycle) * 1000;
+        const have = ((Number(animation.currentTime) % (cycle * 1000)) + cycle * 1000) % (cycle * 1000);
+        const drift = Math.abs(want - have);
+        if (Math.min(drift, cycle * 1000 - drift) > 20) animation.currentTime = want;
       }
     };
-    align();
-    return player.clock.subscribe(align);
-  }, [player.clock, offset, anchor, period]);
+    // Checked every frame (a few subtractions): a busy moment never lets it drift.
+    let frame = requestAnimationFrame(function lock() { align(); frame = requestAnimationFrame(lock); });
+    return () => cancelAnimationFrame(frame);
+  }, [getPlaybackTime, offset, anchor, beatOrigin, period]);
   return (
     <Motion.div
       className="beat-pulse"
@@ -774,7 +783,7 @@ function BeatPulse({ player, anchor, period }) {
       animate={{ opacity: 1, transition: { duration: 2.4, ease: EASE } }}
       exit={{ opacity: 0, transition: { duration: 1.6, ease: EASE_IN_OUT } }}
     >
-      <div ref={wave} className="beat-pulse-wave" style={{ "--pulse-period": `${period}s` }} />
+      <div ref={wave} className="beat-pulse-wave" style={{ "--pulse-period": `${period}s` }} data-beat-origin={beatOrigin} data-period={period} />
       <div ref={ring} className="beat-pulse-ring" style={{ "--pulse-bar": `${period * 4}s` }} />
     </Motion.div>
   );
