@@ -431,3 +431,31 @@ test('a blend is a real blend: both songs ride together through the middle', asy
     assert.ok(db(blendCurve(.04, seconds)[1]) < -20 && db(blendCurve(.96, seconds)[0]) < -20, `${seconds} s gentle ends`);
   }
 });
+
+test('the tempo change goes to the song where it is least heard', async () => {
+  const { planTransition, chooseBend } = await import('./dj.js');
+  const a = { bpm: 120, confidence: 0.9 }, b = { bpm: 123, confidence: 0.9 };
+  // Keep A as it is; B comes in at A's tempo and eases back to its own.
+  const keepA = planTransition(a, b, 8, { bend: 'incoming' });
+  assert.equal(keepA.rate, 1);
+  assert.ok(Math.abs(keepA.inRate - 120 / 123) < 1e-9 && keepA.matched);
+  assert.equal(keepA.rampSeconds, 0);
+  assert.ok(keepA.recoverSeconds >= (4 * 240) / 120 - 1e-9, String(keepA.recoverSeconds));
+  // A slows or speeds into B's tempo; B plays as it is.
+  const moveA = planTransition(a, b, 8, { bend: 'outgoing' });
+  assert.ok(Math.abs(moveA.rate - 123 / 120) < 1e-9 && moveA.inRate === 1 && moveA.recoverSeconds === 0);
+  // Both share it: each moves half the way.
+  const share = planTransition(a, b, 8, { bend: 'split' });
+  assert.ok(Math.abs(share.rate * 120 - share.inRate * 123) < 1e-6 && share.rate > 1 && share.inRate < 1);
+  // Too far for one song alone: always shared, whatever was asked.
+  const wide = planTransition({ bpm: 100, confidence: 0.9 }, { bpm: 110, confidence: 0.9 }, 8, { bend: 'incoming' });
+  assert.ok(wide.rate > 1 && wide.inRate < 1, JSON.stringify(wide));
+
+  // Where are the voices? A change is least heard where nobody sings.
+  const base = { seconds: 8, ramp: 8, recover: 8 };
+  assert.equal(chooseBend({ ...base, introSpan: 14, outroSpan: 2 }), 'incoming', 'B opens instrumental');
+  assert.equal(chooseBend({ ...base, introSpan: 1, outroSpan: 16 }), 'outgoing', 'A ends instrumental');
+  assert.equal(chooseBend({ ...base, introSpan: 1, outroSpan: 2 }), 'split', 'voices on both sides: halve each change');
+  assert.equal(chooseBend({ ...base, introSpan: Infinity, outroSpan: Infinity }), 'incoming', 'unknown: leave the song being heard alone');
+  assert.equal(chooseBend({ ...base, introSpan: 1, outroSpan: Infinity }), 'split');
+});
