@@ -40,8 +40,11 @@ button:disabled {
   cursor: default;
   opacity: 0.4;
 }
+/* Press feedback uses the independent scale property: it composes with any
+   transform a button already carries (Motion positions, centring translates), so
+   every button answers a press and none of them jumps. */
 button:active:not(:disabled) {
-  transform: scale(0.97);
+  scale: 0.97;
 }
 a {
   color: inherit;
@@ -2185,9 +2188,12 @@ input[type="range"]::-moz-range-thumb {
   }
 }
 
-/* Motion owns carousel transforms; CSS must not interpolate the same property. */
+/* Motion owns carousel transforms; CSS must not interpolate the same property.
+   The press is the separate scale property, so it eases without touching them. */
 .carousel-card {
-  transition: opacity 160ms ease;
+  transition:
+    opacity 160ms ease,
+    scale 180ms var(--ease-soft);
 }
 .toast {
   translate: -50% 0;
@@ -2675,6 +2681,7 @@ input[type="range"].dragging {
 button {
   transition:
     transform 220ms var(--ease-soft),
+    scale 180ms var(--ease-soft),
     opacity 260ms var(--ease-soft),
     background-color 320ms var(--ease-soft),
     color 320ms var(--ease-soft);
@@ -2685,6 +2692,7 @@ button {
 .dj-pill {
   transition:
     transform 220ms var(--ease-soft),
+    scale 180ms var(--ease-soft),
     background-color 360ms var(--ease-soft),
     color 360ms var(--ease-soft),
     box-shadow 480ms var(--ease-soft);
@@ -4664,7 +4672,68 @@ body {
   overflow-x: clip;
 }
 
-/* Best-part beat pulse: a faint light swell from the centre on the song's tempo. */
+/* ── Best parts: brighter, richer, more contrast ────────────────────────────
+   The cover pre-lit (brighter, richer colour, more contrast) fades in over the
+   backdrop through a peak while the vignette deepens: the centre lifts, the edges
+   fall away. It is drawn once as a soft 32 px image (see lit-artwork.js), so its
+   fade never redraws a blur, and it frames exactly like the backdrop. */
+.player-art-boost {
+  position: absolute;
+  /* Pre-blurred, so no blur overscan is needed: the peak zoom covers the edges. */
+  inset: 0;
+  z-index: -3;
+  background-image: var(--lit-soft);
+  background-size: cover;
+  background-position: center;
+  pointer-events: none;
+  opacity: 0;
+  transition:
+    opacity 2.4s var(--ease-soft),
+    scale 3.4s var(--ease-soft);
+}
+.player-art-boost.is-peak {
+  opacity: 0.82;
+  scale: 1.07;
+  /* Sequenced after the zoom has begun: the two never peak together. */
+  transition-delay: 0.9s, 0s;
+}
+.has-video .player-art-boost,
+.with-video .player-art-boost,
+.motion-art .player-art-boost {
+  display: none;
+}
+.player-veil.is-peak::after {
+  opacity: 0.85;
+}
+@media (max-width: 760px) {
+  .player-art-boost {
+    inset: -4%;
+    animation: backdrop-drift 38s ease-in-out infinite alternate;
+  }
+  /* Phones show the cover sharp: the lift is the sharp cover, colour-lifted once. */
+  .immersive-player:not(.with-lyrics) .player-art-boost {
+    background-image: var(--lit-sharp);
+    filter: brightness(calc(0.94 * var(--art-exposure, 1))) saturate(1.3) contrast(1.18);
+  }
+  .with-lyrics .player-art-boost {
+    transform: scale(1.1);
+  }
+  .with-lyrics .player-art-boost.is-peak {
+    opacity: 0.76;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .player-art-boost {
+    animation: none;
+    transition: opacity 0.6s linear;
+  }
+  .player-art-boost.is-peak {
+    scale: none;
+  }
+}
+
+/* Best-part beat pulse: a light that kicks on each beat and decays (attack, then
+   release), and a soft ring that travels out once a bar. Both phase-locked. */
 .beat-pulse {
   position: absolute;
   inset: 0;
@@ -4672,30 +4741,59 @@ body {
   pointer-events: none;
   overflow: hidden;
 }
-.beat-pulse-wave {
+.beat-pulse-wave,
+.beat-pulse-ring {
   position: absolute;
   /* Only the glow's own footprint is composited, never the full screen. */
   left: 22%;
   right: 22%;
   top: 14%;
   bottom: 26%;
-  background: radial-gradient(closest-side, #e9fff418 0%, #c8f5e00a 55%, transparent 100%);
   opacity: 0;
   will-change: transform, opacity;
-  animation: beat-pulse var(--pulse-period, 1s) cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
 }
-@keyframes beat-pulse {
-  0% {
-    opacity: 0.25;
-    transform: scale(0.94);
+/* The bar ring is for phones: on large screens its travelling area doubled the
+   blending cost of a peak (measured), while the beat kick alone carries the beat. */
+@media (min-width: 761px) {
+  .beat-pulse-ring {
+    display: none;
   }
-  14% {
+}
+.beat-pulse-wave {
+  background: radial-gradient(closest-side, #f1fff82e 0%, #d2f7e614 50%, transparent 100%);
+  animation: beat-kick var(--pulse-period, 0.5s) cubic-bezier(0.16, 0.8, 0.3, 1) infinite;
+}
+.beat-pulse-ring {
+  background: radial-gradient(closest-side, transparent 30%, #eafff50f 62%, transparent 96%);
+  animation: beat-ring var(--pulse-bar, 2s) cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
+}
+@keyframes beat-kick {
+  0% {
     opacity: 1;
-    transform: scale(0.99);
+    transform: scale(1.035);
   }
   100% {
-    opacity: 0.25;
-    transform: scale(1.07);
+    opacity: 0.22;
+    transform: scale(0.97);
+  }
+}
+@keyframes beat-ring {
+  0% {
+    opacity: 0.8;
+    transform: scale(0.7);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.32);
+  }
+}
+@media (max-width: 760px) {
+  .beat-pulse-wave,
+  .beat-pulse-ring {
+    left: 6%;
+    right: 6%;
+    top: 14%;
+    bottom: 30%;
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -4703,7 +4801,6 @@ body {
     display: none;
   }
 }
-
 /* ── Lyrics focus ────────────────────────────────────────────────────────────
    Everything but the cover, the song's name and its lyrics eases away: the
    sidebar slides out, the dock sinks, the controls fade. One quiet button and
@@ -4959,4 +5056,28 @@ body {
 }
 .offset-stepper .small-pill {
   margin-left: 4px;
+}
+
+/* A changed artist line arrives softly; compositor-only. */
+.swap-in {
+  animation: swap-in 0.6s var(--ease-soft) both;
+}
+@keyframes swap-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .swap-in {
+    animation: none;
+  }
+}
+
+/* The magnet leans only on the wide layout; a transform on the phone layout would
+   become the containing block of the absolutely placed button inside it. */
+@media (max-width: 760px) {
+  .magnetic {
+    transform: none !important;
+  }
 }

@@ -1,8 +1,9 @@
 // The best-part backdrop pulse. Its period comes only from a measured or catalogue
-// tempo: one, two or four beats, whichever first lasts at least 0.9 s (never over 1.8 s).
+// tempo: it kicks on every beat, or every second beat when beats come faster than
+// 0.42 s apart (over ~143 BPM), so it follows the music without ever flickering.
 const MIN_BPM = 40;
 const MAX_BPM = 240;
-const FASTEST = 0.9;
+const FASTEST = 0.42;
 
 export function pulsePeriod(bpm) {
   if (!Number.isFinite(bpm) || bpm < MIN_BPM || bpm > MAX_BPM) return null;

@@ -260,8 +260,8 @@ if (!only || only === 'C') {
   await check('C', 'lyric frame rate stays smooth', async () => { const fps = await page.evaluate(() => new Promise(resolve => { let frames = 0; const start = performance.now(); const tick = () => { frames++; if (performance.now() - start < 1500) requestAnimationFrame(tick); else resolve(frames / 1.5); }; requestAnimationFrame(tick); })); ok(fps >= 40, `fps ${fps} (headless software rendering)`); });
   const fps = () => page.evaluate(() => new Promise(resolve => { let frames = 0; const start = performance.now(); const tick = () => { frames++; if (performance.now() - start < 1500) requestAnimationFrame(tick); else resolve(frames / 1.5); }; requestAnimationFrame(tick); }));
   await check('C', 'the backdrop opens up on a held note, smoothly', async () => { await setSeek(page, 26.6); await wait(400); ok(await page.locator('.player-art-background.is-peak').count() === 1, 'no peak while the note is held'); const rate = await fps(); ok(rate >= 30, `fps ${rate} during the zoom (software rendering)`); });
-  await check('C', 'the peak pulses gently on the beat (120 BPM → a two-beat 1 s wave)', async () => { await setSeek(page, 26.6); await wait(2400); const wave = await page.evaluate(() => { const element = document.querySelector('.beat-pulse-wave'); const animation = element?.getAnimations()[0]; return element && { duration: getComputedStyle(element).animationDuration, running: animation?.playState, peak: Number(getComputedStyle(element.parentElement).opacity) }; }); ok(wave && wave.duration === '1s' && wave.running === 'running', JSON.stringify(wave)); const rate = await fps(); ok(rate >= 30, `fps ${rate} while pulsing`); if (process.env.SHOTS) for (const [name, at] of [['crest', 0.14], ['trough', 0.98]]) { await page.evaluate(at => { const animation = document.querySelector('.beat-pulse-wave').getAnimations()[0]; animation.pause(); animation.currentTime = at * 1000; }, at); await page.screenshot({ path: `${process.env.SHOTS}/pulse-${name}.png` }); await page.evaluate(() => document.querySelector('.beat-pulse-wave').getAnimations()[0].play()); } });
-  await check('C', 'and settles again outside the peak', async () => { await setSeek(page, 7); await wait(900); ok(await page.locator('.player-art-background.is-peak').count() === 0); await wait(1800); ok(await page.locator('.beat-pulse').count() === 0, 'pulse lingers outside the peak'); });
+  await check('C', 'the peak kicks on every beat and rings once a bar (120 BPM → 0.5 s, 2 s), lit brighter', async () => { await setSeek(page, 26.6); await wait(2400); const wave = await page.evaluate(() => { const element = document.querySelector('.beat-pulse-wave'); const ring = document.querySelector('.beat-pulse-ring'); const animation = element?.getAnimations()[0]; return element && { duration: getComputedStyle(element).animationDuration, bar: ring && getComputedStyle(ring).animationDuration, running: animation?.playState, boost: Number(getComputedStyle(document.querySelector('.player-art-boost')).opacity) }; }); ok(wave && wave.duration === '0.5s' && wave.bar === '2s' && wave.running === 'running' && wave.boost > 0.6, JSON.stringify(wave)); const rate = await fps(); ok(rate >= 30, `fps ${rate} while pulsing`); if (process.env.SHOTS) for (const [name, at] of [['crest', 0], ['trough', 0.48]]) { await page.evaluate(at => { for (const node of document.querySelectorAll('.beat-pulse-wave, .beat-pulse-ring')) { const animation = node.getAnimations()[0]; animation.pause(); animation.currentTime = at * 1000; } }, at); await page.screenshot({ path: `${process.env.SHOTS}/pulse-${name}.png` }); await page.evaluate(() => { for (const node of document.querySelectorAll('.beat-pulse-wave, .beat-pulse-ring')) node.getAnimations()[0].play(); }); } });
+  await check('C', 'and settles again outside the peak', async () => { await setSeek(page, 7); await wait(900); ok(await page.locator('.player-art-background.is-peak').count() === 0); await wait(2600); if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/pulse-calm.png` }); ok(await page.locator('.beat-pulse').count() === 0, 'pulse lingers outside the peak'); ok(Number(await page.evaluate(() => getComputedStyle(document.querySelector('.player-art-boost')).opacity)) < 0.02, 'the lift lingers outside the peak'); });
   await check('C', 'lyric clicks, wheel, follow and peaks never scroll the player into its backdrop overscan', async () => { const shift = await page.evaluate(() => { const player = document.querySelector('.immersive-player'); return [player.scrollLeft, player.scrollTop]; }); ok(shift.join() === '0,0', `player shifted by ${shift}`); });
   await check('C', 'video mode toggles on', async () => { await page.click('button[aria-label="Video mode"]'); await wait(500); ok(await page.locator('.aurora-app.has-video').count() === 1); });
   await check('C', 'artwork mode toggles back', async () => { await page.click('button[aria-label="Artwork mode"]'); await wait(500); ok(await page.locator('.aurora-app.has-video').count() === 0); });
@@ -1169,9 +1169,24 @@ if (only === 'P') {
         window.__profiling = true; requestAnimationFrame(tick);
         try { new PerformanceObserver(list => { for (const entry of list.getEntries()) window.__long += entry.duration; }).observe({ type: 'longtask' }); } catch { /* unsupported */ }
       });
-      const cpu = process.env.PROFILE && name.startsWith(process.env.PROFILE);
+      const cpu = process.env.PROFILE && name.startsWith(process.env.PROFILE) && !process.env.TRACE;
+      const timeline = process.env.TRACE && name.startsWith(process.env.TRACE);
+      const traceEvents = [];
+      if (timeline) {
+        cdp.on('Tracing.dataCollected', ({ value }) => traceEvents.push(...value));
+        await cdp.send('Tracing.start', { categories: 'devtools.timeline,disabled-by-default-devtools.timeline', transferMode: 'ReportEvents' });
+      }
       if (cpu) { await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 200 }); await cdp.send('Profiler.start'); }
       await act(); await wait(seconds * 1000);
+      if (timeline) {
+        const done = new Promise(resolve => cdp.once('Tracing.tracingComplete', resolve));
+        await cdp.send('Tracing.end'); await done;
+        // Main-thread time per event type (complete events only, top level by name).
+        const main = traceEvents.find(event => event.name === 'thread_name' && event.args?.name === 'CrRendererMain');
+        const totals = new Map();
+        for (const event of traceEvents) if (event.ph === 'X' && event.dur && (!main || (event.pid === main.pid && event.tid === main.tid))) totals.set(event.name, (totals.get(event.name) || 0) + event.dur / 1000);
+        console.log(`TRACE ${label} ${name}\n` + [...totals].sort((a, b) => b[1] - a[1]).slice(0, 30).map(([key, ms]) => `  ${ms.toFixed(0).padStart(6)} ms  ${key}`).join('\n'));
+      }
       if (cpu) {
         const { profile: trace } = await cdp.send('Profiler.stop');
         const self = new Map(), byId = new Map(trace.nodes.map(node => [node.id, node]));
@@ -1180,6 +1195,16 @@ if (only === 'P') {
         const parent = new Map(); trace.nodes.forEach(node => (node.children || []).forEach(child => parent.set(child, node.id)));
         const inclusive = new Map();
         trace.samples.forEach((id, i) => { const seen = new Set(); for (let at = id; at; at = parent.get(at)) { const f = byId.get(at).callFrame; if (!/\/src\//.test(f.url)) continue; const key = `${f.functionName || '(anon)'} ${f.url.split('/src/').pop().split('?')[0]}:${f.lineNumber}`; if (seen.has(key)) continue; seen.add(key); inclusive.set(key, (inclusive.get(key) || 0) + (dt[i] || 0) / 1000); } });
+        // Line-level self time inside app modules (dev server only): what each render spends on.
+        const lines = new Map();
+        for (const node of trace.nodes) { const f = node.callFrame; if (!/\/src\//.test(f.url)) continue; for (const tick of node.positionTicks || []) { const key = `${f.url.split('?')[0]}#${tick.line}`; lines.set(key, (lines.get(key) || 0) + tick.ticks); } }
+        // Who creates the elements: element-creation time attributed to its caller.
+        if (process.env.CALLERS) {
+          const callers = new Map();
+          trace.samples.forEach((id, i) => { const node = byId.get(id); if (!/^(exports\.)?(jsxDEV|jsx|jsxs|createElement)$/.test(node.callFrame.functionName)) return; let at = parent.get(id); while (at && !/\/src\//.test(byId.get(at).callFrame.url)) at = parent.get(at); const f = at ? byId.get(at).callFrame : { functionName: '(library)', url: '', lineNumber: 0 }; const key = `${f.functionName || '(anon)'} ${f.url.split('/src/').pop().split('?')[0]}:${f.lineNumber}`; callers.set(key, (callers.get(key) || 0) + (dt[i] || 0) / 1000); });
+          console.log(`CALLERS ${label} ${name}\n` + [...callers].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([key, ms]) => `  ${ms.toFixed(0).padStart(6)} ms  ${key}`).join('\n'));
+        }
+        if (process.env.LINES) console.log(`LINES ${label} ${name}\n` + [...lines].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([key, ticks]) => `${ticks} ${key}`).join('\n'));
         console.log(`APP ${label} ${name}\n` + [...inclusive].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([key, ms]) => `  ${ms.toFixed(0).padStart(6)} ms  ${key}`).join('\n'));
         console.log(`CPU ${label} ${name}\n` + [...self].sort((a, b) => b[1] - a[1]).slice(0, 22).map(([key, ms]) => `  ${ms.toFixed(0).padStart(6)} ms  ${key}`).join('\n'));
       }
@@ -1234,6 +1259,58 @@ if (!only || only === 'O') {
     await check('O', 'another edit of the song asks for lyrics timed for its own length', async () => ok(lyricLog.includes('Morning Light@66'), lyricLog.join(' ')));
     await check('O', 'without them the catalogue timing stays, and the footer says so', async () => { const footer = await page.textContent('.lyric-footer'); ok(/timed for a 6\.0 s shorter edit/.test(footer), footer); ok(await page.locator('.desktop-lyrics .lyric-line').count() > 0); });
     await check('O', 'no runtime errors (other edit)', async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
+// ── Q: interaction audit — every visible button answers a press, and nothing jumps ──
+if (only === 'Q' || !only) {
+  // Press without clicking: down on the button, slide off, release elsewhere.
+  let innerHeightOf = 0;
+  const audit = async (page, screen) => {
+    innerHeightOf = page.viewportSize().height - 2;
+    const buttons = await page.evaluate(() => [...document.querySelectorAll('button, [role="button"], a.album-card, .track-row .track-main')].map((node, index) => {
+      node.dataset.auditIndex = index;
+      const box = node.getBoundingClientRect(), style = getComputedStyle(node);
+      const visible = box.width > 8 && box.height > 8 && box.top >= 0 && box.left >= 0 && box.bottom <= innerHeight && box.right <= innerWidth && style.visibility !== 'hidden' && Number(style.opacity) > 0.2 && !node.disabled && style.pointerEvents !== 'none';
+      const hit = visible && document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      return visible && hit && (hit === node || node.contains(hit)) ? { index, name: node.getAttribute('aria-label') || node.textContent.trim().slice(0, 28) || node.className.slice(0, 28) } : null;
+    }).filter(Boolean));
+    const silent = [], jumpy = [];
+    for (const button of buttons.slice(0, 40)) {
+      const read = () => page.evaluate(index => { const node = document.querySelector(`[data-audit-index="${index}"]`); if (!node) return null; const style = getComputedStyle(node); const box = node.getBoundingClientRect(); return { look: [style.transform, style.scale, style.opacity, style.backgroundColor, style.boxShadow, style.color, style.filter].join('|'), x: box.left + box.width / 2, y: box.top + box.height / 2, w: box.width, h: box.height }; }, button.index);
+      const before = await read(); if (!before) continue;
+      await page.mouse.move(before.x, before.y); await wait(60);
+      const hover = await read();
+      await page.mouse.down(); await wait(170);
+      const pressed = await read();
+      // Slide off vertically: sideways would be a swipe on horizontal carousels.
+      const at = pressed || hover;
+      await page.mouse.move(at.x, Math.min(innerHeightOf, at.y + 400), { steps: 3 }); await page.mouse.up(); await wait(250);
+      if (!pressed) continue;
+      if (pressed.look === hover.look) silent.push(button.name);
+      const magnetic = await page.evaluate(index => !!document.querySelector(`[data-audit-index="${index}"]`)?.closest('.magnetic'), button.index);
+      // A press shrinks the element a little; only a shift beyond that is a jump.
+      if (!magnetic && Math.hypot(pressed.x - hover.x, pressed.y - hover.y) > Math.max(3, 0.05 * Math.min(pressed.w, pressed.h))) jumpy.push(`${button.name} (${Math.round(pressed.x - hover.x)},${Math.round(pressed.y - hover.y)})`);
+    }
+    console.log(`AUDIT ${screen}: ${buttons.length} buttons · silent: ${silent.join(', ') || 'none'} · moves when pressed: ${jumpy.join(', ') || 'none'}`);
+    return { silent, jumpy };
+  };
+  for (const [label, viewport] of [['desktop', { width: 1440, height: 900 }], ['phone', { width: 390, height: 844 }]]) {
+    const { context, page, errors } = await newSession(browser, { viewport });
+    await page.goto(BASE); await wait(1800);
+    const results = [];
+    results.push(await audit(page, `${label} home`));
+    await startQueue(page); await wait(1500);
+    results.push(await audit(page, `${label} search`));
+    if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(1200); }
+    results.push(await audit(page, `${label} player`));
+    await page.click('button[aria-label="Player settings"]'); await wait(900);
+    results.push(await audit(page, `${label} settings`));
+    await page.keyboard.press('Escape'); await wait(700);
+    await check('Q', `${label}: every visible button answers a press`, async () => ok(results.every(result => !result.silent.length), results.map(result => result.silent.join(', ')).filter(Boolean).join(' / ')));
+    await check('Q', `${label}: no button moves when pressed`, async () => ok(results.every(result => !result.jumpy.length), results.map(result => result.jumpy.join(', ')).filter(Boolean).join(' / ')));
+    await check('Q', `${label}: no runtime errors in the audit`, async () => ok(!errors.length, errors.join(' | ')));
     await context.close();
   }
 }

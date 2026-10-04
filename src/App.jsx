@@ -61,6 +61,7 @@ import { qualityLabel } from "./lib/audio-format";
 import { homeSeeds, onRepeat, recordLike, rotateForDay, tasteFilter, topArtists } from "./lib/listening";
 import { isPeakAt, lineSpan, peakMoments, splitBackingVocals } from "./lib/lyrics";
 import { bestMoments } from "./lib/best-part";
+import { litArtwork } from "./lib/lit-artwork";
 import Welcome from "./components/Welcome";
 import { shouldWelcome } from "./lib/welcome";
 import FluidText from "./components/FluidText";
@@ -313,7 +314,9 @@ function Magnetic({ children, strength = 0.22, limit = 10 }) {
   const x = useSpring(0, MAGNET_SPRING);
   const y = useSpring(0, MAGNET_SPRING);
   const move = (event) => {
-    if (event.pointerType !== "mouse" || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    // Only on the wide layout: on the phone layout the button inside is absolutely
+    // placed, and a transform here would re-anchor it to this zero-size wrapper.
+    if (event.pointerType !== "mouse" || !window.matchMedia?.("(min-width: 761px)").matches || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
     const box = event.currentTarget.getBoundingClientRect();
     const clamp = (value) => Math.max(-limit, Math.min(limit, value));
     x.set(clamp((event.clientX - box.left - box.width / 2) * strength));
@@ -683,6 +686,17 @@ function ArtBackdrop({ player }) {
     return () => { live = false; };
   }, [artwork]);
   const level = exposure.artwork === artwork ? exposure.value : 1;
+  const [lit, setLit] = useState({ key: null, url: null });
+  const litKey = artwork ? `${artwork}|${level}` : null;
+  useEffect(() => {
+    if (!artwork) return undefined;
+    let live = true;
+    litArtwork(artworkAt(artwork, 300), { brightness: 1.22 * level, saturate: 1.38, contrast: 1.16 }).then((url) => {
+      if (live) setLit({ key: `${artwork}|${level}`, url });
+    });
+    return () => { live = false; };
+  }, [artwork, level]);
+  const litUrl = lit.key === litKey ? lit.url : null;
   return (
     <>
       <div className={`player-art-background ${peak ? "is-peak" : ""}`} style={{ "--art-exposure": level.toFixed(3) }}>
@@ -699,6 +713,17 @@ function ArtBackdrop({ player }) {
           )}
         </AnimatePresence>
       </div>
+      {/* The cover pre-lit (brighter, richer, more contrast) fades in through a peak:
+          drawn once, soft and small, so the fade never redraws a blur. */}
+      <div
+        className={`player-art-boost ${peak ? "is-peak" : ""}`}
+        aria-hidden="true"
+        style={{
+          "--lit-soft": litUrl ? `url("${litUrl}")` : "none",
+          "--lit-sharp": artwork ? `url("${artworkAt(artwork, 1000)}")` : "none",
+          "--art-exposure": level.toFixed(3),
+        }}
+      />
       <div className={`player-veil ${peak ? "is-peak" : ""}`} />
       <AnimatePresence>
         {peakIndex >= 0 && period && player.playing && !reduce && (
@@ -709,11 +734,13 @@ function ArtBackdrop({ player }) {
   );
 }
 
-// Through a peak the backdrop swells softly on the beat: one, two or four beats a
-// wave, phase-locked to the peak's first sung word. Opacity and scale only, so it
-// stays on the compositor. Realigned only when the playhead jumps (a seek).
+// Through a peak the backdrop breathes with the music: a glow that kicks on each
+// beat (fast attack, slow decay) and a soft ring that travels out once a bar, both
+// phase-locked to the peak's start. Opacity and scale only, so they stay on the
+// compositor. Realigned only when the playhead jumps (a seek).
 function BeatPulse({ player, anchor, period }) {
   const wave = useRef(null);
+  const ring = useRef(null);
   const offset = player.lyricsOffset || 0;
   useEffect(() => {
     const element = wave.current;
@@ -727,10 +754,14 @@ function BeatPulse({ player, anchor, period }) {
         if (Math.min(drift, period - drift) < 0.12) return;
       }
       origin = now - phase;
-      element.style.animation = "none";
-      void element.offsetWidth;
-      element.style.animation = "";
-      element.style.animationDelay = `${-phase}s`;
+      const bar = pulsePhase(player.clock.get() + offset, anchor, period * 4);
+      for (const [node, delay] of [[element, phase], [ring.current, bar]]) {
+        if (!node) continue;
+        node.style.animation = "none";
+        void node.offsetWidth;
+        node.style.animation = "";
+        node.style.animationDelay = `${-delay}s`;
+      }
     };
     align();
     return player.clock.subscribe(align);
@@ -744,6 +775,7 @@ function BeatPulse({ player, anchor, period }) {
       exit={{ opacity: 0, transition: { duration: 1.6, ease: EASE_IN_OUT } }}
     >
       <div ref={wave} className="beat-pulse-wave" style={{ "--pulse-period": `${period}s` }} />
+      <div ref={ring} className="beat-pulse-ring" style={{ "--pulse-bar": `${period * 4}s` }} />
     </Motion.div>
   );
 }
@@ -1048,6 +1080,18 @@ function useMediaQuery(query) {
   return matches;
 }
 
+// The playing song's name. Its letters morph between songs only where it is on
+// screen (each letter's move is a layout measurement, so the hidden layout's copy
+// stays plain); the artist line fades in, compositor only.
+function TrackName({ track, live }) {
+  return (
+    <>
+      {live ? <FluidText as="h1">{track.title}</FluidText> : <h1>{track.title}</h1>}
+      <p key={track.artist} className="swap-in">{track.artist}</p>
+    </>
+  );
+}
+
 function Sheet({ title, close, back, children }) {
   const ref = useRef(null);
   const [isPresent, safeToRemove] = usePresence();
@@ -1270,6 +1314,8 @@ function DjStatus({ player }) {
 export default function App() {
   const player = usePlayer();
   const reduce = useReducedMotion();
+  // Which of the player's two layouts is on screen (phone below 761 px).
+  const phoneLayout = useMediaQuery("(max-width: 760px)");
   const [notice, setNotice] = useState("");
   const nav = useNavigation({ onLeaveHint: useCallback(() => setNotice("Press back again to leave Aurora"), []) });
   const { page, immersive, sheet, collection } = nav.view;
@@ -2847,8 +2893,7 @@ export default function App() {
                         </AnimatePresence>
                       </span>
                     )}
-                    <FluidText as="h1">{player.track.title}</FluidText>
-                    <FluidText as="p">{player.track.artist}</FluidText>
+                    <TrackName track={player.track} live={phoneLayout} />
                     <div className="meta-chips">
                       <QualityChip player={player} onClick={() => setSheet("audio")} />
                       <BestPartChip player={player} />
@@ -2893,8 +2938,7 @@ export default function App() {
                 </div>
                 <div className="immersive-track-meta">
                   <div>
-                    <FluidText as="h1">{player.track.title}</FluidText>
-                    <FluidText as="p">{player.track.artist}</FluidText>
+                    <TrackName track={player.track} live={!phoneLayout} />
                     <div className="meta-chips">
                       <QualityChip player={player} onClick={() => setSheet("audio")} />
                       <BestPartChip player={player} />

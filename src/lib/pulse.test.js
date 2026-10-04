@@ -2,13 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { pulsePeriod, pulsePhase } from './pulse.js';
 
-test('the pulse follows the measured tempo, folded into a slow, calm wave', () => {
-  assert.equal(pulsePeriod(120), 1); // two beats
-  assert.equal(pulsePeriod(60), 1); // one beat
-  assert.equal(pulsePeriod(90), 4 / 3); // two beats
-  assert.equal(pulsePeriod(174), 120 / 174 * 2); // four beats on fast songs
-  assert.ok(pulsePeriod(174) >= 0.9 && pulsePeriod(174) <= 1.8);
-  assert.equal(pulsePeriod(45), 60 / 45);
+test('the pulse kicks on every beat; fast songs fall to every second beat', () => {
+  assert.equal(pulsePeriod(120), 0.5); // one beat
+  assert.equal(pulsePeriod(60), 1);
+  assert.equal(pulsePeriod(90), 60 / 90);
+  assert.equal(pulsePeriod(160), 0.75); // two beats: never a flicker
+  assert.equal(pulsePeriod(174), 120 / 174);
+  assert.equal(pulsePeriod(45), 60 / 45); // slow songs keep their own beat
+  for (const bpm of [40, 70, 100, 140, 200, 240]) assert.ok(pulsePeriod(bpm) >= 0.42 && pulsePeriod(bpm) <= 1.5, String(bpm));
 });
 
 test('no tempo, no pulse: an unknown or implausible tempo never invents a beat', () => {
