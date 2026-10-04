@@ -21,7 +21,7 @@ YouTube keeps its audio inside its own player: Aurora cannot filter it, add echo
 - **Entry.** When song B's timed lyrics show a long instrumental intro, B starts so the blend completes a few seconds before its first sung line (at most 45 s in); otherwise it starts at 0:00. The DJ panel shows the chosen entry.
 - **Preparation.** The standby deck is created as soon as the next song is known. Up to 90 seconds before the cue (never in the first 6 seconds of a song) the next song loads muted, buffers, and pauses at its start; lyrics, catalogue tempo and full-size artwork are fetched at the same time, so nothing loads during the blend.
 - **No start gap.** The standby deck is started 0.35 s before the cue to absorb YouTube's start latency.
-- **Blend.** At the cue the standby deck starts. In DJ mode the volumes follow a DJ-style curve: song B rises under a held song A, then song A gives way, with combined power never dipping (no hole mid-blend). Volumes update every display frame, sending only whole-percent changes. The video surface crossfades between decks. Metadata, lyrics and the queue position follow the incoming song from its first moment.
+- **Blend.** At the cue the standby deck starts. In DJ mode the volumes follow a DJ-style curve: song B rises early under a held song A, both ride together at full presence through the middle (about two thirds of the blend within 6 dB of full, the combined level held within about 1 dB), then song A gives way, with combined power never dipping (no hole mid-blend). It is a blend, not a fade-out then fade-in. Volumes update every display frame, sending only whole-percent changes. The video surface crossfades between decks. Metadata, lyrics and the queue position follow the incoming song from its first moment.
 - **Hollow sweep.** Because the songs themselves can't be filtered, Aurora layers its own synthesized sweep over the blend: pink noise through a resonant band that climbs to the swap point and sinks into a tempo-synced echo tail, with a soft sub drop as song B takes over. It is on by default and can be turned off (DJ settings → Hollow sweep).
 - **Tempo.** Only when the catalogue (Deezer) knows both BPMs *and* this embed actually plays the rates. Aurora reads a requested rate back from the muted standby deck while it buffers: embeds that honour fine rates glide (meeting in the middle for wide gaps, as above), embeds that round to coarse steps never do. The UI claims tempo matching only after the player confirms the rate.
 - **Fallbacks.** If the standby deck cannot start within 3 seconds (for example a mobile autoplay block), the current song continues and fades out; the next song fades in.
@@ -73,7 +73,7 @@ Local blends mix like a DJ on a three-band mixer, without needing to separate th
 - **Voices.** Each deck has a vocal-band (presence) EQ around 1.6 kHz. B's voice enters 9 dB down and opens over the beat after the swap, while A's is pulled out over the same beat, so two singers never compete.
 - **Air.** After the swap, A narrows into a hollow band and echoes out on the beat while B's top end opens.
 
-Online playback cannot be filtered (the embed's audio is not reachable from the page), so there the blend is equal-power, with a synthesized hollow sweep on top.
+Online playback cannot be filtered (the embed's audio is not reachable from the page), so there the blend follows the same DJ curve on the deck volumes, with a quiet synthesized deep sweep (a low swell with a sub drop) on top.
 
 ## Beat lock, measured
 
