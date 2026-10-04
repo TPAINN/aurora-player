@@ -3292,7 +3292,7 @@ export default function App() {
                   <span />
                 </button>
               </div>
-              <div className="setting-row">
+              <div className={`setting-row ${player.djEnabled ? "" : "is-dormant"}`}>
                 <div>
                   <strong>Live DJ changes</strong>
                   <p>Blend when you choose the next track.</p>
@@ -3309,7 +3309,7 @@ export default function App() {
                   <span />
                 </button>
               </div>
-              <div className="setting-row">
+              <div className={`setting-row ${player.djEnabled ? "" : "is-dormant"}`}>
                 <div>
                   <strong>Deep sweep</strong>
                   <p>A low, warm swell with a sub drop under online blends, whose audio YouTube keeps unfiltered.</p>
@@ -3324,7 +3324,7 @@ export default function App() {
                   <span />
                 </button>
               </div>
-              <div className="setting-row">
+              <div className={`setting-row ${player.djEnabled ? "" : "is-dormant"}`}>
                 <div>
                   <strong>Blend length</strong>
                   <p>Auto picks the longest whole phrase the music leaves room for, up to 16 bars. Online songs blend up to 16 s.</p>

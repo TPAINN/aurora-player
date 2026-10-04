@@ -5318,3 +5318,24 @@ body {
     transition: none;
   }
 }
+
+/* Options that only act during a DJ transition rest, dimmed, while DJ transition
+   is off, and wake with it. They stay settable ahead of time. */
+.setting-row {
+  transition: opacity 0.45s var(--ease-soft), filter 0.45s var(--ease-soft);
+}
+.setting-row.is-dormant {
+  opacity: 0.42;
+  filter: saturate(0.4);
+}
+.setting-row.is-dormant:is(:hover, :focus-within) {
+  opacity: 0.75;
+}
+.setting-row.is-dormant > div:first-child p::after {
+  content: " Works with DJ transition on.";
+}
+@media (prefers-reduced-motion: reduce) {
+  .setting-row {
+    transition: none;
+  }
+}
