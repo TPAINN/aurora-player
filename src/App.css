@@ -421,7 +421,10 @@ kbd {
   height: 100%;
   top: 0;
   perspective: 1000px;
-  transform-style: preserve-3d;
+  /* Flat, not preserve-3d: each card keeps its own tilt (perspective still applies
+     to every child), but z-index decides which is in front. In a shared 3D scene
+     the tilted neighbours' near edges cut through the front card. */
+  transform-style: flat;
 }
 .carousel-card {
   position: absolute;
@@ -452,6 +455,9 @@ kbd {
   font-size: 13px;
   font-weight: 650;
   display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .carousel-card small {
   display: block;
