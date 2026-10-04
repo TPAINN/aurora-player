@@ -146,8 +146,9 @@ test('the DJ blend holds the outgoing song, then swaps without a loudness hole',
     assert.ok(power >= 1 - 1e-9 && power <= 1.6, `power ${power} at ${i}`);
     previous = current;
   }
-  // The outgoing song is still near full level a quarter of the way in.
-  assert.ok(blendCurve(.2)[0] > .97);
+  // A fifth of the way in song A has not started to leave (only the shared
+  // loudness limit trims it by about 1 dB) while song B is already present.
+  assert.ok(blendCurve(.2)[0] > .84 && blendCurve(.2)[1] > .3);
 });
 
 test('glide eases from native tempo to the target and holds it', () => {
@@ -359,8 +360,8 @@ test('a long blend holds both songs through the middle and keeps its loudness', 
   assert.ok(blendCurve(.34, 32)[1] > .7, 'B in early');
   assert.ok(blendCurve(.66, 32)[0] > .7, 'A held through the middle');
   assert.ok(blendCurve(.5, 32).every(level => level > .7), 'both at full body mid-blend');
-  // 8 s keeps the short shape: A still near full a fifth of the way in.
-  assert.ok(blendCurve(.2, 8)[0] > .95);
+  // 8 s: a fifth of the way in song A still holds (within 1.5 dB) under song B.
+  assert.ok(blendCurve(.2, 8)[0] > .84);
 });
 
 test('tempo is read precisely enough to hold a 16-bar blend together', async () => {
@@ -411,4 +412,22 @@ test('a tempo glide moves in even steps and lands exactly on its target', async 
   assert.equal(gridRate(.99, .9757, 1, grain) <= 1, true);
   assert.equal(gridRate(1, .9757, 1, grain), 1);
   assert.equal(gridRate(1.01, 1, 1, grain), 1);
+});
+
+test('a blend is a real blend: both songs ride together through the middle', async () => {
+  const { blendCurve } = await import('./dj.js');
+  const db = value => 20 * Math.log10(Math.max(value, 1e-9));
+  for (const seconds of [5, 8, 10, 16, 32]) {
+    let six = 0, three = 0;
+    const steps = 400;
+    for (let i = 0; i <= steps; i++) {
+      const [out, into] = blendCurve(i / steps, seconds);
+      if (db(out) >= -6 && db(into) >= -6) six++;
+      if (db(out) >= -3 && db(into) >= -3) three++;
+    }
+    assert.ok(six / steps >= .6, `${seconds} s: both within 6 dB for ${(six / steps * 100).toFixed(0)} %`);
+    assert.ok(three / steps >= .35, `${seconds} s: both within 3 dB for ${(three / steps * 100).toFixed(0)} %`);
+    // Song B still comes in from silence and song A still leaves into it.
+    assert.ok(db(blendCurve(.04, seconds)[1]) < -20 && db(blendCurve(.96, seconds)[0]) < -20, `${seconds} s gentle ends`);
+  }
 });
