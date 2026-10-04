@@ -210,3 +210,30 @@ test('recommendations never repeat a song under another artist spelling or versi
   ], { title: 'Healing', artist: 'GORDO x Drake' });
   assert.deepEqual(picked.map(track => track.id), ['3', '5'], 'the playing song is never recommended back in any version');
 });
+
+test('vibe: a song from the same era and popularity tier ranks above a distant one', async () => {
+  const { vibeScore } = await import('./recommendations.js');
+  const seed = { lang: 'en', year: 2021, rank: 800000 };
+  const base = { source: 'radio', language: 'en', genreMatch: 'exact', lyricsAvailable: true };
+  const close = vibeScore({ ...base, year: 2020, rank: 700000 }, seed);
+  const otherEra = vibeScore({ ...base, year: 1986, rank: 700000 }, seed);
+  const obscure = vibeScore({ ...base, year: 2020, rank: 9000 }, seed);
+  assert.ok(close > otherEra, `${close} vs ${otherEra}`);
+  assert.ok(close > obscure, `${close} vs ${obscure}`);
+});
+
+test('vibe: a confirmed language match is the largest single signal', async () => {
+  const { vibeScore } = await import('./recommendations.js');
+  const seed = { lang: 'el', year: 2021, rank: 500000 };
+  const plain = { source: 'related' };
+  const language = vibeScore({ ...plain, language: 'el' }, seed) - vibeScore(plain, seed);
+  const era = vibeScore({ ...plain, year: 2021 }, seed) - vibeScore(plain, seed);
+  const tier = vibeScore({ ...plain, rank: 500000 }, seed) - vibeScore(plain, seed);
+  assert.ok(language > era && language > tier, `language ${language}, era ${era}, tier ${tier}`);
+});
+
+test('vibe: unknown era or popularity neither helps nor hurts', async () => {
+  const { vibeScore } = await import('./recommendations.js');
+  const track = { source: 'radio', language: 'en' };
+  assert.equal(vibeScore({ ...track }, { lang: 'en' }), vibeScore({ ...track, year: 1970, rank: 10 }, { lang: 'en' }));
+});

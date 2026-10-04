@@ -1,10 +1,13 @@
 // Online songs play inside YouTube's player, whose audio cannot be filtered.
-// For online DJ blends Aurora layers its own synthesized "hollow" sweep over the
-// crossfade: pink noise through a resonant band that climbs to the swap point
-// and sinks into an echo tail, with a soft sub drop as song B takes over.
+// For online DJ blends Aurora layers its own synthesized sweep over the crossfade.
+// It is deep rather than airy: a quiet, warm band of pink noise that rises only
+// into the low mids by the swap and sinks into the bass, under a long sub drop that
+// gives the hand-over weight. Felt more than heard; the music stays in front.
 
 export const SWEEP_TAIL = .35;
-const LOW = 220, HIGH = 2600, DEEP = 150;
+const LOW = 140, HIGH = 900, DEEP = 90;
+export const SWEEP_LEVEL = 0.18; // the noise band's peak, relative to the music
+export const SUB_LEVEL = 0.26; // the sub drop's peak: the depth leads
 
 // Level (0–1) and band frequency at a point of the blend (0 = start, 1 = end, tail after).
 export function sweepShape(progress) {
@@ -44,17 +47,17 @@ export function playSweep(context, { seconds, volume = 1, beatSeconds = null }) 
   const level = new Float32Array(points), frequency = new Float32Array(points);
   for (let i = 0; i < points; i++) {
     const shape = sweepShape((i / (points - 1)) * (1 + SWEEP_TAIL));
-    level[i] = shape.level * .55 * volume;
+    level[i] = shape.level * SWEEP_LEVEL * volume;
     frequency[i] = shape.frequency;
   }
   const source = context.createBufferSource();
   source.buffer = pinkNoise(context); source.loop = true;
-  const band = context.createBiquadFilter(); band.type = 'bandpass'; band.Q.value = 4.5;
+  const band = context.createBiquadFilter(); band.type = 'bandpass'; band.Q.value = 2.2;
   const gain = context.createGain(); gain.gain.value = 0;
-  // A tempo-synced echo gives the sweep its hollow, spacious tail.
+  // A short tempo-synced echo gives the sweep a little space, never a long hollow tail.
   const delay = context.createDelay(2); delay.delayTime.value = Math.min(1.5, (beatSeconds || .5) * .75);
-  const feedback = context.createGain(); feedback.gain.value = .38;
-  const tone = context.createBiquadFilter(); tone.type = 'lowpass'; tone.frequency.value = 1800;
+  const feedback = context.createGain(); feedback.gain.value = .22;
+  const tone = context.createBiquadFilter(); tone.type = 'lowpass'; tone.frequency.value = 900;
   const out = context.createGain(); out.gain.value = 1;
   source.connect(band).connect(gain).connect(out);
   gain.connect(delay).connect(tone).connect(feedback).connect(delay);
@@ -62,15 +65,16 @@ export function playSweep(context, { seconds, volume = 1, beatSeconds = null }) 
   out.connect(context.destination);
   band.frequency.setValueCurveAtTime(frequency, now, total);
   gain.gain.setValueCurveAtTime(level, now, total);
-  // Sub drop at the swap: a low sine that falls and fades, felt more than heard.
+  // Sub drop at the swap: a low sine that falls slowly and fades long, the weight
+  // under song B's arrival. A short swell in (no click), then a long release.
   const sub = context.createOscillator(); sub.type = 'sine';
   const subGain = context.createGain(); subGain.gain.value = 0;
   const drop = now + seconds * .55;
-  sub.frequency.setValueAtTime(72, drop);
-  sub.frequency.exponentialRampToValueAtTime(36, drop + 1.4);
+  sub.frequency.setValueAtTime(62, drop);
+  sub.frequency.exponentialRampToValueAtTime(31, drop + 2.4);
   subGain.gain.setValueAtTime(0, drop);
-  subGain.gain.linearRampToValueAtTime(.16 * volume, drop + .04);
-  subGain.gain.exponentialRampToValueAtTime(.0005, drop + 1.6);
+  subGain.gain.linearRampToValueAtTime(SUB_LEVEL * volume, drop + .09);
+  subGain.gain.exponentialRampToValueAtTime(.0005, drop + 2.8);
   sub.connect(subGain).connect(out);
   source.start(now); sub.start(now);
   const end = now + total + 3;
