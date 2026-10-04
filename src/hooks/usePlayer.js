@@ -5,7 +5,7 @@ import { songKey } from '../../shared/titles.js';
 import { buildApiUrl } from '../lib/api';
 import { getSimilarTracks, getTrackAnalysis, getTrackTempo } from '../lib/catalog';
 import { pickSeed, recordListening, tasteFilter } from '../lib/listening';
-import { MAX_BLEND, MIN_BLEND, ONLINE_MAX_BLEND, swapTime, adaptiveBlend, analyzeLocalTempo, beatAlignedEntry, blendCurve, vocalSpans, chooseEntry, equalPower, glideRate, gridRate, nudgePlan, phaseOffset, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
+import { MAX_BLEND, MIN_BLEND, ONLINE_MAX_BLEND, swapTime, adaptiveBlend, analyzeLocalTempo, beatAlignedEntry, blendCurve, vocalSpans, chooseEntry, equalPower, chooseBend, glideRate, gridRate, nudgePlan, phaseOffset, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
 import { playSweep } from '../lib/sweep';
 import { nextPlayable } from '../lib/queue';
 import { detectLanguage } from '../../shared/language.js';
@@ -744,7 +744,7 @@ export function usePlayer() {
     if (!incoming) return false;
     incoming.setVolume(0); incoming.unMute?.();
     // Song B starts at the shared tempo when the tempos meet in the middle.
-    blend.inRate = blend.verified && blend.plan?.inRate ? blend.plan.inRate : 1;
+    blend.inRate = (blend.verified || blend.plan?.rate === 1) && blend.plan?.inRate ? blend.plan.inRate : 1;
     incoming.setPlaybackRate?.(blend.inRate);
     incoming.playVideo();
     if (preferences.current.djEnabled && preferences.current.transitionFx) audioContext();
@@ -1006,7 +1006,7 @@ export function usePlayer() {
     mix.current = token;
     const from = analysis.current.get(current.current.track?.id);
     const to = analysis.current.get(selected.id);
-    const plan = planTransition(from?.outro, to?.intro, blendTarget({}, { lengths: [from?.duration, to?.duration] }));
+    const plan = planTransition(from?.outro, to?.intro, blendTarget({}, { lengths: [from?.duration, to?.duration] }), { bend: chooseBend() });
     try {
       if (incoming.element.src !== selected.localUrl) incoming.element.src = selected.localUrl;
       incoming.element.playbackRate = plan.inRate; incoming.element.preservesPitch = true;
@@ -1238,7 +1238,7 @@ export function usePlayer() {
       if (!element || element.paused || !selected.localUrl || !Number.isFinite(element.duration)) return;
       const remaining = element.duration - element.currentTime;
       const from = analysis.current.get(state.track?.id);
-      const plan = planTransition(from?.outro, analysis.current.get(selected.id)?.intro, blendTarget({}, { lengths: [from?.duration, analysis.current.get(selected.id)?.duration] }));
+      const plan = planTransition(from?.outro, analysis.current.get(selected.id)?.intro, blendTarget({}, { lengths: [from?.duration, analysis.current.get(selected.id)?.duration] }), { bend: chooseBend() });
       const start = Math.min(element.duration - plan.seconds, from?.mixStart ?? element.duration - plan.seconds);
       const rampStart = start - plan.rampSeconds;
       const standby = decks.current.find(deck => deck.element !== element);
@@ -1270,7 +1270,9 @@ export function usePlayer() {
     const timed = lyricsData => (lyricsData?.sync && lyricsData.sync !== 'plain' ? lyricsData.lines : []);
     const spans = vocalSpans({ duration: length, outLines: timed(state.lyrics), inLines: timed(prepared.current.get(selected.id)?.lyrics), entry: 0 });
     const target = blendTarget({ outroSpan: spans.outroSpan - 2.5, introSpan: spans.introSpan }, { online: true, lengths: [length, selected.duration] });
-    const tempoPlan = options => planTransition(tempoA ? { bpm: tempoA, confidence: 1 } : null, tempoB ? { bpm: tempoB, confidence: 1 } : null, target, options);
+    // Which song carries the tempo change: where the voices are decides (see chooseBend).
+    const bend = chooseBend({ outroSpan: spans.outroSpan - 2.5, introSpan: spans.introSpan, seconds: target });
+    const tempoPlan = options => planTransition(tempoA ? { bpm: tempoA, confidence: 1 } : null, tempoB ? { bpm: tempoB, confidence: 1 } : null, target, { bend, ...options });
     let plan = tempoPlan();
     const rates = active.getAvailablePlaybackRates?.();
     // Only glide when this embed actually plays the rates we need: it lists them,
