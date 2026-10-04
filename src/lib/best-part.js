@@ -82,7 +82,9 @@ export function snapToGrid(range, grid) {
   if (!Number.isFinite(period) || period < 0.25 || period > 1.5) return range;
   const start = Number.isFinite(grid.origin) ? grid.origin + Math.round((range.start - grid.origin) / period) * period : range.start;
   const bar = 4 * period;
-  return { start, end: start + Math.max(1, Math.round((range.end - start) / bar)) * bar };
+  // Round up: the peak releases on the bar line after its last word, never before
+  // it; a hair past a line (under 8% of a bar) still ends on that line.
+  return { start, end: start + Math.max(1, Math.ceil((range.end - start) / bar - 0.08)) * bar };
 }
 
 const overlap = (a, b) => Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start));
