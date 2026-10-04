@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import {
   AnimatePresence,
   MotionConfig,
@@ -26,6 +26,7 @@ import {
   Library,
   ListMusic,
   Minimize2,
+  Minus,
   LoaderCircle,
   Music2,
   Pause,
@@ -747,6 +748,47 @@ function BeatPulse({ player, anchor, period }) {
   );
 }
 
+// One lyric line. Memoized on its own data and state, so a song change or a new
+// active line re-renders only the lines whose state actually changed, never every
+// word of the song; the word wipe itself is painted outside React.
+const LyricLine = memo(function LyricLine({ line, index, state, timed, backing, lineRef, onSeek, gap }) {
+  return (
+    <div className="lyric-block" data-index={index}>
+      <button
+        ref={lineRef}
+        className={`lyric-line ${state} ${!timed ? "plain" : ""} ${line.words?.length ? "has-words" : ""}`}
+        disabled={!timed}
+        onClick={() => onSeek(line.time)}
+        aria-label={timed ? `Seek to ${formatTime(line.time)}: ${line.text}` : undefined}
+      >
+        {line.words?.length
+          ? line.words.map((word, wi) => (
+              <span
+                key={wi}
+                className={`lyric-word${backing?.[wi] ? " backing" : ""}${word.end - word.start >= HELD_WORD ? " held" : ""}`}
+              >
+                <span>{word.text}</span>
+                <span aria-hidden="true" className="word-fill">
+                  {word.text}
+                </span>
+              </span>
+            ))
+          : line.text}
+      </button>
+      {gap && (
+        <AnimatePresence initial={false}>
+          {gap.open && <Interlude key="gap" clock={gap.clock} offset={gap.offset} start={gap.start} end={gap.end} />}
+        </AnimatePresence>
+      )}
+    </div>
+  );
+}, (before, after) => {
+  // The gap is a fresh object each render; compare what it carries.
+  const { gap: a, ...restBefore } = before, { gap: b, ...restAfter } = after;
+  const sameGap = a === b || (!!a && !!b && a.open === b.open && a.clock === b.clock && a.offset === b.offset && a.start === b.start && a.end === b.end);
+  return sameGap && Object.keys(restAfter).every((key) => restBefore[key] === restAfter[key]) && Object.keys(restBefore).length === Object.keys(restAfter).length;
+});
+
 function Lyrics({ player }) {
   const reduce = useReducedMotion();
   // While a song's lyrics fade out after a hand-over, the shared clock already
@@ -798,6 +840,11 @@ function Lyrics({ player }) {
   const gapEnd = lines[active + 1]?.time;
   const interlude = { clock: player.clock, offset, start: gapStart, end: gapEnd };
   const stopScroll = () => scrolling.current?.stop();
+  const { seek } = player;
+  const seekToLine = useCallback((time) => {
+    seek(Math.max(0, time - offset));
+    setFollowing(true);
+  }, [seek, offset]);
   useEffect(() => {
     const box = container.current;
     const target = activeRef.current;
@@ -933,39 +980,17 @@ function Lyrics({ player }) {
             {inGap && active === -1 && <Interlude key="intro" {...interlude} />}
           </AnimatePresence>
           {lines.map((line, i) => (
-            <div key={`${i}-${line.time}`} className="lyric-block">
-              <button
-                ref={i === active ? activeRef : null}
-                className={`lyric-line ${i === active ? "current" : ""} ${i < active ? "past" : ""} ${i === active + 1 ? "upcoming" : ""} ${!timed ? "plain" : ""} ${line.words?.length ? "has-words" : ""}`}
-                disabled={!timed}
-                onClick={() => {
-                  player.seek(Math.max(0, line.time - (player.lyricsOffset || 0)));
-                  setFollowing(true);
-                }}
-                aria-label={
-                  timed
-                    ? `Seek to ${formatTime(line.time)}: ${line.text}`
-                    : undefined
-                }
-              >
-                {line.words?.length
-                  ? line.words.map((word, wi) => (
-                      <span
-                        key={wi}
-                        className={`lyric-word${backing[i]?.[wi] ? " backing" : ""}${word.end - word.start >= HELD_WORD ? " held" : ""}`}
-                      >
-                        <span>{word.text}</span>
-                        <span aria-hidden="true" className="word-fill">
-                          {word.text}
-                        </span>
-                      </span>
-                    ))
-                  : line.text}
-              </button>
-              <AnimatePresence initial={false}>
-                {inGap && i === active && <Interlude key="gap" {...interlude} />}
-              </AnimatePresence>
-            </div>
+            <LyricLine
+              key={`${i}-${line.time}`}
+              line={line}
+              index={i}
+              state={i === active ? "current" : i < active ? "past" : i === active + 1 ? "upcoming" : ""}
+              timed={timed}
+              backing={backing[i]}
+              lineRef={i === active ? activeRef : null}
+              onSeek={seekToLine}
+              gap={i === active ? { open: inGap, clock: player.clock, offset, start: gapStart, end: gapEnd } : null}
+            />
           ))}
           <div className="lyrics-spacer" />
         </div>
@@ -977,6 +1002,13 @@ function Lyrics({ player }) {
               : timed
                 ? "Line sync"
                 : "Unsynced"}
+            {/* Timing for another edit of the song: said plainly, never guessed at. */}
+            {timed && player.lyricsTiming === "captions"
+              ? ` · synced to this video (${player.lyricsOffset > 0 ? "+" : ""}${player.lyricsOffset.toFixed(1)} s)`
+              : ""}
+            {timed && player.lyricsTiming === "published" && player.lyrics?.versionGap
+              ? ` · timed for a ${Math.abs(player.lyrics.versionGap).toFixed(1)} s ${player.lyrics.versionGap > 0 ? "shorter" : "longer"} edit`
+              : ""}
           </span>
           <AnimatePresence>
             {!following && timed && (
@@ -3286,22 +3318,50 @@ export default function App() {
               <div className="setting-row">
                 <div>
                   <strong>Lyrics timing</strong>
-                  <p>Fine-tune words to your audio. Remembered for each song.</p>
+                  <p>
+                    {player.lyricsTiming === "captions"
+                      ? "Matched to this video’s captions. Nudge it if it still feels off."
+                      : player.lyricsTiming === "manual"
+                        ? "Your timing, remembered for this song."
+                        : "As published. Nudge words earlier or later; it is remembered."}
+                  </p>
                 </div>
-                <select
-                  aria-label="Lyrics timing offset"
-                  value={player.lyricsOffset || 0}
-                  onChange={(e) =>
-                    player.setLyricsOffset(Number(e.target.value))
-                  }
-                >
-                  {[-2, -1, -0.5, 0, 0.5, 1, 2].map((value) => (
-                    <option key={value} value={value}>
-                      {value > 0 ? "+" : ""}
-                      {value}s
-                    </option>
-                  ))}
-                </select>
+                <div className="offset-stepper" role="group" aria-label="Lyrics timing offset">
+                  <IconButton
+                    label="Show lyrics later"
+                    onClick={() => player.setLyricsOffset(Math.round((player.lyricsOffset - 0.1) * 10) / 10)}
+                    disabled={player.lyricsOffset <= -10}
+                  >
+                    <Minus size={16} />
+                  </IconButton>
+                  <output aria-live="polite" aria-label="Current lyrics offset">
+                    {player.lyricsOffset > 0 ? "+" : ""}
+                    {player.lyricsOffset.toFixed(1)} s
+                  </output>
+                  <IconButton
+                    label="Show lyrics earlier"
+                    onClick={() => player.setLyricsOffset(Math.round((player.lyricsOffset + 0.1) * 10) / 10)}
+                    disabled={player.lyricsOffset >= 10}
+                  >
+                    <Plus size={16} />
+                  </IconButton>
+                  <AnimatePresence initial={false}>
+                    {player.lyricsTiming === "manual" && (
+                      <Motion.button
+                        key="auto"
+                        type="button"
+                        className="small-pill"
+                        onClick={player.autoLyricsOffset}
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.9 }}
+                        transition={{ duration: 0.3, ease: EASE }}
+                      >
+                        Auto
+                      </Motion.button>
+                    )}
+                  </AnimatePresence>
+                </div>
               </div>
               <div className="setting-row">
                 <div>
