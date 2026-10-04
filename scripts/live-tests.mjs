@@ -1285,8 +1285,9 @@ if (only === 'Q' || !only) {
       await page.mouse.down(); await wait(170);
       const pressed = await read();
       // Slide off vertically: sideways would be a swipe on horizontal carousels.
-      const at = pressed || hover;
+      const at = pressed || hover || before;
       await page.mouse.move(at.x, Math.min(innerHeightOf, at.y + 400), { steps: 3 }); await page.mouse.up(); await wait(250);
+      if (!hover) continue; // gone under the pointer (a hover-revealed control): nothing to compare
       if (!pressed) continue;
       if (pressed.look === hover.look) silent.push(button.name);
       const magnetic = await page.evaluate(index => !!document.querySelector(`[data-audit-index="${index}"]`)?.closest('.magnetic'), button.index);
