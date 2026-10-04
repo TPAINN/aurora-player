@@ -47,16 +47,23 @@ function fakeYouTube() {
       const frame = document.createElement('iframe'); frame.title = 'stub'; mount.replaceWith(frame);
       log('create', this.vid);
       setTimeout(() => options.events.onReady({ target: this }), 40);
-      this.clock = setInterval(() => { if (this.state === 1) { this.t += .05 * this.rate; if (this.t >= this.dur) { this.t = this.dur; this.set(0); } } }, 50);
+      // A media clock follows real time (like a real player's), but is reported only
+      // in coarse 50 ms updates, as YouTube's embed reports its own.
+      this.base = 0; this.since = performance.now();
+      this.clock = setInterval(() => { if (this.state === 1) { this.t = this.exactTime(); if (this.t >= this.dur) { this.t = this.dur; this.rebase(); this.set(0); } } }, 50);
+      (window.__ytPlayers = window.__ytPlayers || []).push(this);
     }
-    set(state) { this.state = state; this.o.events.onStateChange?.({ target: this, data: state }); }
-    loadVideoById(id, start = 0) { if (JSON.parse(localStorage.getItem('refused') || '[]').includes(id)) { this.vid = id; log('refused', id); setTimeout(() => this.o.events.onError?.({ target: this, data: 150 }), 120); return; } this.vid = id; this.t = start; this.dur = Number(JSON.parse(localStorage.getItem('durations') || '{}')[id] || 60); log('load', id, this.muted, start); this.set(3); setTimeout(() => this.set(1), 250); }
+    rebase() { this.base = this.t; this.since = performance.now(); }
+    set(state) { if (this.state === 1) this.t = Math.min(this.dur, this.exactTime()); this.rebase(); this.state = state; this.o.events.onStateChange?.({ target: this, data: state }); }
+    loadVideoById(id, start = 0) { if (JSON.parse(localStorage.getItem('refused') || '[]').includes(id)) { this.vid = id; log('refused', id); setTimeout(() => this.o.events.onError?.({ target: this, data: 150 }), 120); return; } this.vid = id; this.t = start; this.rebase(); this.dur = Number(JSON.parse(localStorage.getItem('durations') || '{}')[id] || 60); log('load', id, this.muted, start); this.set(3); setTimeout(() => this.set(1), 250); }
     playVideo() { log('play', this.vid, this.muted); setTimeout(() => this.set(1), 150); }
     pauseVideo() { log('pause', this.vid); this.set(2); }
-    stopVideo() { log('stop', this.vid); this.set(5); } seekTo(t) { log('seek', this.vid, Math.round(t * 10) / 10); this.t = t; }
+    stopVideo() { log('stop', this.vid); this.set(5); } seekTo(t) { log('seek', this.vid, Math.round(t * 10) / 10); this.t = t; this.rebase(); }
+    // Ground truth for timing checks: the stepped clock plus the time since its step.
+    exactTime() { return this.state === 1 ? this.base + (performance.now() - this.since) / 1000 * this.rate : this.t; }
     getCurrentTime() { return this.t; } getDuration() { return this.dur; } getPlayerState() { return this.state; }
     setVolume(v) { this.vol = v; window.__vols.push([Math.round(performance.now()), this.vid, Math.round(v)]); } mute() { this.muted = true; } unMute() { this.muted = false; }
-    setPlaybackRate(r) { const applied = fine === '3' ? Math.round(r / .05) * .05 : fine ? r : coarse.reduce((best, rate) => Math.abs(rate - r) < Math.abs(best - r) ? rate : best, 1); this.rate = applied; log('rate', this.vid, applied); } getPlaybackRate() { return this.rate; }
+    setPlaybackRate(r) { if (this.state === 1) this.t = this.exactTime(); this.rebase(); const applied = fine === '3' ? Math.round(r / .05) * .05 : fine ? r : coarse.reduce((best, rate) => Math.abs(rate - r) < Math.abs(best - r) ? rate : best, 1); this.rate = applied; log('rate', this.vid, applied); } getPlaybackRate() { return this.rate; }
     getAvailablePlaybackRates() { return fine === '1' ? Array.from({ length: 41 }, (_, i) => Math.round((.8 + i * .01) * 100) / 100) : coarse; }
     getVideoData() { return { video_id: this.vid }; } destroy() { clearInterval(this.clock); }
   }
@@ -262,6 +269,23 @@ if (!only || only === 'C') {
   await check('C', 'the backdrop opens up on a held note, smoothly', async () => { await setSeek(page, 26.6); await wait(400); ok(await page.locator('.player-art-background.is-peak').count() === 1, 'no peak while the note is held'); const rate = await fps(); ok(rate >= 30, `fps ${rate} during the zoom (software rendering)`); });
   await check('C', 'the peak kicks on every beat and rings once a bar (120 BPM → 0.5 s, 2 s), lit brighter', async () => { await setSeek(page, 26.6); await wait(2400); const wave = await page.evaluate(() => { const element = document.querySelector('.beat-pulse-wave'); const ring = document.querySelector('.beat-pulse-ring'); const animation = element?.getAnimations()[0]; return element && { duration: getComputedStyle(element).animationDuration, bar: ring && getComputedStyle(ring).animationDuration, running: animation?.playState, boost: Number(getComputedStyle(document.querySelector('.player-art-boost')).opacity) }; }); ok(wave && wave.duration === '0.5s' && wave.bar === '2s' && wave.running === 'running' && wave.boost > 0.6, JSON.stringify(wave)); const rate = await fps(); ok(rate >= 30, `fps ${rate} while pulsing`); if (process.env.SHOTS) for (const [name, at] of [['crest', 0], ['trough', 0.48]]) { await page.evaluate(at => { for (const node of document.querySelectorAll('.beat-pulse-wave, .beat-pulse-ring')) { const animation = node.getAnimations()[0]; animation.pause(); animation.currentTime = at * 1000; } }, at); await page.screenshot({ path: `${process.env.SHOTS}/pulse-${name}.png` }); await page.evaluate(() => { for (const node of document.querySelectorAll('.beat-pulse-wave, .beat-pulse-ring')) node.getAnimations()[0].play(); }); } });
   await check('C', 'and settles again outside the peak', async () => { await setSeek(page, 7); await wait(900); ok(await page.locator('.player-art-background.is-peak').count() === 0); await wait(2600); if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/pulse-calm.png` }); ok(await page.locator('.beat-pulse').count() === 0, 'pulse lingers outside the peak'); ok(Number(await page.evaluate(() => getComputedStyle(document.querySelector('.player-art-boost')).opacity)) < 0.02, 'the lift lingers outside the peak'); });
+  // Audio-visual sync is imperceptible within about ±45 ms (ITU-R BT.1359).
+  await check('C', 'the kick stays on the beat as the song plays (median ≤ 25 ms, worst ≤ 50 ms)', async () => {
+    await setSeek(page, 26.3); await wait(2200);
+    const errors = [];
+    for (let i = 0; i < 10; i++) {
+      // Both read in the same task: the animation's position and the playing deck's exact time.
+      const sample = await page.evaluate(() => { const node = document.querySelector('.beat-pulse-wave'); const animation = node?.getAnimations()[0]; const deck = (window.__ytPlayers || []).find(p => p.state === 1); return node && animation && deck && { origin: Number(node.dataset.beatOrigin), period: Number(node.dataset.period), at: Number(animation.currentTime) / 1000, time: deck.base + (document.timeline.currentTime - deck.since) / 1000 * deck.rate }; }); // the song's position at this frame's own timestamp
+      const time = sample?.time;
+      if (!sample) { errors.push('no pulse'); break; }
+      const want = (((time - sample.origin) % sample.period) + sample.period) % sample.period;
+      const have = ((sample.at % sample.period) + sample.period) % sample.period;
+      const drift = Math.abs(want - have); errors.push(Math.round(Math.min(drift, sample.period - drift) * 1000));
+      await wait(300);
+    }
+    const sorted = errors.filter(ms => typeof ms === 'number').sort((a, b) => a - b);
+    ok(sorted.length === 10 && sorted[5] <= 25 && sorted.at(-1) <= 50, `drift (ms): ${errors.join(', ')}`);
+  });
   await check('C', 'lyric clicks, wheel, follow and peaks never scroll the player into its backdrop overscan', async () => { const shift = await page.evaluate(() => { const player = document.querySelector('.immersive-player'); return [player.scrollLeft, player.scrollTop]; }); ok(shift.join() === '0,0', `player shifted by ${shift}`); });
   await check('C', 'video mode toggles on', async () => { await page.click('button[aria-label="Video mode"]'); await wait(500); ok(await page.locator('.aurora-app.has-video').count() === 1); });
   await check('C', 'artwork mode toggles back', async () => { await page.click('button[aria-label="Artwork mode"]'); await wait(500); ok(await page.locator('.aurora-app.has-video').count() === 0); });
