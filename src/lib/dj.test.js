@@ -78,7 +78,8 @@ test('tempo estimate reports a sub-hop accurate bpm and the beat phase', () => {
 test('transition plan glides before a bar-quantised overlap of about five seconds', () => {
   const plan = planTransition({ bpm: 120, confidence: .9 }, { bpm: 126, confidence: .9 });
   assert.equal(plan.matched, true);
-  assert.ok(plan.rampSeconds >= 3 && plan.rampSeconds <= 8);
+  // A DJ rides the tempo over whole bars: at least four bars of the blend tempo.
+  assert.ok(plan.rampSeconds >= (4 * 240) / plan.blendBpm - 1e-9 && plan.rampSeconds <= 12, String(plan.rampSeconds));
   assert.ok(plan.seconds >= 4 && plan.seconds <= 7);
   const bars = plan.seconds * plan.blendBpm / 240;
   assert.ok(Math.abs(bars - Math.round(bars)) < 1e-9);
@@ -92,7 +93,7 @@ test('wide tempo gaps meet in the middle so neither song stretches past the boun
   // Song A speeds up, song B enters slowed to the same tempo, then returns to its own.
   assert.ok(Math.abs(120 * plan.rate - 126 * plan.inRate) < 1e-9, 'both decks share one tempo during the blend');
   assert.ok(plan.rate > 1 && plan.inRate < 1);
-  assert.ok(plan.recoverSeconds >= 3 && plan.recoverSeconds <= 8);
+  assert.ok(plan.recoverSeconds >= (4 * 240) / plan.blendBpm - 1e-9 && plan.recoverSeconds <= 12, String(plan.recoverSeconds));
   const wide = planTransition({ bpm: 100, confidence: .9 }, { bpm: 115, confidence: .9 });
   assert.equal(wide.matched, true);
   assert.ok(Math.abs(wide.rate - 1) <= MAX_TEMPO_SHIFT && Math.abs(wide.inRate - 1) <= MAX_TEMPO_SHIFT);
@@ -387,4 +388,27 @@ test('the online sweep is deep and subtle: a low band, quiet, with a long sub un
   assert.ok(sweepShape(1 + SWEEP_TAIL).frequency <= 120, 'it ends in the bass');
   assert.ok(SWEEP_LEVEL <= 0.2, `noise level ${SWEEP_LEVEL} sits over the music`);
   assert.ok(SUB_LEVEL > SWEEP_LEVEL, 'the depth (sub) leads, the noise follows');
+});
+
+test('bigger tempo changes glide longer, never past twelve seconds', async () => {
+  const small = planTransition({ bpm: 120, confidence: .9 }, { bpm: 122, confidence: .9 });
+  const large = planTransition({ bpm: 100, confidence: .9 }, { bpm: 114, confidence: .9 });
+  assert.ok(large.rampSeconds > small.rampSeconds, `${large.rampSeconds} vs ${small.rampSeconds}`);
+  assert.ok(large.rampSeconds <= 12 && large.recoverSeconds <= 12);
+});
+
+test('a tempo glide moves in even steps and lands exactly on its target', async () => {
+  const { gridRate } = await import('./dj.js');
+  const grain = .003;
+  let previous = 1;
+  for (let i = 0; i <= 100; i += 1) {
+    const value = 1 + (1.0249 - 1) * (i / 100);
+    const rate = gridRate(value, 1, 1.0249, grain);
+    assert.ok(Math.abs(rate - previous) <= grain + 1e-9, `${previous} → ${rate}`);
+    previous = rate;
+  }
+  assert.equal(previous, 1.0249);
+  assert.equal(gridRate(.99, .9757, 1, grain) <= 1, true);
+  assert.equal(gridRate(1, .9757, 1, grain), 1);
+  assert.equal(gridRate(1.01, 1, 1, grain), 1);
 });

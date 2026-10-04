@@ -5,7 +5,7 @@ import { songKey } from '../../shared/titles.js';
 import { buildApiUrl } from '../lib/api';
 import { getSimilarTracks, getTrackAnalysis, getTrackTempo } from '../lib/catalog';
 import { pickSeed, recordListening, tasteFilter } from '../lib/listening';
-import { MAX_BLEND, MIN_BLEND, ONLINE_MAX_BLEND, swapTime, adaptiveBlend, analyzeLocalTempo, beatAlignedEntry, blendCurve, vocalSpans, chooseEntry, equalPower, glideRate, nudgePlan, phaseOffset, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
+import { MAX_BLEND, MIN_BLEND, ONLINE_MAX_BLEND, swapTime, adaptiveBlend, analyzeLocalTempo, beatAlignedEntry, blendCurve, vocalSpans, chooseEntry, equalPower, glideRate, gridRate, nudgePlan, phaseOffset, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
 import { playSweep } from '../lib/sweep';
 import { nextPlayable } from '../lib/queue';
 import { detectLanguage } from '../../shared/language.js';
@@ -1076,7 +1076,7 @@ export function usePlayer() {
       if (!outgoing.element.paused) outgoing.element.pause();
       const after = context.current.currentTime - activeMix.finished;
       if (plan.recoverSeconds > 0 && after < plan.recoverSeconds) {
-        setRate(incoming.element, recoverRate(after, plan.recoverSeconds, plan.inRate));
+        setRate(incoming.element, gridRate(recoverRate(after, plan.recoverSeconds, plan.inRate), plan.inRate, 1, RATE_GRAIN), 1e-6);
         return;
       }
       setRate(incoming.element, 1, 0);
@@ -1232,7 +1232,7 @@ export function usePlayer() {
       if (attemptedMix.current === key || element.duration <= 12) return;
       // Song A glides into song B's tempo before the overlap, so the blend starts beat-matched.
       if (plan.matched && element.currentTime >= rampStart && element.currentTime < start) {
-        setRate(element, glideRate(element.currentTime, rampStart, plan.rampSeconds, plan.rate));
+        setRate(element, gridRate(glideRate(element.currentTime, rampStart, plan.rampSeconds, plan.rate), 1, plan.rate, RATE_GRAIN), 1e-6);
         announce({ phase: 'gliding', label: 'Matching the next tempo', mode: 'local', progress: (element.currentTime - rampStart) / plan.rampSeconds, fromBpm: from.outro.bpm, toBpm: plan.targetBpm });
         // Before the glide (for example after seeking back) song A plays at its own
         // tempo; from the blend's start the matched rate holds, so song A never falls
