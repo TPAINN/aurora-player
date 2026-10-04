@@ -29,6 +29,9 @@ const wordLyrics = {
 wordLyrics.lines[2].words.push({ text: '(my ', start: 14.3, end: 14.9 }, { text: 'hand)', start: 14.9, end: 15.5 });
 wordLyrics.lines[2].text += ' (my hand)';
 wordLyrics.lines[4].words = [{ text: 'Night ', start: 26, end: 26.5 }, { text: 'drive, ', start: 26.5, end: 28.4 }, { text: 'night ', start: 28.4, end: 28.9 }, { text: 'drive', start: 28.9, end: 29.4 }];
+// The same song, with a sung verse after the peak on a 120 BPM grid (syllables on
+// every half beat, the held ones on beats every 0.5 s from 0), for a song the catalogue has no tempo for.
+const beatLyrics = { ...wordLyrics, lines: [...wordLyrics.lines, ...Array.from({ length: 6 }, (_, line) => { const time = 34 + line * 4; const sung = Array.from({ length: 16 }, (_, i) => ({ text: `w${line}${i} `, start: time + i * 0.25, end: time + i * 0.25 + (i % 2 ? 0.12 : 0.4) })); return { time, end: time + 4, text: sung.map(word => word.text).join(''), words: sung }; })] };
 const lineLyrics = { source: 'Stub', sync: 'line', lines: [['Sunrise on the water', 1], ['Waking up the town', 5], ['Morning light', 9]].map(([text, time], i, all) => ({ time, end: all[i + 1]?.[1] ?? time + 4, text })) };
 
 function fakeYouTube() {
@@ -83,7 +86,7 @@ const categories = term => ({
   playlists: [{ id: 'PLroads', title: 'Road trip', owner: 'Aurora fan', count: 2, artwork: 'https://img.test/c/pl.jpg' }],
   top: /^band of night$/i.test(term.trim()) ? { kind: 'artist', id: 7 } : /slowed|mashup/i.test(term) ? { kind: 'video', id: 'VVVVVVVVVV1' } : { kind: 'song', id: 1 },
 });
-async function newSession(browser, { viewport = { width: 1440, height: 900 }, prefs = {}, reducedMotion = 'no-preference', searchDelay = 120, failSearch = () => false, recommendations = [], welcome = false, longIntro = false, incomingBpm = 124, unplayable = [], replays = null, tempoLog = null, alignment = null, editGap = 0, lyricLog = null } = {}) {
+async function newSession(browser, { viewport = { width: 1440, height: 900 }, prefs = {}, reducedMotion = 'no-preference', searchDelay = 120, failSearch = () => false, recommendations = [], welcome = false, longIntro = false, incomingBpm = 124, unplayable = [], replays = null, tempoLog = null, alignment = null, editGap = 0, lyricLog = null, nightDriveBpm = 120, sungBeat = false } = {}) {
   const context = await browser.newContext({ viewport, reducedMotion, hasTouch: viewport.width < 700 });
   await context.addInitScript(values => {
     if (!sessionStorage.getItem('seeded')) { for (const [key, value] of Object.entries(values)) localStorage.setItem(key, value); sessionStorage.setItem('seeded', '1'); }
@@ -129,12 +132,12 @@ async function newSession(browser, { viewport = { width: 1440, height: 900 }, pr
     // The upload is another edit with no lyrics timed for its length.
     if (editGap && title === 'Morning Light' && Number(params.get('duration')) === 60 + editGap) return route.fulfill({ json: { source: null, sync: 'plain', lines: [] } }).catch(() => {});
     const incoming = longIntro ? { ...lineLyrics, lines: lineLyrics.lines.map(line => ({ ...line, time: line.time + 37, end: line.end + 37 })) } : lineLyrics;
-    return route.fulfill({ json: title === 'Night Drive' ? (alignment === null ? wordLyrics : { ...wordLyrics, alignment: { offset: alignment, matches: 12, lines: 5 } }) : title === 'Morning Light' ? incoming : { source: null, sync: 'plain', lines: [] } }).catch(() => {});
+    return route.fulfill({ json: title === 'Night Drive' ? (sungBeat ? beatLyrics : alignment === null ? wordLyrics : { ...wordLyrics, alignment: { offset: alignment, matches: 12, lines: 5 } }) : title === 'Morning Light' ? incoming : { source: null, sync: 'plain', lines: [] } }).catch(() => {});
   });
   await page.route('**/api/tempo?*', route => {
     const url = new URL(route.request().url());
     tempoLog?.push(url.search);
-    const bpm = url.searchParams.get('title') === 'Night Drive' ? 120 : incomingBpm;
+    const bpm = url.searchParams.get('title') === 'Night Drive' ? nightDriveBpm : incomingBpm;
     const list = replays && url.searchParams.get('video') ? replays(url.searchParams.get('title')) : null;
     return route.fulfill({ json: list ? { bpm, replays: list } : { bpm } });
   });
@@ -269,7 +272,7 @@ if (!only || only === 'C') {
   await check('C', 'lyric frame rate stays smooth', async () => { const fps = await page.evaluate(() => new Promise(resolve => { let frames = 0; const start = performance.now(); const tick = () => { frames++; if (performance.now() - start < 1500) requestAnimationFrame(tick); else resolve(frames / 1.5); }; requestAnimationFrame(tick); })); ok(fps >= 40, `fps ${fps} (headless software rendering)`); });
   const fps = () => page.evaluate(() => new Promise(resolve => { let frames = 0; const start = performance.now(); const tick = () => { frames++; if (performance.now() - start < 1500) requestAnimationFrame(tick); else resolve(frames / 1.5); }; requestAnimationFrame(tick); }));
   await check('C', 'the backdrop opens up on a held note, smoothly', async () => { await setSeek(page, 26.6); await wait(400); ok(await page.locator('.player-art-background.is-peak').count() === 1, 'no peak while the note is held'); const rate = await fps(); ok(rate >= 30, `fps ${rate} during the zoom (software rendering)`); });
-  await check('C', 'the peak kicks on every beat and rings once a bar (120 BPM → 0.5 s, 2 s), lit brighter', async () => { await setSeek(page, 26.6); await wait(2400); const wave = await page.evaluate(() => { const element = document.querySelector('.beat-pulse-wave'); const ring = document.querySelector('.beat-pulse-ring'); const animation = element?.getAnimations()[0]; return element && { duration: getComputedStyle(element).animationDuration, bar: ring && getComputedStyle(ring).animationDuration, running: animation?.playState, boost: Number(getComputedStyle(document.querySelector('.player-art-boost')).opacity) }; }); ok(wave && wave.duration === '0.5s' && wave.bar === '2s' && wave.running === 'running' && wave.boost > 0.6, JSON.stringify(wave)); const rate = await fps(); ok(rate >= 30, `fps ${rate} while pulsing`); if (process.env.SHOTS) for (const [name, at] of [['crest', 0], ['trough', 0.48]]) { await page.evaluate(at => { for (const node of document.querySelectorAll('.beat-pulse-wave, .beat-pulse-ring')) { const animation = node.getAnimations()[0]; animation.pause(); animation.currentTime = at * 1000; } }, at); await page.screenshot({ path: `${process.env.SHOTS}/pulse-${name}.png` }); await page.evaluate(() => { for (const node of document.querySelectorAll('.beat-pulse-wave, .beat-pulse-ring')) node.getAnimations()[0].play(); }); } });
+  await check('C', 'the peak kicks on every beat and rings once a bar (120 BPM → 0.5 s, 2 s), lit brighter', async () => { await setSeek(page, 26.6); await wait(2400); const wave = await page.evaluate(() => { const element = document.querySelector('.beat-pulse-wave'); const ring = document.querySelector('.beat-pulse-ring'); const animation = element?.getAnimations()[0]; return element && { duration: getComputedStyle(element).animationDuration, bar: ring && getComputedStyle(ring).animationDuration, running: animation?.playState, boost: Number(getComputedStyle(document.querySelector('.player-art-boost')).opacity) }; }); ok(wave && wave.duration === '0.5s' && wave.bar === '2s' && wave.running === 'running' && wave.boost > 0.6, JSON.stringify(wave)); const rate = await fps(); ok(rate >= 30, `fps ${rate} while pulsing`); if (process.env.SHOTS) for (const [name, at] of [['crest', 0], ['trough', 0.48]]) { await page.evaluate(at => { for (const node of document.querySelectorAll('.beat-pulse-wave, .beat-pulse-ring')) { const animation = node.getAnimations()[0]; if (!animation) continue; animation.pause(); animation.currentTime = at * 1000; } }, at); await page.screenshot({ path: `${process.env.SHOTS}/pulse-${name}.png` }); await page.evaluate(() => { for (const node of document.querySelectorAll('.beat-pulse-wave, .beat-pulse-ring')) node.getAnimations()[0].play(); }); } });
   await check('C', 'and settles again outside the peak', async () => { await setSeek(page, 7); await wait(900); ok(await page.locator('.player-art-background.is-peak').count() === 0); await wait(2600); if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/pulse-calm.png` }); ok(await page.locator('.beat-pulse').count() === 0, 'pulse lingers outside the peak'); ok(Number(await page.evaluate(() => getComputedStyle(document.querySelector('.player-art-boost')).opacity)) < 0.02, 'the lift lingers outside the peak'); });
   // Audio-visual sync is imperceptible within about ±45 ms (ITU-R BT.1359).
   await check('C', 'the kick stays on the beat as the song plays (median ≤ 25 ms, worst ≤ 50 ms)', async () => {
@@ -410,6 +413,30 @@ if (!only || only === 'D') {
   await check('D', 'manual blend lands on the next title', async () => { await wait(2500); ok((await title(page)).startsWith('Morning Light')); });
   await check('D', 'pausing mid-session keeps the new song', async () => { await page.click('.dock-transport button[aria-label="Pause"]'); await wait(400); ok((await title(page)).startsWith('Morning Light')); });
   await check('D', 'no runtime errors in manual blend', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+// Next pressed early, before song B is buffered: song A must not dip while B loads.
+// It plays on at full level, B buffers on the standby deck, then the two blend.
+if (!only || only === 'D') {
+  const { context, page, errors } = await djSession({ 'aurora-live-dj': 'true' });
+  await wait(2500);
+  const mark = await page.evaluate(() => performance.now());
+  await page.click('.dock-transport button[aria-label="Next track"]');
+  // The title follows song B from the blend's first moment; watch the whole blend.
+  await wait(9000);
+  const vols = await page.evaluate(m => window.__vols.filter(v => v[0] > m && (v[1] === 'AAAAAAAAAAA' || v[1] === 'BBBBBBBBBBB')), mark);
+  await check('D', 'an early manual Next keeps song A at full level until song B sounds (no loading dip)', async () => {
+    const firstB = vols.find(v => v[1] === 'BBBBBBBBBBB' && v[2] > 0)?.[0] ?? Infinity;
+    const dips = vols.filter(v => v[1] === 'AAAAAAAAAAA' && v[0] < firstB && v[2] < 60);
+    ok(Number.isFinite(firstB) && !dips.length, `first B at ${firstB - mark} ms; A before it: ${JSON.stringify(dips.slice(0, 4))}`);
+  });
+  await check('D', 'and then blends them: both are heard together before song A leaves', async () => {
+    const level = { AAAAAAAAAAA: 68, BBBBBBBBBBB: 0 }; let together = 0, last = null;
+    for (const [time, id, volume] of vols) { if (last !== null && level.AAAAAAAAAAA >= 20 && level.BBBBBBBBBBB >= 20) together += time - last; last = time; level[id] = volume; }
+    ok(together >= 2000, `${together} ms together`);
+    ok((await title(page)).startsWith('Morning Light'), await title(page));
+  });
+  await check('D', 'no runtime errors in an early manual blend', async () => ok(!errors.length, errors.join(' | ')));
   await context.close();
 }
 if (!only || only === 'D') {
@@ -1418,6 +1445,28 @@ if (only === 'R') {
   }
 }
 
+// A song the catalogue has no tempo for still pulses on its beat when its words are
+// word-timed: the beat is measured from where the sung words land (120 BPM, beats
+// on whole half-seconds). A song with neither gets no pulse at all.
+if (!only || only === 'W') {
+  for (const [label, options, expect] of [['no catalogue tempo, word-timed vocal', { nightDriveBpm: null, sungBeat: true }, true], ['no tempo and no beat in the words', { nightDriveBpm: null }, false]]) {
+    const { context, page, errors } = await newSession(browser, options);
+    await page.goto(BASE); await wait(1500);
+    await startQueue(page); await wait(1200);
+    if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(1000); }
+    await setSeek(page, 26.6); await wait(2400);
+    await check('W', `${label}: ${expect ? 'the peak pulses on the measured beat' : 'no pulse is invented'}`, async () => {
+      const wave = await page.evaluate(() => { const node = document.querySelector('.beat-pulse-wave'); return node && { period: Number(node.dataset.period), origin: Number(node.dataset.beatOrigin) }; });
+      if (!expect) return ok(!wave, JSON.stringify(wave));
+      ok(wave && Math.abs(wave.period - 0.5) < 0.002, JSON.stringify(wave));
+      const off = ((wave.origin % 0.5) + 0.5) % 0.5;
+      ok(Math.min(off, 0.5 - off) < 0.03, `origin ${wave.origin}`);
+    });
+    await check('W', `${label}: no runtime errors`, async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
 // Cards that arrive after their section has revealed still appear (phones load the
 // recommendations late, often after the shelf has scrolled into view).
 if (!only || only === 'S') {
@@ -1430,6 +1479,23 @@ if (!only || only === 'S') {
       ok(!hidden.length, hidden.join(', '));
     });
     await check('S', `${label}: no runtime errors`, async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
+// On demand: film the lyrics toggle (open and close) frame by frame, for review.
+if (only === 'T') {
+  const dir = process.env.SHOTS || 'shots'; await mkdir(dir, { recursive: true });
+  for (const [label, viewport] of [['desktop', { width: 1440, height: 900 }], ['phone', { width: 390, height: 844 }]]) {
+    const { context, page } = await newSession(browser, { viewport });
+    await page.goto(BASE); await wait(1500);
+    await startQueue(page); await wait(1200);
+    if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(1200); }
+    await setSeek(page, 10.5); await wait(800);
+    const lyrics = () => page.locator('button:has-text("Lyrics") >> visible=true').or(page.locator('button[aria-label="Show lyrics"] >> visible=true')).first().click();
+    const film = async name => { for (let i = 0; i < 14; i++) { await page.screenshot({ path: `${dir}/t-${label}-${name}-${String(i).padStart(2, '0')}.png` }); await wait(55); } };
+    await lyrics(); await film('open'); await wait(1200);
+    await lyrics(); await film('close');
     await context.close();
   }
 }

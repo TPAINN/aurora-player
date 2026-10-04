@@ -4747,10 +4747,10 @@ body {
 .beat-pulse-ring {
   position: absolute;
   /* Only the glow's own footprint is composited, never the full screen. */
-  left: 22%;
-  right: 22%;
-  top: 14%;
-  bottom: 26%;
+  left: 12%;
+  right: 12%;
+  top: 6%;
+  bottom: 18%;
   opacity: 0;
   will-change: transform, opacity;
 }
@@ -4762,20 +4762,25 @@ body {
   }
 }
 .beat-pulse-wave {
-  background: radial-gradient(closest-side, #f1fff82e 0%, #d2f7e614 50%, transparent 100%);
+  background: radial-gradient(closest-side, #f1fff861 0%, #d2f7e62e 48%, transparent 100%);
   animation: beat-kick var(--pulse-period, 0.5s) cubic-bezier(0.16, 0.8, 0.3, 1) infinite;
 }
 .beat-pulse-ring {
   background: radial-gradient(closest-side, transparent 30%, #eafff50f 62%, transparent 96%);
   animation: beat-ring var(--pulse-bar, 2s) cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
 }
+/* A clear kick that decays to nothing before the next beat: the contrast between
+   beat and rest is what the eye reads as the pulse. */
 @keyframes beat-kick {
   0% {
     opacity: 1;
-    transform: scale(1.035);
+    transform: scale(1.06);
+  }
+  55% {
+    opacity: 0.18;
   }
   100% {
-    opacity: 0.22;
+    opacity: 0;
     transform: scale(0.97);
   }
 }
@@ -5226,6 +5231,90 @@ body {
   .video-card::before,
   .artist-card::before,
   .mood-card::before {
+    transition: none;
+  }
+}
+
+/* Lyrics on and off as one movement: closing lyrics leave the layout at once
+   (popLayout), so the body anchors them; on phones the name, chips and controls
+   ease to their lyrics sizes on the same curve as the glide instead of snapping. */
+.now-playing-body {
+  position: relative;
+}
+@media (max-width: 760px) {
+  .mobile-player-info h1,
+  .mobile-player-info > p {
+    transition:
+      font-size 0.8s var(--ease-soft),
+      margin 0.8s var(--ease-soft);
+  }
+  .player-pills,
+  .transport-large {
+    transition: margin 0.8s var(--ease-soft);
+  }
+  .immersive-player .play-button.large,
+  .immersive-player .play-button.large svg {
+    transition:
+      width 0.8s var(--ease-soft),
+      height 0.8s var(--ease-soft);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mobile-player-info h1,
+  .mobile-player-info > p,
+  .player-pills,
+  .transport-large,
+  .immersive-player .play-button.large,
+  .immersive-player .play-button.large svg {
+    transition: none;
+  }
+}
+/* Lyrics slide out from behind the cover and tuck back under it. */
+@media (min-width: 761px) {
+  .now-playing-body > .now-playing-art {
+    z-index: 2;
+  }
+  .now-playing-body > .desktop-lyrics {
+    position: relative;
+    z-index: 1;
+  }
+}
+
+/* Focus on large screens: the cover and its name glide to the left edge while the
+   lyrics grow and settle at the centre of the stage. The lyrics grow by scale
+   (composited, on the same curve as the glide) rather than by re-laying out text,
+   so the change is one continuous movement. */
+@media (min-width: 761px) and (min-height: 521px) {
+  .now-playing-body {
+    transition:
+      padding 0.8s var(--ease-soft),
+      gap 0.8s var(--ease-soft);
+  }
+  .desktop-lyrics {
+    transition: scale 0.8s var(--ease-soft);
+  }
+  .is-focus .now-playing-body {
+    justify-content: flex-start;
+    gap: 0;
+    padding-left: clamp(32px, 5vw, 96px);
+    padding-right: clamp(24px, 3vw, 64px);
+  }
+  .is-focus .now-playing-art {
+    width: min(22vw, 300px, calc(100dvh - 380px));
+  }
+  .is-focus .desktop-lyrics {
+    --focus-zoom: 1.3;
+    width: calc(min(100vw - min(22vw, 300px) - 260px, 1040px) / var(--focus-zoom));
+    height: calc((100dvh - 230px) / var(--focus-zoom));
+    min-height: 0;
+    margin-inline: auto;
+    scale: var(--focus-zoom);
+    transform-origin: 50% 50%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .now-playing-body,
+  .desktop-lyrics {
     transition: none;
   }
 }
