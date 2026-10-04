@@ -1,11 +1,15 @@
 import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
+import react, { reactCompilerPreset } from "@vitejs/plugin-react";
+import babel from "@rolldown/plugin-babel";
 import { fileURLToPath } from "node:url";
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
     react(),
+    // The compiler memoizes every component: a song change or a sheet no longer
+    // re-renders the lyrics, the page behind the player or anything else unchanged.
+    babel({ presets: [reactCompilerPreset()] }),
     {
       name: "aurora-local-api",
       configureServer: installApi,

@@ -65,6 +65,16 @@ When YouTube refuses an upload (removed, private, embedding disabled), the playe
 
 A DJ blend hands over as a slow dissolve: the new cover sharpens out of a soft blur, the backdrop crossfades over about three seconds, and the lyrics drift up and out while the new ones rise in after a beat. A skip keeps the quicker, direction-aware slide.
 
+## EQ blend: bass, voices, air
+
+Local blends mix like a DJ on a three-band mixer, without needing to separate the stems:
+
+- **Bass.** Song B enters with its low end cut. On song A's bar line nearest the middle of the blend, the low end moves from A to B, so two kicks and two basslines never stack.
+- **Voices.** Each deck has a vocal-band (presence) EQ around 1.6 kHz. B's voice enters 9 dB down and opens over the beat after the swap, while A's is pulled out over the same beat, so two singers never compete.
+- **Air.** After the swap, A narrows into a hollow band and echoes out on the beat while B's top end opens.
+
+Online playback cannot be filtered (the embed's audio is not reachable from the page), so there the blend is equal-power, with a synthesized hollow sweep on top.
+
 ## Beat lock, measured
 
 Song A glides to the shared tempo before the overlap and holds it as the overlap begins. Song B enters on A's beat at the shared tempo. Once B has settled (about 0.35 s, past `play()` latency), its slip against A's grid is measured at rest. Any slip of 25 ms or more is closed with one short 2 % push, then one re-check; the grids match beat to beat even when one tempo was read at half or double. Rates move in steps of at least 0.3 %, because every rate change briefly softens a kick in the browser's time-stretcher. B then settles back to its own tempo.

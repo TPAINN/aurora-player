@@ -53,7 +53,7 @@ function fakeYouTube() {
     loadVideoById(id, start = 0) { if (JSON.parse(localStorage.getItem('refused') || '[]').includes(id)) { this.vid = id; log('refused', id); setTimeout(() => this.o.events.onError?.({ target: this, data: 150 }), 120); return; } this.vid = id; this.t = start; this.dur = Number(JSON.parse(localStorage.getItem('durations') || '{}')[id] || 60); log('load', id, this.muted, start); this.set(3); setTimeout(() => this.set(1), 250); }
     playVideo() { log('play', this.vid, this.muted); setTimeout(() => this.set(1), 150); }
     pauseVideo() { log('pause', this.vid); this.set(2); }
-    stopVideo() { this.set(5); } seekTo(t) { log('seek', this.vid, Math.round(t * 10) / 10); this.t = t; }
+    stopVideo() { log('stop', this.vid); this.set(5); } seekTo(t) { log('seek', this.vid, Math.round(t * 10) / 10); this.t = t; }
     getCurrentTime() { return this.t; } getDuration() { return this.dur; } getPlayerState() { return this.state; }
     setVolume(v) { this.vol = v; window.__vols.push([Math.round(performance.now()), this.vid, Math.round(v)]); } mute() { this.muted = true; } unMute() { this.muted = false; }
     setPlaybackRate(r) { const applied = fine === '3' ? Math.round(r / .05) * .05 : fine ? r : coarse.reduce((best, rate) => Math.abs(rate - r) < Math.abs(best - r) ? rate : best, 1); this.rate = applied; log('rate', this.vid, applied); } getPlaybackRate() { return this.rate; }
@@ -75,7 +75,7 @@ const categories = term => ({
   playlists: [{ id: 'PLroads', title: 'Road trip', owner: 'Aurora fan', count: 2, artwork: 'https://img.test/c/pl.jpg' }],
   top: /^band of night$/i.test(term.trim()) ? { kind: 'artist', id: 7 } : /slowed|mashup/i.test(term) ? { kind: 'video', id: 'VVVVVVVVVV1' } : { kind: 'song', id: 1 },
 });
-async function newSession(browser, { viewport = { width: 1440, height: 900 }, prefs = {}, reducedMotion = 'no-preference', searchDelay = 120, failSearch = () => false, recommendations = [], welcome = false, longIntro = false, incomingBpm = 124, unplayable = [] } = {}) {
+async function newSession(browser, { viewport = { width: 1440, height: 900 }, prefs = {}, reducedMotion = 'no-preference', searchDelay = 120, failSearch = () => false, recommendations = [], welcome = false, longIntro = false, incomingBpm = 124, unplayable = [], replays = null, tempoLog = null, alignment = null, editGap = 0, lyricLog = null } = {}) {
   const context = await browser.newContext({ viewport, reducedMotion, hasTouch: viewport.width < 700 });
   await context.addInitScript(values => {
     if (!sessionStorage.getItem('seeded')) { for (const [key, value] of Object.entries(values)) localStorage.setItem(key, value); sessionStorage.setItem('seeded', '1'); }
@@ -112,15 +112,24 @@ async function newSession(browser, { viewport = { width: 1440, height: 900 }, pr
     const title = new URL(route.request().url()).searchParams.get('title');
     if (unplayable.includes(title)) return route.fulfill({ json: { videoId: null, candidates: [] } });
     const videoId = { 'Night Drive': 'AAAAAAAAAAA', 'Morning Light': 'BBBBBBBBBBB', 'Slow Tide': 'CCCCCCCCCCC' }[title] || 'DDDDDDDDDDD';
-    return route.fulfill({ json: { videoId, channel: title === 'Night Drive' ? 'Band - Topic' : 'Band Uploads', title, candidates: [{ videoId }, { videoId: 'EEEEEEEEEEE' }] } });
+    return route.fulfill({ json: { videoId, channel: title === 'Night Drive' ? 'Band - Topic' : 'Band Uploads', title, ...(editGap && title === 'Morning Light' ? { duration: 60 + editGap } : {}), candidates: [{ videoId }, { videoId: 'EEEEEEEEEEE' }] } });
   });
   await page.route('**/api/lyrics/structured?*', async route => {
-    const title = new URL(route.request().url()).searchParams.get('title');
+    const params = new URL(route.request().url()).searchParams, title = params.get('title');
+    lyricLog?.push(`${title}@${params.get('duration')}`);
     await wait(title === 'Slow Tide' ? 900 : 150);
+    // The upload is another edit with no lyrics timed for its length.
+    if (editGap && title === 'Morning Light' && Number(params.get('duration')) === 60 + editGap) return route.fulfill({ json: { source: null, sync: 'plain', lines: [] } }).catch(() => {});
     const incoming = longIntro ? { ...lineLyrics, lines: lineLyrics.lines.map(line => ({ ...line, time: line.time + 37, end: line.end + 37 })) } : lineLyrics;
-    return route.fulfill({ json: title === 'Night Drive' ? wordLyrics : title === 'Morning Light' ? incoming : { source: null, sync: 'plain', lines: [] } }).catch(() => {});
+    return route.fulfill({ json: title === 'Night Drive' ? (alignment === null ? wordLyrics : { ...wordLyrics, alignment: { offset: alignment, matches: 12, lines: 5 } }) : title === 'Morning Light' ? incoming : { source: null, sync: 'plain', lines: [] } }).catch(() => {});
   });
-  await page.route('**/api/tempo?*', route => route.fulfill({ json: { bpm: new URL(route.request().url()).searchParams.get('title') === 'Night Drive' ? 120 : incomingBpm } }));
+  await page.route('**/api/tempo?*', route => {
+    const url = new URL(route.request().url());
+    tempoLog?.push(url.search);
+    const bpm = url.searchParams.get('title') === 'Night Drive' ? 120 : incomingBpm;
+    const list = replays && url.searchParams.get('video') ? replays(url.searchParams.get('title')) : null;
+    return route.fulfill({ json: list ? { bpm, replays: list } : { bpm } });
+  });
   await page.route('**/api/recommendations?*', route => route.fulfill({ json: { tracks: recommendations } }));
   await page.route('**/api/mood?*', route => { const mood = new URL(route.request().url()).searchParams.get('mood'); return route.fulfill({ json: { tracks: Array.from({ length: 16 }, (_, i) => ({ id: `mood:${mood}:${i}`, title: `${mood} song ${i + 1}`, artist: `Mood artist ${i % 8}`, album: 'LP', artwork: 'https://img.test/c/m.jpg', duration: 60, mood })) } }); });
   await page.route('https://www.youtube.com/**', route => route.abort());
@@ -136,7 +145,7 @@ async function check(group, name, fn) {
 const events = page => page.evaluate(() => window.__events);
 const title = page => page.evaluate(() => document.title);
 const searchFor = async (page, text) => { await page.fill('input[aria-label="Search songs or artists"]', text); await wait(700); };
-const goSearch = page => page.click('nav[aria-label="Main navigation"] button[aria-label="Search"]');
+const goSearch = page => page.locator('nav[aria-label="Main navigation"] button[aria-label="Search"] >> visible=true').or(page.locator('nav[aria-label="Mobile navigation"] button:has-text("Search") >> visible=true')).first().click();
 const playerTime = page => page.evaluate(() => Number(document.querySelector('.dock-seek input')?.value || 0));
 async function setSeek(page, seconds) {
   await page.evaluate(value => {
@@ -251,7 +260,9 @@ if (!only || only === 'C') {
   await check('C', 'lyric frame rate stays smooth', async () => { const fps = await page.evaluate(() => new Promise(resolve => { let frames = 0; const start = performance.now(); const tick = () => { frames++; if (performance.now() - start < 1500) requestAnimationFrame(tick); else resolve(frames / 1.5); }; requestAnimationFrame(tick); })); ok(fps >= 40, `fps ${fps} (headless software rendering)`); });
   const fps = () => page.evaluate(() => new Promise(resolve => { let frames = 0; const start = performance.now(); const tick = () => { frames++; if (performance.now() - start < 1500) requestAnimationFrame(tick); else resolve(frames / 1.5); }; requestAnimationFrame(tick); }));
   await check('C', 'the backdrop opens up on a held note, smoothly', async () => { await setSeek(page, 26.6); await wait(400); ok(await page.locator('.player-art-background.is-peak').count() === 1, 'no peak while the note is held'); const rate = await fps(); ok(rate >= 30, `fps ${rate} during the zoom (software rendering)`); });
-  await check('C', 'and settles again outside the peak', async () => { await setSeek(page, 7); await wait(900); ok(await page.locator('.player-art-background.is-peak').count() === 0); });
+  await check('C', 'the peak kicks on every beat and rings once a bar (120 BPM → 0.5 s, 2 s), lit brighter', async () => { await setSeek(page, 26.6); await wait(2400); const wave = await page.evaluate(() => { const element = document.querySelector('.beat-pulse-wave'); const ring = document.querySelector('.beat-pulse-ring'); const animation = element?.getAnimations()[0]; return element && { duration: getComputedStyle(element).animationDuration, bar: ring && getComputedStyle(ring).animationDuration, running: animation?.playState, boost: Number(getComputedStyle(document.querySelector('.player-art-boost')).opacity) }; }); ok(wave && wave.duration === '0.5s' && wave.bar === '2s' && wave.running === 'running' && wave.boost > 0.6, JSON.stringify(wave)); const rate = await fps(); ok(rate >= 30, `fps ${rate} while pulsing`); if (process.env.SHOTS) for (const [name, at] of [['crest', 0], ['trough', 0.48]]) { await page.evaluate(at => { for (const node of document.querySelectorAll('.beat-pulse-wave, .beat-pulse-ring')) { const animation = node.getAnimations()[0]; animation.pause(); animation.currentTime = at * 1000; } }, at); await page.screenshot({ path: `${process.env.SHOTS}/pulse-${name}.png` }); await page.evaluate(() => { for (const node of document.querySelectorAll('.beat-pulse-wave, .beat-pulse-ring')) node.getAnimations()[0].play(); }); } });
+  await check('C', 'and settles again outside the peak', async () => { await setSeek(page, 7); await wait(900); ok(await page.locator('.player-art-background.is-peak').count() === 0); await wait(2600); if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/pulse-calm.png` }); ok(await page.locator('.beat-pulse').count() === 0, 'pulse lingers outside the peak'); ok(Number(await page.evaluate(() => getComputedStyle(document.querySelector('.player-art-boost')).opacity)) < 0.02, 'the lift lingers outside the peak'); });
+  await check('C', 'lyric clicks, wheel, follow and peaks never scroll the player into its backdrop overscan', async () => { const shift = await page.evaluate(() => { const player = document.querySelector('.immersive-player'); return [player.scrollLeft, player.scrollTop]; }); ok(shift.join() === '0,0', `player shifted by ${shift}`); });
   await check('C', 'video mode toggles on', async () => { await page.click('button[aria-label="Video mode"]'); await wait(500); ok(await page.locator('.aurora-app.has-video').count() === 1); });
   await check('C', 'artwork mode toggles back', async () => { await page.click('button[aria-label="Artwork mode"]'); await wait(500); ok(await page.locator('.aurora-app.has-video').count() === 0); });
   await check('C', 'next track advances the queue', async () => { await page.click('.dock-transport button[aria-label="Next track"]'); await wait(1200); ok((await title(page)).startsWith('Morning Light')); });
@@ -273,10 +284,10 @@ if (!only || only === 'C') {
   await check('C', 'shuffle toggles', async () => { await page.click('.dock-transport button[aria-label="Shuffle"]'); ok(await page.getAttribute('.dock-transport button[aria-label="Shuffle"]', 'aria-pressed') === 'true'); await page.click('.dock-transport button[aria-label="Shuffle"]'); });
   await check('C', 'media session metadata set', async () => ok(await page.evaluate(() => navigator.mediaSession?.metadata?.title?.length > 0)));
   await check('C', 'queue sheet opens', async () => { await page.click('.dock-actions button[aria-label="Open queue"]'); await wait(800); ok(await page.locator('dialog.sheet[open] .track-row').count() === 3); });
-  await check('C', 'queue row removal animates out', async () => { await page.click('dialog.sheet .track-row >> nth=2 >> button[aria-label^="Remove"]'); await wait(700); ok(await page.locator('dialog.sheet .track-row').count() === 2); });
-  await check('C', 'play from queue row', async () => { await page.click('dialog.sheet .track-row >> nth=1 >> .track-main'); await wait(1200); ok((await title(page)).startsWith('Morning Light')); });
+  await check('C', 'queue row removal animates out', async () => { await page.click('dialog.sheet button[aria-label="Remove Slow Tide from queue"]'); await wait(700); ok(await page.locator('dialog.sheet .track-row').count() === 2); });
+  await check('C', 'play from queue row', async () => { await page.click('dialog.sheet details.queue-played summary').catch(() => {}); await wait(400); await page.click('dialog.sheet .track-row:has-text("Morning Light") .track-main'); await wait(1200); ok((await title(page)).startsWith('Morning Light')); });
   await check('C', 'Escape closes the sheet', async () => { if (!await page.locator('dialog.sheet[open]').count()) await page.click('.dock-actions button[aria-label="Open queue"]'); await wait(700); await page.keyboard.press('Escape'); await wait(700); ok(await page.locator('dialog.sheet').count() === 0); });
-  await check('C', 'settings sheet changes lyric offset', async () => { await page.click('button[aria-label="Player settings"]'); await wait(700); await page.selectOption('select[aria-label="Lyrics timing offset"]', '0.5'); ok(await page.inputValue('select[aria-label="Lyrics timing offset"]') === '0.5'); });
+  await check('C', 'settings sheet changes lyric offset', async () => { await page.click('button[aria-label="Player settings"]'); await wait(700); for (let i = 0; i < 5; i++) { await page.click('button[aria-label="Show lyrics earlier"]'); await wait(80); } ok((await page.textContent('output[aria-label="Current lyrics offset"]')).trim() === '+0.5 s'); ok(await page.locator('.offset-stepper .small-pill:has-text("Auto")').count() === 1, 'no Auto once set by hand'); await page.click('.offset-stepper .small-pill:has-text("Auto")'); await wait(500); ok((await page.textContent('output[aria-label="Current lyrics offset"]')).trim() === '0.0 s', 'Auto returns to published timing'); for (let i = 0; i < 5; i++) await page.click('button[aria-label="Show lyrics earlier"]'); });
   await check('C', 'settings lists keyboard shortcuts', async () => ok(await page.locator('.shortcut-list kbd').count() >= 6));
   await check('C', 'settings → DJ link with back', async () => { await page.click('.dj-settings-link'); await wait(800); ok(await page.locator('dialog[aria-label="DJ transition"]').count() === 1); });
   await check('C', 'back returns to settings', async () => { await page.click('button[aria-label="Back to preferences"]'); await wait(800); ok(await page.locator('dialog[aria-label="Make it yours"]').count() === 1); });
@@ -317,7 +328,7 @@ if (!only || only === 'D') {
   await check('D', 'incoming lyrics ready at the hand-over', async () => { await page.click('button[aria-label="Show lyrics"]'); await wait(900); ok((await page.textContent('.desktop-lyrics')).includes('Sunrise')); });
   await wait(7500);
   await check('D', 'both songs are audible together', async () => { const vols = await page.evaluate(() => window.__vols); const a = vols.filter(v => v[1] === 'AAAAAAAAAAA' && v[2] > 5 && v[2] < 75); const b = vols.filter(v => v[1] === 'BBBBBBBBBBB' && v[2] > 5 && v[2] < 75); ok(a.length > 3 && b.length > 3, `A:${a.length} B:${b.length} ${JSON.stringify(vols.slice(-6))}`); });
-  await check('D', 'equal-power curve reaches full volume', async () => { const vols = await page.evaluate(() => window.__vols.filter(v => v[1] === 'BBBBBBBBBBB')); ok(vols.at(-1)[2] >= 79, JSON.stringify(vols.at(-1))); });
+  await check('D', 'equal-power curve reaches full volume', async () => { const vols = await page.evaluate(() => window.__vols.filter(v => v[1] === 'BBBBBBBBBBB')); ok(vols.at(-1)[2] === 68, `ends at the Normal loudness level (80 × 0.85): ${JSON.stringify(vols.at(-1))}`); });
   await check('D', 'midpoint loudness is equal power', async () => { const vols = await page.evaluate(() => window.__vols.filter(v => v[1] === 'BBBBBBBBBBB' && v[2] > 0)); const mid = vols.find(v => v[2] >= 50); ok(mid && mid[2] <= 62, JSON.stringify(mid)); });
   await check('D', 'outgoing deck stops after the blend', async () => ok((await events(page)).some(row => row[1] === 'pause' && row[2] === 'AAAAAAAAAAA')));
   await check('D', 'a hollow sweep plays over the online blend', async () => ok(await page.evaluate(() => window.__sweeps) >= 1, 'no sweep started'));
@@ -443,7 +454,7 @@ if (!only || only === 'F') {
   await check('F', 'Back closes the sheet, not the player', async () => { await page.goBack(); await wait(900); ok(await page.locator('dialog.sheet').count() === 0); ok(await page.locator('.immersive-player').count() === 1); });
   await check('F', 'settings → DJ → Back returns to settings', async () => { await page.click('button[aria-label="Player settings"]'); await wait(700); await page.click('.dj-settings-link >> nth=0'); await wait(800); await page.goBack(); await wait(800); ok(await page.locator('dialog[aria-label="Make it yours"]').count() === 1); });
   await check('F', 'closing a stacked sheet closes it completely', async () => { await page.click('.dj-settings-link >> nth=0'); await wait(700); await page.click('dialog[aria-label="DJ transition"] button[aria-label="Close DJ transition"]'); await wait(900); ok(await page.locator('dialog.sheet').count() === 0); await page.goBack(); await wait(900); ok(await page.locator('dialog.sheet').count() === 0, 'back reopened a sheet'); });
-  await check('F', 'blend length choice persists', async () => { await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(700); await page.click('.segmented [role=radio]:has-text("Long")'); ok(await page.evaluate(() => localStorage.getItem('aurora-blend')) === '10'); ok(await page.getAttribute('.segmented [role=radio]:has-text("Long")', 'aria-checked') === 'true'); await page.keyboard.press('Escape'); await wait(700); });
+  await check('F', 'blend length choice persists', async () => { await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(700); await page.click('.segmented [role=radio]:has-text("Extended")'); ok(await page.evaluate(() => localStorage.getItem('aurora-blend')) === '32'); ok(await page.getAttribute('.segmented [role=radio]:has-text("Extended")', 'aria-checked') === 'true'); await page.keyboard.press('Escape'); await wait(700); });
   await check('F', 'motion backdrop shows the blurred video behind the artwork', async () => { if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(900); } await page.click('button[aria-label="Player settings"]'); await wait(700); await page.click('button[aria-label="Motion backdrop"]'); await page.keyboard.press('Escape'); await wait(800); ok(await page.locator('.aurora-app.motion-art .video-surface.is-visible').count() === 1); ok(await page.locator('.now-playing-art').isVisible()); });
   await check('F', 'no runtime errors in discovery and navigation', async () => ok(!errors.length, errors.join(' | ')));
   await context.close();
@@ -631,10 +642,10 @@ if (!only || only === 'H') {
     ok(during === 2 && settled === 1, `during ${during}, settled ${settled}`);
     await page.click('.dock-transport button[aria-label="Play"]'); await wait(500);
   });
-  await check('H', '10 · blends last 5–10 s: Auto (default), Tight, Natural and Long', async () => {
+  await check('H', '10 · blends run in whole phrases: Auto (default), Short, Club and Extended', async () => {
     await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(800);
     const labels = await page.locator('.segmented [role=radio]').allTextContents();
-    ok(labels.join('|') === 'Auto5–10s|Tight5s|Natural8s|Long10s', labels.join('|'));
+    ok(labels.join('|') === 'AutoLongest fit|Short8s|Club16s|Extended32s', labels.join('|'));
     ok(await page.getAttribute('.segmented [role=radio]:has-text("Auto")', 'aria-checked') === 'true');
     await page.keyboard.press('Escape'); await wait(600);
   });
@@ -911,6 +922,398 @@ if (!only || only === 'J') {
   await check('J', 'spamming open/close never stacks two players', async () => ok(probe.maxOpen === 1, JSON.stringify(probe)));
   await check('J', 'no runtime errors while spamming the player', async () => ok(!errors.length, errors.join(' | ')));
   await context.close();
+}
+
+if (!only || only === 'K') {
+  // Changing song by hand never leaves silence: the playing song keeps sounding until
+  // the new one plays, then fades out under it.
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 } });
+  await page.goto(BASE); await wait(500); await startQueue(page, ['Morning Light']); await wait(1500);
+  const mark = await page.evaluate(() => performance.now());
+  await page.click('.dock-transport button[aria-label="Next track"]'); await wait(2600);
+  const rows = (await events(page)).filter(row => row[0] > mark);
+  const vols = await page.evaluate(m => window.__vols.filter(v => v[0] > m), mark);
+  const startB = rows.find(row => row[1] === 'load' && row[2] === 'BBBBBBBBBBB');
+  const silencedA = rows.find(row => (row[1] === 'stop' || row[1] === 'pause') && row[2] === 'AAAAAAAAAAA');
+  await check('K', 'the new song is playing', async () => ok((await title(page)).startsWith('Morning Light') && startB, JSON.stringify(rows.slice(0, 8))));
+  await check('K', 'a manual change never cuts the playing song before the new one sounds', async () => ok(!silencedA || silencedA[0] > startB[0] + 250, JSON.stringify(rows.slice(0, 10))));
+  await check('K', 'the old song fades out under the new one', async () => { const a = vols.filter(v => v[1] === 'AAAAAAAAAAA' && v[2] > 0 && v[2] < 75); const b = vols.filter(v => v[1] === 'BBBBBBBBBBB' && v[2] > 0 && v[2] < 75); ok(a.length >= 3 && b.length >= 3, `A:${a.length} B:${b.length}`); });
+  await check('K', 'the old song is stopped once the fade completes', async () => ok(silencedA, 'old deck still running'));
+  await check('K', 'no runtime errors on a gapless change', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+if (!only || only === 'K') {
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 } });
+  await page.goto(BASE); await wait(500); await startQueue(page, ['Morning Light', 'Slow Tide']); await wait(1500);
+  const mark = await page.evaluate(() => performance.now());
+  await page.evaluate(() => { const next = document.querySelector('.dock-transport button[aria-label="Next track"]'); next.click(); setTimeout(() => next.click(), 80); });
+  await wait(2800);
+  const rows = (await events(page)).filter(row => row[0] > mark);
+  const startC = rows.find(row => row[1] === 'load' && row[2] === 'CCCCCCCCCCC');
+  const silencedA = rows.find(row => (row[1] === 'stop' || row[1] === 'pause') && row[2] === 'AAAAAAAAAAA');
+  await check('K', 'skipping twice in a row lands on the right song', async () => ok((await title(page)).startsWith('Slow Tide') && startC, `${await title(page)} ${JSON.stringify(rows.slice(0, 10))}`));
+  await check('K', 'skipping twice keeps the first song sounding until the last one plays', async () => ok(!silencedA || silencedA[0] > startC[0] + 250, JSON.stringify(rows.slice(0, 12))));
+  // Pause while a change is still crossing: neither deck may keep playing.
+  await page.evaluate(() => { document.querySelector('.dock-transport button[aria-label="Previous track"]').click(); });
+  await wait(700);
+  await page.evaluate(() => document.querySelector('.dock-transport button[aria-label="Pause"]')?.click()); await wait(1500);
+  await check('K', 'pausing mid-change leaves no deck playing', async () => {
+    const audible = await page.evaluate(() => [...document.querySelectorAll('.yt-deck iframe, iframe')].length && (window.__events || []).reduce((state, row) => { if (['play', 'load'].includes(row[1])) state[row[2]] = 'on'; if (['pause', 'stop'].includes(row[1])) state[row[2]] = 'off'; return state; }, {}));
+    ok(Object.entries(audible).every(([, state]) => state === 'off'), JSON.stringify(audible));
+  });
+  await check('K', 'no runtime errors while skipping fast', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+
+if (!only || only === 'K') {
+  // Best parts open the backdrop up with the lyrics shown too, on desktop and phone.
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+    const phone = viewport.width < 500;
+    const { context, page, errors } = await newSession(browser, { viewport });
+    await page.goto(BASE); await wait(500);
+    if (phone) { await page.click('nav[aria-label="Mobile navigation"] button:has-text("Search")'); await wait(400); await searchFor(page, 'band'); await page.click('.top-result-play'); await wait(1500); await page.click('.player-pills button:has-text("Lyrics")'); }
+    else { await startQueue(page, []); await page.click('button[aria-label="Show lyrics"]'); }
+    await wait(1200);
+    const look = () => page.evaluate(() => { const veil = document.querySelector('.player-veil'); const art = document.querySelector('.player-art-background'); return { peak: veil?.classList.contains('is-peak'), veil: Number(getComputedStyle(veil).opacity), vignette: Number(getComputedStyle(veil, '::after').opacity), light: Number(getComputedStyle(veil, '::before').opacity), art: Number(getComputedStyle(art).opacity), lyrics: !!document.querySelector('.with-lyrics .desktop-lyrics, .immersive-player.with-lyrics') }; });
+    await setSeek(page, 12); await wait(4000); const calm = await look();
+    await setSeek(page, 26.1); await wait(2600); const peak = await look();
+    const name = phone ? 'phone' : 'desktop';
+    await check('K', `${name}: with lyrics shown, a best part is detected`, async () => ok(calm.lyrics && !calm.peak && peak.peak, JSON.stringify({ calm, peak })));
+    await check('K', `${name}: with lyrics shown, a best part brightens and adds contrast`, async () => ok(peak.veil < calm.veil - 0.1 && peak.vignette > calm.vignette + 0.3 && peak.light > calm.light && peak.art > calm.art, JSON.stringify({ calm, peak })));
+    await check('K', `${name}: no runtime errors at best parts`, async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
+if (!only || only === 'K') {
+  // Loudness: Quiet / Normal / Loud scale what every deck plays; the slider keeps the listener's own volume.
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 } });
+  await page.goto(BASE); await wait(500); await startQueue(page, []); await wait(1500);
+  const lastVolume = () => page.evaluate(() => window.__vols.filter(v => v[1] === 'AAAAAAAAAAA').at(-1)?.[2]);
+  const choose = async label => { await page.evaluate(() => document.querySelector('button[aria-label="Preferences"]')?.click()); await wait(800); await page.click(`[role="radiogroup"][aria-label="Loudness"] button:has-text("${label}")`); await wait(400); await page.keyboard.press('Escape'); await wait(500); };
+  await check('K', 'Normal leaves a little headroom', async () => ok(await lastVolume() === 68, String(await lastVolume())));
+  await check('K', 'Quiet plays softer at the same slider position', async () => { await choose('Quiet'); ok(await lastVolume() === 44, String(await lastVolume())); ok(await page.inputValue('input[aria-label="Volume"]') === '80'); });
+  await check('K', 'Loud plays at full level', async () => { await choose('Loud'); ok(await lastVolume() === 80, String(await lastVolume())); });
+  await check('K', 'the loudness choice is remembered', async () => { await page.reload(); await wait(1200); await page.evaluate(() => document.querySelector('button[aria-label="Preferences"]')?.click()); await wait(800); ok(await page.getAttribute('[role="radiogroup"][aria-label="Loudness"] button:has-text("Loud")', 'aria-checked') === 'true'); });
+  await check('K', 'no runtime errors changing loudness', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+
+if (!only || only === 'K') {
+  // The queue reads like a set list.
+  const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 }, prefs: { 'aurora-autoplay': 'false' } });
+  await page.goto(BASE); await wait(500); await startQueue(page, ['Morning Light', 'Slow Tide']); await wait(1200);
+  await page.click('.dock-transport button[aria-label="Next track"]'); await wait(1500);
+  const openQueue = async () => { await page.click('.dock-actions button:has(svg.lucide-list-music), button[aria-label="Queue"], button[aria-label="Open queue"]').catch(() => {}); await wait(900); };
+  await openQueue();
+  if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/queue-desktop.png` });
+  const sections = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('dialog .queue-section')].map(node => [node.getAttribute('aria-label') || 'Played', [...node.querySelectorAll('.track-row strong')].map(n => n.textContent)])));
+  await check('K', 'the queue shows what plays now, next and before', async () => { const view = await sections(); ok(view['Now playing']?.[0] === 'Morning Light' && view['Up next']?.[0] === 'Slow Tide', JSON.stringify(view)); ok(await page.locator('dialog details.queue-played').count() === 1); });
+  await check('K', 'up next tells its length', async () => ok(/1 song · \d+ min/.test(await page.textContent('dialog .queue-section[aria-label="Up next"] .queue-heading small')), await page.textContent('dialog .queue-section[aria-label="Up next"] .queue-heading small')));
+  await check('K', 'removing a song from up next removes that song, not another', async () => { await page.click('dialog .queue-section[aria-label="Up next"] button[aria-label="Remove Slow Tide from queue"]'); await wait(600); const view = await sections(); ok(!JSON.stringify(view).includes('Slow Tide') && view['Now playing']?.[0] === 'Morning Light', JSON.stringify(view)); });
+  await check('K', 'no runtime errors in the queue', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+}
+
+if (!only || only === 'L') {
+  // 100 unexpected actions (50 desktop, 50 phone), seeded so a failure replays exactly.
+  // After every action the app must stay consistent.
+  let seed = Number(process.env.SEED || 7);
+  const random = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  const pick = list => list[Math.floor(random() * list.length)];
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+    const phone = viewport.width < 500;
+    const name = phone ? 'phone' : 'desktop';
+    const { context, page, errors } = await newSession(browser, { viewport, prefs: { 'aurora-autoplay': 'false' } });
+    await page.goto(BASE); await wait(600);
+    if (phone) { await page.click('nav[aria-label="Mobile navigation"] button:has-text("Search")'); await wait(400); await searchFor(page, 'band'); for (const song of ['Morning Light', 'Slow Tide']) await page.click(`.search-results .track-row:has-text("${song}") button[aria-label^="Add"]`).catch(() => {}); await page.click('.top-result-play'); await wait(1200); }
+    else { await startQueue(page, ['Morning Light', 'Slow Tide']); await wait(1000); }
+    const click = selector => page.locator(`${selector} >> visible=true`).first().click({ timeout: 900 }).then(() => true, () => false);
+    const key = code => page.keyboard.press(code).catch(() => {});
+    const actions = {
+      next: () => click('button[aria-label="Next track"]'),
+      previous: () => click('button[aria-label="Previous track"]'),
+      playPause: () => click('button[aria-label="Pause"], button[aria-label="Play"]'),
+      seek: () => setSeek(page, Math.round(random() * 55)).catch(() => {}),
+      arrows: () => key(pick(['ArrowLeft', 'ArrowRight'])),
+      space: () => key('Space'),
+      openPlayer: () => click('.dock-track'),
+      escape: () => key('Escape'),
+      lyrics: () => click('button[aria-label="Show lyrics"], button[aria-label="Hide lyrics"], .player-pills button'),
+      queue: () => click('.dock-actions button:has(svg.lucide-list-music), button[aria-label="Queue"], button[aria-label="Open queue"], .player-pills button:has-text("Queue")'),
+      removeFromQueue: () => click('dialog button[aria-label^="Remove"]'),
+      settings: () => click('button[aria-label="Preferences"]'),
+      loudness: () => click(`[aria-label="Loudness"] button:nth-child(${1 + Math.floor(random() * 3)})`),
+      search: async () => { if (phone) await click('nav[aria-label="Mobile navigation"] button:has-text("Search")'); else await click('nav[aria-label="Main navigation"] button[aria-label="Search"]'); await page.fill('input[aria-label="Search songs or artists"]', pick(['band', 'night', 'φω', 'zz', ''])).catch(() => {}); },
+      home: () => phone ? click('nav[aria-label="Mobile navigation"] button:has-text("Listen")') : click('nav[aria-label="Main navigation"] button[aria-label="Listen"], nav[aria-label="Main navigation"] button:first-child'),
+      mood: () => click(`.mood-chip:nth-child(${1 + Math.floor(random() * 10)})`),
+      carousel: () => click(pick(['button[aria-label="Next featured track"]', 'button[aria-label="Previous featured track"]'])),
+      sidebar: () => phone ? Promise.resolve() : click('button[aria-label="Minimize sidebar"], button[aria-label="Expand sidebar"]'),
+      resize: () => page.setViewportSize(phone ? pick([{ width: 390, height: 844 }, { width: 360, height: 740 }, { width: 430, height: 932 }]) : pick([{ width: 1280, height: 800 }, { width: 1024, height: 700 }, { width: 1440, height: 900 }])),
+      doubleTap: async () => { await click('.dock-track'); await click('.dock-track'); },
+    };
+    const names = Object.keys(actions);
+    const problems = [];
+    const log = [];
+    for (let step = 0; step < 50; step++) {
+      const action = pick(names);
+      log.push(action);
+      try { await actions[action](); } catch (error) { problems.push(`${step}:${action} threw ${String(error.message).slice(0, 80)}`); }
+      await wait(320);
+      const state = await page.evaluate(() => {
+        const decks = (window.__events || []).reduce((map, row) => { if (['play', 'load'].includes(row[1])) map[row[2]] = 'on'; if (['pause', 'stop'].includes(row[1])) map[row[2]] = 'off'; return map; }, {});
+        const seekInput = document.querySelector('input[aria-label="Seek in track"]');
+        return {
+          players: document.querySelectorAll('.immersive-player').length,
+          sheets: document.querySelectorAll('dialog[open]').length,
+          overflow: document.scrollingElement.scrollWidth - innerWidth,
+          seekOk: !seekInput || (Number(seekInput.value) >= 0 && Number(seekInput.value) <= Number(seekInput.max) + 0.5),
+          decksOn: Object.values(decks).filter(value => value === 'on').length,
+          titleOk: !document.querySelector('.dock-track strong') || [...document.querySelectorAll('.dock-track strong')].some(node => document.title.startsWith(node.textContent.trim())) || document.title === 'Aurora',
+        };
+      });
+      if (state.players > 1) problems.push(`${step}:${action} two players`);
+      if (state.sheets > 1) problems.push(`${step}:${action} two sheets`);
+      if (state.overflow > 1) problems.push(`${step}:${action} page overflows by ${state.overflow}px`);
+      if (!state.seekOk) problems.push(`${step}:${action} seek out of range`);
+      if (state.decksOn > 2) problems.push(`${step}:${action} ${state.decksOn} decks sounding`);
+      if (!state.titleOk) problems.push(`${step}:${action} title out of sync`);
+      if (process.env.SHOTS && step % 10 === 9) await page.screenshot({ path: `${process.env.SHOTS}/fuzz-${name}-${step + 1}.png` });
+    }
+    await wait(2200);
+    const settled = await page.evaluate(() => Object.values((window.__events || []).reduce((map, row) => { if (['play', 'load'].includes(row[1])) map[row[2]] = 'on'; if (['pause', 'stop'].includes(row[1])) map[row[2]] = 'off'; return map; }, {})).filter(value => value === 'on').length);
+    await check('L', `${name}: 50 random actions keep the app consistent`, async () => ok(!problems.length, `${problems.slice(0, 6).join(' | ')} — actions: ${log.join(',')}`));
+    await check('L', `${name}: once settled, at most one song sounds`, async () => ok(settled <= 1, `${settled} decks on — actions: ${log.join(',')}`));
+    await check('L', `${name}: no runtime errors in 50 random actions`, async () => ok(!errors.length, `${errors.slice(0, 3).join(' | ')} — actions: ${log.join(',')}`));
+    await context.close();
+  }
+}
+
+// ── M: lyrics focus — only the cover, the song's name and its lyrics ──────
+if (!only || only === 'M') {
+  const visible = (page, selector) => page.evaluate(selector => { const node = document.querySelector(selector); if (!node) return false; const style = getComputedStyle(node); const box = node.getBoundingClientRect(); return style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity) > 0.5 && box.width > 0 && box.bottom > 0 && box.right > 0 && box.top < innerHeight && box.left < innerWidth; }, selector);
+  const focusView = async (page, label) => {
+    const state = {};
+    for (const [key, selector] of Object.entries({ cover: page.viewportSize().width <= 760 ? '.focus-thumb img' : '.now-playing-art', lyrics: '.desktop-lyrics .lyric-line.current', exit: '.focus-exit', topbar: '.player-topbar', dock: '.player-dock', sidebar: '.sidebar', chips: '.immersive-track-meta .meta-chips' })) state[key] = await visible(page, selector);
+    state.title = await page.evaluate(() => [...document.querySelectorAll('.immersive-track-meta h1, .mobile-player-info h1')].some(node => { const box = node.getBoundingClientRect(); return getComputedStyle(node).display !== 'none' && box.width > 0 && box.top >= 0 && box.bottom <= innerHeight; }));
+    state.overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
+    state.rects = await page.evaluate(() => Object.fromEntries(['.now-playing-art', '.immersive-track-meta', '.mobile-player-info', '.desktop-lyrics', '.player-topbar'].map(selector => { const node = document.querySelector(selector); const box = node?.getBoundingClientRect(); return [selector, box && `${Math.round(box.x)},${Math.round(box.y)} ${Math.round(box.width)}x${Math.round(box.height)} ${getComputedStyle(node).display}`]; })));
+    if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/focus-${label}.png` });
+    return state;
+  };
+  for (const [label, viewport] of [['desktop', { width: 1440, height: 900 }], ['laptop', { width: 1280, height: 720 }], ['phone', { width: 390, height: 844 }], ['phone-landscape', { width: 844, height: 390 }], ['tablet', { width: 820, height: 1180 }]]) {
+    const { context, page, errors } = await newSession(browser, { viewport });
+    await page.goto(BASE); await wait(1500);
+    await startQueue(page); await wait(1200);
+    if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(1000); }
+    await setSeek(page, 10.5); await wait(600);
+    await check('M', `${label}: the focus button opens lyrics focus`, async () => { await page.click('button[aria-label="Lyrics focus"]'); await wait(1300); const state = await focusView(page, label); ok(state.cover && state.lyrics && state.title && state.exit && !state.topbar && !state.dock && !state.sidebar && !state.chips && state.overflow <= 0, JSON.stringify(state)); });
+    await check('M', `${label}: lyrics keep following the song in focus`, async () => { await setSeek(page, 13.1); await wait(1500); ok((await page.textContent('.lyric-line.current')).length > 0); });
+    await check('M', `${label}: Escape leaves focus but keeps the player open`, async () => { await page.keyboard.press('Escape'); await wait(900); ok(await page.locator('.immersive-player').count() === 1 && await page.locator('.focus-exit').count() === 0 && await visible(page, '.player-topbar')); });
+    await check('M', `${label}: I toggles focus, and Exit focus brings everything back`, async () => { await page.keyboard.press('i'); await wait(1100); ok(await visible(page, '.focus-exit')); await page.click('.focus-exit'); await wait(1100); ok(await visible(page, '.player-topbar') && !(await page.locator('.focus-exit').count())); if (viewport.width > 760) ok(await visible(page, '.player-dock') && await visible(page, '.sidebar')); });
+    await check('M', `${label}: closing the player never reopens it in focus`, async () => { await page.keyboard.press('i'); await wait(900); await page.keyboard.press('Escape'); await wait(400); await page.keyboard.press('Escape'); await wait(1000); ok(await page.locator('.immersive-player').count() === 0); await page.keyboard.press('l'); await wait(1300); ok(await page.locator('.focus-exit').count() === 0); });
+    await check('M', `${label}: no runtime errors`, async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
+// ── N: best parts from the music itself — listener replays and the beat ──
+if (!only || only === 'N') {
+  // Night Drive runs 60 s; listeners replay 40–52 s, past its last refrain.
+  const heatmap = (from, to, length = 60) => Array.from({ length: length / 2 }, (_, i) => ({ start: i * 2, end: i * 2 + 2, score: i * 2 >= from && i * 2 < to ? 1 : 0.2 }));
+  for (const [label, replays, expect] of [
+    ['most replayed', () => heatmap(40, 52), [39.4, 41]],
+    ['replays from another upload are ignored', () => heatmap(40, 52, 200), [24, 27]],
+  ]) {
+    const tempoLog = [];
+    const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 }, replays, tempoLog });
+    await page.goto(BASE); await wait(1500);
+    await startQueue(page); await wait(1500);
+    if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(1000); }
+    await check('N', `${label}: the analysis asks for the video that is playing`, async () => ok(tempoLog.some(search => /video=[\w-]{11}/.test(search)), tempoLog.join(' ')));
+    await check('N', `${label}: Best part jumps to ${expect[0] > 30 ? 'the replayed section' : 'the refrain'}`, async () => {
+      await page.click('.immersive-track-meta .best-part-chip'); await wait(900);
+      const t = await playerTime(page); ok(t >= expect[0] && t <= expect[1], String(t));
+    });
+    if (expect[0] > 30) {
+      await check('N', `${label}: the replayed section lights the backdrop and the timeline`, async () => {
+        await setSeek(page, 46); await wait(700);
+        ok(await page.locator('.player-art-background.is-peak').count() === 1, 'no peak at 46 s');
+        const marks = await page.locator('.seek-track .peak-mark').count(); ok(marks >= 2, `${marks} marks`);
+      });
+      await check('N', `${label}: the peak lasts whole bars at 120 BPM`, async () => {
+        await setSeek(page, 50.6); await wait(400); // 40 s + six 2 s bars ends at 52 s; sampled inside the last bar
+        ok(await page.locator('.player-art-background.is-peak').count() === 1, 'peak ended before its last bar');
+        await setSeek(page, 53); await wait(900);
+        ok(await page.locator('.player-art-background.is-peak').count() === 0, 'peak runs past its last bar');
+      });
+    }
+    await check('N', `${label}: no runtime errors`, async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
+// ── P: smoothness profile — phone size, 4× CPU slowdown, every frame timed ──
+if (only === 'P') {
+  for (const [label, viewport] of [['phone', { width: 390, height: 844 }], ['desktop', { width: 1440, height: 900 }]]) {
+    const { context, page, errors } = await newSession(browser, { viewport });
+    await page.goto(BASE); await wait(1500);
+    await startQueue(page); await wait(1500);
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
+    // Frame gaps and long tasks for one interaction: p95 gap, frames over 25 ms and the worst gap.
+    const profile = async (name, act, seconds = 3) => {
+      await page.evaluate(() => {
+        window.__gaps = []; window.__long = 0; let last = performance.now();
+        const tick = now => { window.__gaps.push(now - last); last = now; if (window.__profiling) requestAnimationFrame(tick); };
+        window.__profiling = true; requestAnimationFrame(tick);
+        try { new PerformanceObserver(list => { for (const entry of list.getEntries()) window.__long += entry.duration; }).observe({ type: 'longtask' }); } catch { /* unsupported */ }
+      });
+      const cpu = process.env.PROFILE && name.startsWith(process.env.PROFILE) && !process.env.TRACE;
+      const timeline = process.env.TRACE && name.startsWith(process.env.TRACE);
+      const traceEvents = [];
+      if (timeline) {
+        cdp.on('Tracing.dataCollected', ({ value }) => traceEvents.push(...value));
+        await cdp.send('Tracing.start', { categories: 'devtools.timeline,disabled-by-default-devtools.timeline', transferMode: 'ReportEvents' });
+      }
+      if (cpu) { await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 200 }); await cdp.send('Profiler.start'); }
+      await act(); await wait(seconds * 1000);
+      if (timeline) {
+        const done = new Promise(resolve => cdp.once('Tracing.tracingComplete', resolve));
+        await cdp.send('Tracing.end'); await done;
+        // Main-thread time per event type (complete events only, top level by name).
+        const main = traceEvents.find(event => event.name === 'thread_name' && event.args?.name === 'CrRendererMain');
+        const totals = new Map();
+        for (const event of traceEvents) if (event.ph === 'X' && event.dur && (!main || (event.pid === main.pid && event.tid === main.tid))) totals.set(event.name, (totals.get(event.name) || 0) + event.dur / 1000);
+        console.log(`TRACE ${label} ${name}\n` + [...totals].sort((a, b) => b[1] - a[1]).slice(0, 30).map(([key, ms]) => `  ${ms.toFixed(0).padStart(6)} ms  ${key}`).join('\n'));
+      }
+      if (cpu) {
+        const { profile: trace } = await cdp.send('Profiler.stop');
+        const self = new Map(), byId = new Map(trace.nodes.map(node => [node.id, node]));
+        const dt = trace.timeDeltas; trace.samples.forEach((id, i) => { const node = byId.get(id); const f = node.callFrame; const key = `${f.functionName || '(anon)'} ${f.url.split('/').pop()}:${f.lineNumber}`; self.set(key, (self.get(key) || 0) + (dt[i] || 0) / 1000); });
+        // Inclusive time per app component: which of ours re-rendered, and for how long.
+        const parent = new Map(); trace.nodes.forEach(node => (node.children || []).forEach(child => parent.set(child, node.id)));
+        const inclusive = new Map();
+        trace.samples.forEach((id, i) => { const seen = new Set(); for (let at = id; at; at = parent.get(at)) { const f = byId.get(at).callFrame; if (!/\/src\//.test(f.url)) continue; const key = `${f.functionName || '(anon)'} ${f.url.split('/src/').pop().split('?')[0]}:${f.lineNumber}`; if (seen.has(key)) continue; seen.add(key); inclusive.set(key, (inclusive.get(key) || 0) + (dt[i] || 0) / 1000); } });
+        // Line-level self time inside app modules (dev server only): what each render spends on.
+        const lines = new Map();
+        for (const node of trace.nodes) { const f = node.callFrame; if (!/\/src\//.test(f.url)) continue; for (const tick of node.positionTicks || []) { const key = `${f.url.split('?')[0]}#${tick.line}`; lines.set(key, (lines.get(key) || 0) + tick.ticks); } }
+        // Who creates the elements: element-creation time attributed to its caller.
+        if (process.env.CALLERS) {
+          const callers = new Map();
+          trace.samples.forEach((id, i) => { const node = byId.get(id); if (!/^(exports\.)?(jsxDEV|jsx|jsxs|createElement)$/.test(node.callFrame.functionName)) return; let at = parent.get(id); while (at && !/\/src\//.test(byId.get(at).callFrame.url)) at = parent.get(at); const f = at ? byId.get(at).callFrame : { functionName: '(library)', url: '', lineNumber: 0 }; const key = `${f.functionName || '(anon)'} ${f.url.split('/src/').pop().split('?')[0]}:${f.lineNumber}`; callers.set(key, (callers.get(key) || 0) + (dt[i] || 0) / 1000); });
+          console.log(`CALLERS ${label} ${name}\n` + [...callers].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([key, ms]) => `  ${ms.toFixed(0).padStart(6)} ms  ${key}`).join('\n'));
+        }
+        if (process.env.LINES) console.log(`LINES ${label} ${name}\n` + [...lines].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([key, ticks]) => `${ticks} ${key}`).join('\n'));
+        console.log(`APP ${label} ${name}\n` + [...inclusive].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([key, ms]) => `  ${ms.toFixed(0).padStart(6)} ms  ${key}`).join('\n'));
+        console.log(`CPU ${label} ${name}\n` + [...self].sort((a, b) => b[1] - a[1]).slice(0, 22).map(([key, ms]) => `  ${ms.toFixed(0).padStart(6)} ms  ${key}`).join('\n'));
+      }
+      const stats = await page.evaluate(() => { window.__profiling = false; const gaps = window.__gaps.slice(1).sort((a, b) => a - b); return { frames: gaps.length, p95: Math.round(gaps[Math.floor(gaps.length * 0.95)] || 0), over25: gaps.filter(gap => gap > 25).length, worst: Math.round(gaps.at(-1) || 0), longTaskMs: Math.round(window.__long) }; });
+      console.log(`PERF ${label} ${name} ${JSON.stringify(stats)}`);
+      return stats;
+    };
+    if (!await page.locator('.immersive-player').count()) await page.click('.dock-track, .mobile-mini-player, .player-dock').catch(() => {});
+    await wait(1200);
+    await profile('close player', () => page.keyboard.press('Escape'), 1.5);
+    await profile('open player', () => page.click('.dock-track').catch(() => page.keyboard.press('l')), 1.5);
+    await profile('lyrics on', () => page.keyboard.press('l'), 1.5);
+    await profile('lyrics playing across lines', () => setSeek(page, 9.6), 6);
+    await profile('best part (zoom + pulse)', () => setSeek(page, 26.4), 4);
+    await profile('next song', () => page.keyboard.press('Shift+ArrowRight'), 3);
+    await profile('queue sheet open', () => page.keyboard.press('Escape').then(() => wait(800)).then(() => page.click('button[aria-label="Open queue"], .queue-pull, button:has-text("Queue") >> visible=true').catch(() => {})), 1.5);
+    await profile('queue sheet close', () => page.keyboard.press('Escape'), 1.5);
+    await check('P', `${label}: no runtime errors while profiling`, async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
+// ── O: lyric timing that adapts to the upload that plays ──────────────────
+if (!only || only === 'O') {
+  {
+    const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 }, alignment: -1.8 });
+    await page.goto(BASE); await wait(1500);
+    await startQueue(page); await wait(1500);
+    if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(1000); }
+    await page.keyboard.press('l'); await wait(1200);
+    await check('O', 'captions-matched timing applies by itself and is named in the footer', async () => { const footer = await page.textContent('.lyric-footer'); ok(/synced to this video \(-1\.8 s\)/.test(footer), footer); });
+    await check('O', 'the line on screen follows the corrected timing', async () => { await setSeek(page, 12.3); await wait(1500); const text = await page.textContent('.lyric-line.current'); ok(text.includes('wheel'), text); });
+    await check('O', 'settings say where the timing comes from', async () => { await page.click('button[aria-label="Player settings"]'); await wait(800); ok((await page.textContent('output[aria-label="Current lyrics offset"]')).trim() === '-1.8 s'); ok((await page.textContent('.sheet')).includes('Matched to this video’s captions')); });
+    await check('O', 'a nudge by hand wins, and Auto hands timing back to the captions', async () => {
+      await page.click('button[aria-label="Show lyrics earlier"]'); await wait(300);
+      ok((await page.textContent('output[aria-label="Current lyrics offset"]')).trim() === '-1.7 s');
+      ok((await page.textContent('.sheet')).includes('Your timing'));
+      await page.click('.offset-stepper .small-pill:has-text("Auto")'); await wait(500);
+      ok((await page.textContent('output[aria-label="Current lyrics offset"]')).trim() === '-1.8 s');
+    });
+    await check('O', 'no runtime errors (captions timing)', async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+  {
+    const lyricLog = [];
+    const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 }, editGap: 6, lyricLog });
+    await page.goto(BASE); await wait(1500);
+    await startQueue(page); await wait(1200);
+    await page.keyboard.press('Shift+ArrowRight'); await wait(2500);
+    if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(1000); }
+    await page.keyboard.press('l'); await wait(1500);
+    await check('O', 'another edit of the song asks for lyrics timed for its own length', async () => ok(lyricLog.includes('Morning Light@66'), lyricLog.join(' ')));
+    await check('O', 'without them the catalogue timing stays, and the footer says so', async () => { const footer = await page.textContent('.lyric-footer'); ok(/timed for a 6\.0 s shorter edit/.test(footer), footer); ok(await page.locator('.desktop-lyrics .lyric-line').count() > 0); });
+    await check('O', 'no runtime errors (other edit)', async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
+// ── Q: interaction audit — every visible button answers a press, and nothing jumps ──
+if (only === 'Q' || !only) {
+  // Press without clicking: down on the button, slide off, release elsewhere.
+  let innerHeightOf = 0;
+  const audit = async (page, screen) => {
+    innerHeightOf = page.viewportSize().height - 2;
+    const buttons = await page.evaluate(() => [...document.querySelectorAll('button, [role="button"], a.album-card, .track-row .track-main')].map((node, index) => {
+      node.dataset.auditIndex = index;
+      const box = node.getBoundingClientRect(), style = getComputedStyle(node);
+      const visible = box.width > 8 && box.height > 8 && box.top >= 0 && box.left >= 0 && box.bottom <= innerHeight && box.right <= innerWidth && style.visibility !== 'hidden' && Number(style.opacity) > 0.2 && !node.disabled && style.pointerEvents !== 'none';
+      const hit = visible && document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      return visible && hit && (hit === node || node.contains(hit)) ? { index, name: node.getAttribute('aria-label') || node.textContent.trim().slice(0, 28) || node.className.slice(0, 28) } : null;
+    }).filter(Boolean));
+    const silent = [], jumpy = [];
+    for (const button of buttons.slice(0, 40)) {
+      const read = () => page.evaluate(index => { const node = document.querySelector(`[data-audit-index="${index}"]`); if (!node) return null; const style = getComputedStyle(node); const box = node.getBoundingClientRect(); return { look: [style.transform, style.scale, style.opacity, style.backgroundColor, style.boxShadow, style.color, style.filter].join('|'), x: box.left + box.width / 2, y: box.top + box.height / 2, w: box.width, h: box.height }; }, button.index);
+      const before = await read(); if (!before) continue;
+      await page.mouse.move(before.x, before.y); await wait(60);
+      const hover = await read();
+      await page.mouse.down(); await wait(170);
+      const pressed = await read();
+      // Slide off vertically: sideways would be a swipe on horizontal carousels.
+      const at = pressed || hover || before;
+      await page.mouse.move(at.x, Math.min(innerHeightOf, at.y + 400), { steps: 3 }); await page.mouse.up(); await wait(250);
+      if (!hover) continue; // gone under the pointer (a hover-revealed control): nothing to compare
+      if (!pressed) continue;
+      if (pressed.look === hover.look) silent.push(button.name);
+      const magnetic = await page.evaluate(index => !!document.querySelector(`[data-audit-index="${index}"]`)?.closest('.magnetic'), button.index);
+      // A press shrinks the element a little; only a shift beyond that is a jump.
+      if (!magnetic && Math.hypot(pressed.x - hover.x, pressed.y - hover.y) > Math.max(3, 0.05 * Math.min(pressed.w, pressed.h))) jumpy.push(`${button.name} (${Math.round(pressed.x - hover.x)},${Math.round(pressed.y - hover.y)})`);
+    }
+    console.log(`AUDIT ${screen}: ${buttons.length} buttons · silent: ${silent.join(', ') || 'none'} · moves when pressed: ${jumpy.join(', ') || 'none'}`);
+    return { silent, jumpy };
+  };
+  for (const [label, viewport] of [['desktop', { width: 1440, height: 900 }], ['phone', { width: 390, height: 844 }]]) {
+    const { context, page, errors } = await newSession(browser, { viewport });
+    await page.goto(BASE); await wait(1800);
+    const results = [];
+    results.push(await audit(page, `${label} home`));
+    await startQueue(page); await wait(1500);
+    results.push(await audit(page, `${label} search`));
+    if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(1200); }
+    results.push(await audit(page, `${label} player`));
+    await page.click('button[aria-label="Player settings"]'); await wait(900);
+    results.push(await audit(page, `${label} settings`));
+    await page.keyboard.press('Escape'); await wait(700);
+    await check('Q', `${label}: every visible button answers a press`, async () => ok(results.every(result => !result.silent.length), results.map(result => result.silent.join(', ')).filter(Boolean).join(' / ')));
+    await check('Q', `${label}: no button moves when pressed`, async () => ok(results.every(result => !result.jumpy.length), results.map(result => result.jumpy.join(', ')).filter(Boolean).join(' / ')));
+    await check('Q', `${label}: no runtime errors in the audit`, async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
 }
 
 await browser.close();

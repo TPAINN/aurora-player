@@ -1,10 +1,11 @@
-import { startTransition, useCallback, useEffect, useRef, useState } from 'react';
-import { createPlayhead } from '../lib/playhead';
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPlayhead, heardTime } from '../lib/playhead';
+import { clearOffset, readOffset, saveOffset, versionGap } from '../lib/lyric-offsets';
 import { songKey } from '../../shared/titles.js';
 import { buildApiUrl } from '../lib/api';
-import { getSimilarTracks, getTrackTempo } from '../lib/catalog';
+import { getSimilarTracks, getTrackAnalysis, getTrackTempo } from '../lib/catalog';
 import { pickSeed, recordListening, tasteFilter } from '../lib/listening';
-import { adaptiveBlend, analyzeLocalTempo, beatAlignedEntry, blendCurve, vocalSpans, chooseEntry, equalPower, glideRate, nudgePlan, phaseOffset, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
+import { MAX_BLEND, MIN_BLEND, ONLINE_MAX_BLEND, swapTime, adaptiveBlend, analyzeLocalTempo, beatAlignedEntry, blendCurve, vocalSpans, chooseEntry, equalPower, glideRate, nudgePlan, phaseOffset, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
 import { playSweep } from '../lib/sweep';
 import { nextPlayable } from '../lib/queue';
 import { detectLanguage } from '../../shared/language.js';
@@ -15,6 +16,9 @@ let youtubeApi;
 function readPreference(key, fallback) {
   try { const value = localStorage.getItem(key); return value === null ? fallback : value === 'true'; }
   catch { return fallback; }
+}
+function readLoudness() {
+  try { const value = localStorage.getItem('aurora-loudness'); return value in LOUDNESS ? value : 'normal'; } catch { return 'normal'; }
 }
 function savePreference(key, value) {
   try { localStorage.setItem(key, String(value)); } catch { /* Private storage can be unavailable. */ }
@@ -38,6 +42,23 @@ function deckHost(index) {
   let wrap = host.querySelector(`[data-deck="${index}"]`);
   if (!wrap) { wrap = document.createElement('div'); wrap.className = 'yt-deck'; wrap.dataset.deck = String(index); host.append(wrap); }
   return wrap;
+}
+// One compressor ahead of the speakers: transparent (1:1) for Quiet and Normal,
+// gentle 3:1 for Loud.
+function applyLoudness(master, level, graph) {
+  const loud = level === 'loud', now = graph.currentTime;
+  master.threshold.setTargetAtTime(loud ? -20 : 0, now, .05);
+  master.ratio.setTargetAtTime(loud ? 3 : 1, now, .05);
+  master.knee.setTargetAtTime(loud ? 10 : 0, now, .05);
+}
+function masterOf(graph) {
+  if (!graph.master) {
+    graph.master = graph.createDynamicsCompressor();
+    graph.master.attack.value = .004; graph.master.release.value = .25;
+    applyLoudness(graph.master, readLoudness(), graph);
+    graph.master.connect(graph.destination);
+  }
+  return graph.master;
 }
 function showDeck(index) {
   for (const deck of [0, 1]) deckHost(deck)?.classList.toggle('is-active', deck === index);
@@ -67,10 +88,14 @@ const LATE_PRIME = 1.5;
 const SHORT_BLEND = 2.5;
 const START_TIMEOUT = 3000;
 // Blend lengths offered: 5–10 s, the range a DJ would ride two songs together.
-const BLENDS = ['auto', 5, 8, 10];
+const BLENDS = ['auto', 8, 16, 32];
 const readBlend = value => (value === 'auto' ? 'auto' : BLENDS.includes(Number(value)) ? Number(value) : 'auto');
 // Some embeds only play whole 0.05 speed steps; tempo plans then use that grid.
 const RATE_STEP = .05;
+// Loudness, as streaming services offer it: a level for every deck (Normal keeps a
+// little headroom so Loud is audibly louder), and on the device's own audio, Loud
+// adds gentle compression. Online audio cannot be processed, only levelled.
+export const LOUDNESS = { quiet: .55, normal: .85, loud: 1 };
 // Media elements re-seat their time-stretcher on every rate change, which briefly
 // softens a kick: rates move in steps of at least 0.3% (far below a tempo change
 // anyone hears), and the exact final value is written once it is reached.
@@ -89,13 +114,16 @@ export function usePlayer() {
   const [mixProgress] = useState(() => createStore(0));
   const [duration, setDuration] = useState(0);
   const [volume, updateVolume] = useState(80);
+  const volumeRef = useRef(80);
+  const [loudness, updateLoudness] = useState(readLoudness);
   const [queue, updateQueue] = useState([]);
   const [queueIndex, setQueueIndex] = useState(-1);
   const [shuffle, setShuffle] = useState(false);
   const [repeat, setRepeat] = useState('off');
   const [lyrics, setLyrics] = useState(null);
   const [lyricsLoading, setLyricsLoading] = useState(false);
-  const [lyricsOffset, setLyricsOffset] = useState(0);
+  // The listener's own timing for this song, or null to follow automatic timing.
+  const [userOffset, setUserOffset] = useState(null);
   // 1 when the listener moves forward (next, blend, pick), -1 for Previous: drives the change animation.
   const [direction, setDirection] = useState(1);
   // How the current song arrived: 'blend' (a DJ transition) or 'skip' (a direct change).
@@ -129,7 +157,7 @@ export function usePlayer() {
   const mix = useRef(null);
   const analysis = useRef(new Map());
   const attemptedMix = useRef('');
-  const preferences = useRef({ djEnabled, autoplay, liveDjChanges, surround, blendLength, transitionFx });
+  const preferences = useRef({ djEnabled, autoplay, liveDjChanges, surround, blendLength, transitionFx, loudness });
   const manualChange = useRef(null);
   const pendingNext = useRef(null);
   const player = useRef(null);
@@ -164,7 +192,7 @@ export function usePlayer() {
     return () => clearTimeout(timer);
   }, [notice]);
 
-  useEffect(() => { current.current = { track, queue, shuffle, repeat, volume, lyrics }; }, [track, queue, shuffle, repeat, volume, lyrics]);
+  useEffect(() => { current.current = { track, queue, shuffle, repeat, volume: Math.round(volume * LOUDNESS[loudness]), lyrics }; }, [track, queue, shuffle, repeat, volume, lyrics, loudness]);
   useEffect(() => {
     const retained = new Set([track, ...queue].filter(Boolean).map(item => item.localUrl));
     for (const url of localUrls.current) {
@@ -205,17 +233,21 @@ export function usePlayer() {
   // One resolver for playback and preparation: shared in-flight requests, and the
   // runner-up uploads kept as alternates.
   // `search` looks up other uploads even for a song that arrived with its own video.
-  const resolveSource = useCallback((selected, signal, { search = false } = {}) => {
+  const resolveSource = useCallback((selected, { search = false } = {}) => {
     const cached = prepared.current.get(selected.id);
     if (cached?.videoId && !search) return Promise.resolve(cached);
     if (selected.videoId && !search) return Promise.resolve({ videoId: selected.videoId, source: { kind: 'youtube', official: false, video: true, channel: selected.artist } });
     if (resolving.current.has(selected.id)) return resolving.current.get(selected.id);
+    // The lookup is shared by every caller (playback, preparation, prefetch), so no
+    // single caller's cancellation may abort it: a cancelled preparation once took the
+    // playback request waiting on the same lookup down with it, and the song never
+    // started. Callers drop results they no longer need.
     const request = (async () => {
-      const response = await fetch(buildApiUrl('/api/video/search', { artist: selected.artist, title: selected.title, duration: selected.duration, variant: selected.variant }), { signal });
+      const response = await fetch(buildApiUrl('/api/video/search', { artist: selected.artist, title: selected.title, duration: selected.duration, variant: selected.variant }));
       if (!response.ok) throw new Error('The music source could not connect. Please retry.');
       const data = await response.json();
       if (!data.videoId) { markUnplayable(selected); return { videoId: null }; }
-      const entry = { ...(prepared.current.get(selected.id) || {}), videoId: data.videoId, source: describeSource(data) };
+      const entry = { ...(prepared.current.get(selected.id) || {}), videoId: data.videoId, duration: Number(data.duration) || 0, source: describeSource(data) };
       alternates.current.set(selected.id, (data.candidates || []).map(candidate => candidate.videoId).filter(id => id && id !== data.videoId).slice(0, 4));
       prepared.current.set(selected.id, entry);
       while (prepared.current.size > 12) prepared.current.delete(prepared.current.keys().next().value);
@@ -232,7 +264,7 @@ export function usePlayer() {
   const searchAlternates = useCallback(async (selected, refused) => {
     searched.current.add(selected.id);
     try {
-      const found = await resolveSource(selected, undefined, { search: true });
+      const found = await resolveSource(selected, { search: true });
       const spare = [found.videoId, ...(alternates.current.get(selected.id) || [])].filter(id => id && id !== refused && id !== selected.videoId);
       alternates.current.set(selected.id, [...new Set(spare)]);
       return spare.length ? 'found' : 'none';
@@ -254,9 +286,14 @@ export function usePlayer() {
   }, []);
   // The blend length to aim for: a fixed choice, or Auto — the longest the music
   // leaves room for (5–10 s), measured from the songs themselves.
-  const blendTarget = useCallback(spans => {
+  // Online songs cannot be filtered, so their blends stop at 16 s; and a blend never
+  // takes more than a quarter of either song, so short songs keep their body.
+  const blendTarget = useCallback((spans, { online = false, lengths = [] } = {}) => {
+    const longest = online ? ONLINE_MAX_BLEND : MAX_BLEND;
     const choice = preferences.current.blendLength;
-    return choice === 'auto' ? adaptiveBlend(spans) : choice;
+    const wanted = choice === 'auto' ? adaptiveBlend(spans, longest) : Math.min(longest, choice);
+    const quarter = Math.min(...lengths.filter(value => value > 0).map(value => value / 4));
+    return Math.max(MIN_BLEND, Math.min(wanted, quarter));
   }, []);
   const setIdle = useCallback((label = IDLE.label) => {
     if (mounted.current) announce({ ...IDLE, label, mode: source.current === 'local' ? 'local' : 'online', progress: 0 });
@@ -278,7 +315,7 @@ export function usePlayer() {
       if (deck.gain) {
         const now = context.current.currentTime;
         const active = deck.element === audio.current;
-        for (const [param, value] of [[deck.gain.gain, active ? current.current.volume / 100 : 0], [deck.highpass.frequency, 20], [deck.lowpass.frequency, 20000], [deck.lowpass.Q, .8], [deck.echoSend.gain, 0]]) {
+        for (const [param, value] of [[deck.gain.gain, active ? current.current.volume / 100 : 0], [deck.highpass.frequency, 20], [deck.lowpass.frequency, 20000], [deck.lowpass.Q, .8], [deck.echoSend.gain, 0], [deck.presence.gain, 0]]) {
           param.cancelScheduledValues(now); param.setValueAtTime(value, now);
         }
         // Back to the direct route with a short, click-free handover.
@@ -326,17 +363,21 @@ export function usePlayer() {
       // from volume, and the filter route that exists only for DJ blends.
       const dry = graph.createGain(); dry.gain.value = 1;
       const wet = graph.createGain(); wet.gain.value = 0;
-      input.connect(dry).connect(gain);
-      input.connect(highpass).connect(lowpass).connect(wet).connect(gain);
-      gain.connect(graph.destination);
+      // The vocal band (presence, around 1.6 kHz): neutral except while two songs
+      // overlap, when the voice that is not leading is pulled back.
+      const presence = graph.createBiquadFilter(); presence.type = 'peaking'; presence.frequency.value = 1600; presence.Q.value = .7; presence.gain.value = 0;
+      input.connect(presence);
+      presence.connect(dry).connect(gain);
+      presence.connect(highpass).connect(lowpass).connect(wet).connect(gain);
+      gain.connect(masterOf(graph));
       lowpass.connect(echoSend).connect(delay).connect(tone).connect(feedback).connect(delay);
-      tone.connect(graph.destination);
+      tone.connect(masterOf(graph));
       const element = deck.element;
       // Audio elements are imperative resources held in refs, not React state.
       // eslint-disable-next-line react-hooks/immutability
       element.volume = 1;
       element.preservesPitch = true;
-      Object.assign(deck, { input, highpass, lowpass, gain, echoSend, delay, dry, wet });
+      Object.assign(deck, { input, presence, highpass, lowpass, gain, echoSend, delay, dry, wet });
     }
     void graph.resume().catch(() => {});
     return graph;
@@ -429,7 +470,7 @@ export function usePlayer() {
   }, []);
 
   // Lyrics are optional and never block playback; stale generations are ignored.
-  const fetchLyrics = useCallback((selected, videoId, signal) => fetch(buildApiUrl('/api/lyrics/structured', { artist: selected.artist, title: selected.title, album: selected.album, duration: selected.duration, videoId }), { signal })
+  const fetchLyrics = useCallback((selected, videoId, signal, duration = selected.duration) => fetch(buildApiUrl('/api/lyrics/structured', { artist: selected.artist, title: selected.title, album: selected.album, duration, videoId }), { signal })
     .then(response => response.ok ? response.json() : null)
     .catch(() => null), []);
   const showLyricsFor = useCallback((selected, token, controller, videoId) => {
@@ -443,6 +484,36 @@ export function usePlayer() {
     return lyricsRequest;
   }, [fetchLyrics]);
 
+  // A hand-made song change: the outgoing deck plays on at full level until the
+  // incoming one sounds, then they cross in 0.9 s (equal power) and the outgoing
+  // stops. A deck that never starts is given up after 8 s so nothing plays on.
+  const handoff = useRef(null);
+  const finishHandoff = useCallback(() => {
+    const active = handoff.current;
+    if (!active) return;
+    handoff.current = null;
+    clearInterval(active.timer);
+    active.outgoing?.pauseVideo?.(); active.outgoing?.mute?.();
+    if (player.current === active.incoming) active.incoming.setVolume?.(current.current.volume);
+  }, []);
+  const runHandoff = useCallback(() => {
+    const active = handoff.current;
+    if (!active) return;
+    active.timer = setInterval(() => {
+      if (handoff.current !== active) { clearInterval(active.timer); return; }
+      const now = performance.now();
+      if (!active.started) {
+        if (active.incoming.getPlayerState?.() === 1) { active.started = now; showDeck(active.index); }
+        else if (now - active.requested > 8000) finishHandoff();
+        return;
+      }
+      const progress = Math.min(1, (now - active.started) / 900);
+      const volume = current.current.volume;
+      active.outgoing.setVolume?.(Math.round(volume * Math.cos(progress * Math.PI / 2)));
+      active.incoming.setVolume?.(Math.round(volume * Math.sin(progress * Math.PI / 2)));
+      if (progress >= 1) finishHandoff();
+    }, 40);
+  }, [finishHandoff]);
   const loadTrack = useCallback(async (selected, list, fadeIn = false, auto = false) => {
     if (!selected) return;
     // A song chosen by hand (or retried) gets a fresh chance to resolve.
@@ -457,7 +528,20 @@ export function usePlayer() {
     request.current?.abort();
     const controller = new AbortController(); request.current = controller;
     activeVideo.current = null;
-    audio.current?.pause(); player.current?.stopVideo?.();
+    // Gapless: a playing online song keeps sounding while the next one loads on the
+    // other deck, and fades out under it once it plays. Anything else stops now.
+    // Skipping again before the incoming song sounds: the song still heard carries on
+    // as the outgoing one and the half-loaded deck is dropped.
+    const pending = handoff.current;
+    let carried = null;
+    if (pending && !pending.started) {
+      handoff.current = null; clearInterval(pending.timer);
+      pending.incoming.stopVideo?.();
+      ytActive.current = 1 - pending.index; player.current = pending.outgoing; carried = pending.outgoing;
+    } else finishHandoff();
+    const outgoing = !selected.localUrl && (carried || (source.current === 'youtube' && player.current?.getPlayerState?.() === 1 ? player.current : null));
+    audio.current?.pause();
+    if (!outgoing) player.current?.stopVideo?.();
     source.current = selected.localUrl ? 'local' : 'youtube';
     current.current.track = selected;
     const nextQueue = list?.length ? list : current.current.queue.some(item => item.id === selected.id) ? current.current.queue : [...current.current.queue, selected];
@@ -465,7 +549,7 @@ export function usePlayer() {
     updateQueue(nextQueue); setQueueIndex(nextQueue.findIndex(item => item.id === selected.id));
     setDjWindow(null);
     setDirection(travel.current); travel.current = 1; setChangeKind('skip');
-    setTrack(selected); clock.set(0); setDuration(selected.duration || 0); setPlaying(false); setLoading(true); setError(''); setLyrics(null); setLyricsOffset(0);
+    setTrack(selected); clock.set(0); setDuration(selected.duration || 0); setPlaying(false); setLoading(true); setError(''); setLyrics(null); setUserOffset(readOffset(selected));
     setLyricsLoading(!selected.localUrl);
     const cached = prepared.current.get(selected.id);
     const lyricsRequest = showLyricsFor(selected, token, controller);
@@ -478,7 +562,7 @@ export function usePlayer() {
         audio.current.volume = graph ? 1 : current.current.volume / 100;
         await audio.current.play();
       } else {
-        const { videoId, source } = await resolveSource(selected, controller.signal);
+        const { videoId, source } = await resolveSource(selected);
         if (mounted.current && token === generation.current) setSourceInfo(source || { kind: 'youtube', official: false });
         if (!mounted.current || token !== generation.current) return;
         if (!videoId) {
@@ -493,35 +577,49 @@ export function usePlayer() {
           throw new Error(`“${selected.title}” isn’t available to play here. Try another song.`);
         }
         autoSkips.current = 0;
-        if (!selected.videoId && !cached?.lyrics) {
+        // Lyrics are timed for one edit. When the upload that plays is another edit
+        // (a music video's intro, a radio or extended cut), ask for timing for its
+        // own length; without it, keep the catalogue timing and say which edit it fits.
+        const uploadLength = prepared.current.get(selected.id)?.duration;
+        const gap = versionGap(uploadLength, selected.duration);
+        if ((!selected.videoId && !cached?.lyrics) || gap) {
           // SimpMusic needs the resolved YouTube ID; preserve a stronger initial result.
           void lyricsRequest.then(async initial => {
-            if (!mounted.current || token !== generation.current || initial?.sync === 'word') return;
+            if (!mounted.current || token !== generation.current || (!gap && initial?.sync === 'word')) return;
             setLyricsLoading(true);
-            const fallback = await fetchLyrics(selected, videoId, controller.signal);
+            const fallback = await fetchLyrics(selected, videoId, controller.signal, gap ? uploadLength : selected.duration);
             if (!mounted.current || token !== generation.current) return;
             const rank = { plain: 1, line: 2, word: 3 };
-            if (fallback && (rank[fallback.sync] || 0) > (rank[initial?.sync] || 0)) setLyrics(fallback);
+            const found = rank[fallback?.sync] || 0, had = rank[initial?.sync] || 0;
+            if (gap ? found >= 2 && found >= had : found > had) setLyrics(fallback);
+            else if (gap && had >= 2) setLyrics({ ...initial, versionGap: gap });
             setLyricsLoading(false);
           });
         }
-        const instance = await ensurePlayer(videoId);
-        if (!mounted.current || token !== generation.current) return;
+        const index = outgoing ? standbyIndex() : ytActive.current;
+        const instance = await ensurePlayer(videoId, index);
+        if (!mounted.current || token !== generation.current) { if (outgoing && handoff.current?.outgoing !== outgoing) outgoing.stopVideo?.(); return; }
+        if (outgoing && instance !== outgoing) {
+          ytActive.current = index;
+          handoff.current = { outgoing, incoming: instance, index, started: null, requested: performance.now() };
+        } else if (outgoing) outgoing.stopVideo?.();
         player.current = instance;
         activeVideo.current = videoId;
         instance.unMute?.();
         instance.setPlaybackRate?.(1);
-        if (fadeIn && preferences.current.djEnabled) {
+        if (handoff.current?.incoming === instance) instance.setVolume(0);
+        else if (fadeIn && preferences.current.djEnabled) {
           mix.current = { kind: 'online-in', started: null };
           instance.setVolume(0);
           announce({ phase: 'mixing', label: 'Gentle fade in', mode: 'online', progress: 0 });
         } else instance.setVolume(current.current.volume);
         instance.loadVideoById(videoId);
+        if (handoff.current?.incoming === instance) runHandoff();
       }
     } catch (err) {
       if (mounted.current && token === generation.current && err.name !== 'AbortError') { setError(err instanceof TypeError ? 'Could not reach the music service. Check your connection and retry.' : err.message || 'Playback failed.'); setPlaying(false); }
     } finally { if (mounted.current && token === generation.current) setLoading(false); }
-  }, [ensurePlayer, cancelMix, ensureAudioGraph, flushListening, showLyricsFor, fetchLyrics, announce, clock, resolveSource, markUnplayable, upcoming]);
+  }, [ensurePlayer, cancelMix, ensureAudioGraph, flushListening, showLyricsFor, fetchLyrics, announce, clock, resolveSource, markUnplayable, upcoming, finishHandoff, runHandoff]);
   useEffect(() => { actions.current.load = loadTrack; }, [loadTrack]);
   const activeError = useCallback(() => {
     const selected = current.current.track;
@@ -598,7 +696,7 @@ export function usePlayer() {
       setTrack(selected); setDuration(length);
       setQueueIndex(current.current.queue.findIndex(item => item.id === selected.id));
       // Pre-loaded lyrics appear at once; no "finding the words" flash mid-blend.
-      setLyrics(ready?.lyrics || null); setLyricsOffset(0); setLyricsLoading(!selected.localUrl && !ready?.lyrics); setPlaying(true); setError('');
+      setLyrics(ready?.lyrics || null); setUserOffset(readOffset(selected)); setLyricsLoading(!selected.localUrl && !ready?.lyrics); setPlaying(true); setError('');
       setSourceInfo(selected.localUrl ? { kind: 'local', format: selected.format || null } : ready?.source || { kind: 'youtube', official: false });
     });
     if (!selected.localUrl && !ready?.lyrics) showLyricsFor(selected, token, controller, videoId);
@@ -614,6 +712,7 @@ export function usePlayer() {
     clock.set(seconds);
   }, [cancelMix, clock]);
   const togglePlay = useCallback(async () => {
+    finishHandoff();
     cancelMix();
     attemptedMix.current = '';
     setError('');
@@ -622,7 +721,7 @@ export function usePlayer() {
       else if (player.current && activeVideo.current) { if (player.current.getPlayerState() === 1) { intendsToPlay.current = false; player.current.pauseVideo(); } else { intendsToPlay.current = true; player.current.playVideo(); } }
       else if (current.current.track) { intendsToPlay.current = true; await loadTrack(current.current.track); }
     } catch (err) { setError(err.message || 'Playback was blocked. Press play to retry.'); }
-  }, [loadTrack, cancelMix]);
+  }, [loadTrack, cancelMix, finishHandoff]);
 
   const beginOnlineBlend = useCallback((blend, seconds) => {
     const incoming = yt.current[blend.index].player;
@@ -684,8 +783,10 @@ export function usePlayer() {
     loadTrack(state.queue[(index - 1 + state.queue.length) % state.queue.length], state.queue);
   }, [loadTrack, seek]);
   const setVolume = useCallback(value => {
-    const amount = Math.min(100, Math.max(0, Number(value) || 0));
-    current.current.volume = amount; updateVolume(amount);
+    const chosen = Math.min(100, Math.max(0, Number(value) || 0));
+    updateVolume(chosen); volumeRef.current = chosen;
+    const amount = Math.round(chosen * LOUDNESS[preferences.current.loudness]);
+    current.current.volume = amount;
     // Online mixes read the live volume on every tick; local curves are pre-scheduled.
     if (mix.current?.kind === 'local') cancelMix();
     const deck = decks.current.find(item => item.element === audio.current);
@@ -693,6 +794,25 @@ export function usePlayer() {
     else if (audio.current) audio.current.volume = amount / 100;
     if (!mix.current?.kind?.startsWith('online')) player.current?.setVolume?.(amount);
   }, [cancelMix]);
+  // A lyric offset set by hand sticks to the song for next time.
+  const setLyricsOffset = useCallback(value => {
+    const offset = Math.round((Number(value) || 0) * 100) / 100;
+    setUserOffset(offset);
+    saveOffset(current.current.track, offset);
+  }, []);
+  // Back to automatic timing: the playing video's captions decide, or none.
+  const autoLyricsOffset = useCallback(() => {
+    setUserOffset(null);
+    clearOffset(current.current.track);
+  }, []);
+  const setLoudness = useCallback(value => {
+    if (!LOUDNESS[value]) return;
+    preferences.current.loudness = value; updateLoudness(value);
+    savePreference('aurora-loudness', value);
+    const master = context.current?.master;
+    if (master) applyLoudness(master, value, context.current);
+    setVolume(volumeRef.current);
+  }, [setVolume]);
   const setQueue = useCallback(value => {
     const before = current.current.queue;
     const result = typeof value === 'function' ? value(before) : value;
@@ -785,6 +905,31 @@ export function usePlayer() {
       } finally { if (!controller.signal.aborted && mounted.current) setRecommendationsLoading(false); }
     });
   }, [autoplay, track, queue.length, queueIndex, radioRetry, setQueue, loadTrack, lyricsLoading, heard]);
+  // What the music itself says about the playing song, for best parts and the pulse:
+  // device audio is measured (beat grid, energy across the song); online songs get
+  // catalogue BPM and the playing video's "Most replayed" markers. Unknown stays null.
+  const [songAnalysis, setSongAnalysis] = useState({ id: null });
+  useEffect(() => {
+    if (!track) return undefined;
+    const { id } = track;
+    const controller = new AbortController();
+    const done = value => { if (!controller.signal.aborted) setSongAnalysis({ id, ...value }); };
+    if (track.localUrl) {
+      const measured = analysis.current.get(id);
+      Promise.resolve().then(() => done({ bpm: measured?.intro?.bpm ?? null, grid: measured?.intro?.grid ?? null, energy: measured?.energy ?? null }));
+    } else {
+      resolveSource(track)
+        .then(({ videoId }) => getTrackAnalysis(track, videoId, controller.signal))
+        .then(({ bpm, replays }) => {
+          tempos.current.set(id, bpm);
+          while (tempos.current.size > 12) tempos.current.delete(tempos.current.keys().next().value);
+          done({ bpm, grid: bpm ? { period: 60 / bpm } : null, replays });
+        })
+        .catch(() => {});
+    }
+    return () => controller.abort();
+  }, [track, resolveSource]);
+
   // A song counts as heard after 25 seconds of it.
   useEffect(() => clock.subscribe(() => {
     const id = current.current.track?.id;
@@ -818,7 +963,7 @@ export function usePlayer() {
     } else if (!prepared.current.get(selected.id)?.lyrics) {
       void (async () => {
         try {
-          const entry = await resolveSource(selected, controller.signal);
+          const entry = await resolveSource(selected);
           if (!entry?.videoId || controller.signal.aborted) return;
           const response = await fetch(buildApiUrl('/api/lyrics/structured', { artist: selected.artist, title: selected.title, album: selected.album, duration: selected.duration, videoId: entry.videoId }), { signal: controller.signal });
           if (response.ok && !controller.signal.aborted) prepared.current.set(selected.id, { ...(prepared.current.get(selected.id) || entry), lyrics: await response.json() });
@@ -839,7 +984,7 @@ export function usePlayer() {
     mix.current = token;
     const from = analysis.current.get(current.current.track?.id);
     const to = analysis.current.get(selected.id);
-    const plan = planTransition(from?.outro, to?.intro, blendTarget({ outroSpan: from ? from.duration - from.mixStart : Infinity }));
+    const plan = planTransition(from?.outro, to?.intro, blendTarget({}, { lengths: [from?.duration, to?.duration] }));
     try {
       if (incoming.element.src !== selected.localUrl) incoming.element.src = selected.localUrl;
       incoming.element.playbackRate = plan.inRate; incoming.element.preservesPitch = true;
@@ -856,7 +1001,7 @@ export function usePlayer() {
       const outCurve = new Float32Array(65), inCurve = new Float32Array(65);
       for (let i = 0; i < outCurve.length; i++) {
         // Song B rises under a held song A, then song A gives way: no loudness hole.
-        const [out, input] = blendCurve(i / 64);
+        const [out, input] = blendCurve(i / 64, seconds);
         outCurve[i] = out * volume; inCurve[i] = input * volume;
       }
       outgoing.gain.gain.cancelScheduledValues(now); incoming.gain.gain.cancelScheduledValues(now);
@@ -871,7 +1016,15 @@ export function usePlayer() {
       // echoes out. Bass swap: song B enters without its low end, and on the beat
       // at the middle of the blend the low end moves from song A to song B, so the
       // two kick drums and bass lines never stack.
-      const mid = now + seconds / 2, swap = Math.max(.12, Math.min(.6, plan.beatSeconds || .25));
+      // The swap lands on song A's nearest bar line to the middle of the blend.
+      const mid = swapTime({ now, seconds, outPosition: outgoing.element.currentTime, outGrid: from?.outro?.grid, rate: outgoing.element.playbackRate }), swap = Math.max(.12, Math.min(.6, plan.beatSeconds || .25));
+      // Voices never clash: song B's vocal band enters 9 dB down and opens over the
+      // beat after the swap, while song A's is pulled out over that same beat.
+      const beat = Math.max(.25, Math.min(.75, plan.beatSeconds || .5));
+      incoming.presence.gain.cancelScheduledValues(now); incoming.presence.gain.setValueAtTime(-9, now);
+      incoming.presence.gain.setValueAtTime(-9, mid); incoming.presence.gain.linearRampToValueAtTime(0, mid + beat);
+      outgoing.presence.gain.cancelScheduledValues(now); outgoing.presence.gain.setValueAtTime(0, now);
+      outgoing.presence.gain.setValueAtTime(0, mid); outgoing.presence.gain.linearRampToValueAtTime(-12, mid + beat);
       outgoing.delay.delayTime.setValueAtTime(Math.min(1.5, (plan.beatSeconds || .5) * .75), now);
       // Song A keeps its full range (and the only bass) until the swap, so the mix
       // never thins out; after it, song A narrows into the hollow band and echoes out.
@@ -925,16 +1078,17 @@ export function usePlayer() {
     // Finish any glide the pre-roll could not complete (for example after a late seek).
     const glide = smoothstep(progress * 2);
     setRate(outgoing.element, activeMix.startRate + (plan.rate - activeMix.startRate) * glide, glide >= 1 ? 0 : RATE_GRAIN);
-    // Beat lock: once B has settled (play() latency), its slip against A's grid is
-    // measured at rest and closed with one short push; one re-check afterwards.
-    if (plan.matched) {
+    // Beat lock, as a DJ keeps a long mix locked: once B has settled (play()
+    // latency), its slip against A's grid is measured at rest and closed with one
+    // short push; then re-checked every 4 s through the blend (tiny tempo-read
+    // errors add up over 16 bars), until song A starts to leave.
+    if (plan.matched && progress < .85) {
       const now = context.current.currentTime;
-      const lock = activeMix.lock ??= { checks: 0, until: 0, next: activeMix.started + .35 };
-      if (lock.until && now >= lock.until) { setRate(incoming.element, plan.inRate, 0); lock.until = 0; lock.next = now + .5; }
-      else if (!lock.until && lock.checks < 2 && now >= lock.next) {
-        lock.checks++;
+      const lock = activeMix.lock ??= { until: 0, next: activeMix.started + .35 };
+      if (lock.until && now >= lock.until) { setRate(incoming.element, plan.inRate, 0); lock.until = 0; lock.next = now + .6; }
+      else if (!lock.until && now >= lock.next) {
         const push = nudgePlan(phaseOffset({ inPosition: incoming.element.currentTime, inGrid: to?.intro?.grid, outPosition: outgoing.element.currentTime, outGrid: from?.outro?.grid, outRate: outgoing.element.playbackRate, inRate: plan.inRate }), plan.inRate);
-        if (push) { setRate(incoming.element, push.rate, 0); lock.until = now + push.seconds; } else lock.checks = 2;
+        if (push) { setRate(incoming.element, push.rate, 0); lock.until = now + push.seconds; } else lock.next = now + 4;
       }
     }
   }, [cancelMix, setIdle, mixProgress]);
@@ -983,7 +1137,7 @@ export function usePlayer() {
     }
     if (blend.stage === 'mixing') {
       const progress = Math.min(1, (performance.now() - blend.started) / (blend.seconds * 1000));
-      const [out, input] = preferences.current.djEnabled ? blendCurve(progress) : equalPower(progress);
+      const [out, input] = preferences.current.djEnabled ? blendCurve(progress, blend.seconds) : equalPower(progress);
       // YouTube volume is whole percent: send only real changes, at display rate.
       const outLevel = Math.round(volume * out), inLevel = Math.round(volume * input);
       if (outLevel !== blend.outLevel) { blend.outLevel = outLevel; blend.outgoing?.setVolume?.(outLevel); }
@@ -1016,6 +1170,8 @@ export function usePlayer() {
   }, [cancelMix, commitIncoming, setIdle, announce, mixProgress]);
 
   const tickMix = useCallback(() => {
+    // A hand-made change is still fading on the other deck: nothing is prepared there yet.
+    if (handoff.current) return;
     const dj = preferences.current.djEnabled;
     // Without DJ, online songs still hand over seamlessly through the standby deck.
     if (!dj) setDjWindow(previous => previous === null ? previous : null);
@@ -1056,7 +1212,7 @@ export function usePlayer() {
       if (!element || element.paused || !selected.localUrl || !Number.isFinite(element.duration)) return;
       const remaining = element.duration - element.currentTime;
       const from = analysis.current.get(state.track?.id);
-      const plan = planTransition(from?.outro, analysis.current.get(selected.id)?.intro, blendTarget({ outroSpan: from ? from.duration - from.mixStart : Infinity }));
+      const plan = planTransition(from?.outro, analysis.current.get(selected.id)?.intro, blendTarget({}, { lengths: [from?.duration, analysis.current.get(selected.id)?.duration] }));
       const start = Math.min(element.duration - plan.seconds, from?.mixStart ?? element.duration - plan.seconds);
       const rampStart = start - plan.rampSeconds;
       const standby = decks.current.find(deck => deck.element !== element);
@@ -1087,7 +1243,7 @@ export function usePlayer() {
     // Auto: fit the blend between song A's last sung word and song B's first.
     const timed = lyricsData => (lyricsData?.sync && lyricsData.sync !== 'plain' ? lyricsData.lines : []);
     const spans = vocalSpans({ duration: length, outLines: timed(state.lyrics), inLines: timed(prepared.current.get(selected.id)?.lyrics), entry: 0 });
-    const target = blendTarget({ outroSpan: spans.outroSpan - 2.5, introSpan: spans.introSpan });
+    const target = blendTarget({ outroSpan: spans.outroSpan - 2.5, introSpan: spans.introSpan }, { online: true, lengths: [length, selected.duration] });
     const tempoPlan = options => planTransition(tempoA ? { bpm: tempoA, confidence: 1 } : null, tempoB ? { bpm: tempoB, confidence: 1 } : null, target, options);
     let plan = tempoPlan();
     const rates = active.getAvailablePlaybackRates?.();
@@ -1206,6 +1362,7 @@ export function usePlayer() {
     const onlineDecks = yt.current;
     return () => {
       flushListening();
+      clearInterval(handoff.current?.timer); handoff.current = null;
       mounted.current = false; if (manualChange.current) clearInterval(manualChange.current); request.current?.abort(); recommendationRequest.current?.abort(); clearInterval(timer); clearInterval(mixTimer);
       cleanups.forEach(cleanup => cleanup()); audio.current = null; decks.current = []; mix.current = null;
       void context.current?.close().catch(() => {}); context.current = null;
@@ -1258,20 +1415,35 @@ export function usePlayer() {
     return () => { live = false; document.removeEventListener('visibilitychange', take); void lock?.release().catch(() => {}); };
   }, [playing]);
 
-  // Lyrics paint from this every frame. Local audio reports exact time; the embed
+  // Lyrics paint from this every frame. Local audio reports exact time (shifted to
+  // when it is heard); the embed
   // reports coarsely, so its time is carried smoothly between reports. A new deck
   // (a DJ hand-over) starts its own playhead.
   const playhead = useRef({ deck: null, head: createPlayhead() });
   const getPlaybackTime = useCallback(() => {
     if (source.current === 'local') {
-      const value = audio.current?.currentTime;
-      return Number.isFinite(value) ? value : 0;
+      const element = audio.current, value = element?.currentTime;
+      if (!Number.isFinite(value)) return 0;
+      const graph = context.current;
+      const latency = graph?.state === 'running' ? (graph.baseLatency || 0) + (graph.outputLatency || 0) : 0;
+      return heardTime(value, { playing: !element.paused, latency });
     }
     const deck = player.current;
     if (playhead.current.deck !== deck) playhead.current = { deck, head: createPlayhead() };
     return playhead.current.head.read({ raw: deck?.getCurrentTime?.(), playing: deck?.getPlayerState?.() === 1, rate: deck?.getPlaybackRate?.() ?? 1, now: performance.now() });
   }, []);
 
-  return { warm, notice, unavailable, changeKind, direction, transitionFx, setTransitionFx, blendLength, setBlendLength, sourceInfo, surround, setSurround, audioOutput, track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, setLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime };
+  // Lyric timing: the listener's choice first, then the offset measured against
+  // the playing video's captions, otherwise the lyrics as published.
+  const captionOffset = Number.isFinite(lyrics?.alignment?.offset) ? lyrics.alignment.offset : null;
+  const lyricsOffset = userOffset ?? captionOffset ?? 0;
+  const lyricsTiming = userOffset !== null ? 'manual' : captionOffset !== null ? 'captions' : 'published';
+  const songInsight = songAnalysis.id === track?.id ? songAnalysis : null;
+  const bpm = songInsight?.bpm ?? null;
+  // One stable object: it changes only when something in it does, so memoized
+  // components that take `player` skip renders caused by unrelated app state.
+  return useMemo(() => ({ bpm, songInsight, loudness, setLoudness, warm, notice, unavailable, changeKind, direction, transitionFx, setTransitionFx, blendLength, setBlendLength, sourceInfo, surround, setSurround, audioOutput, track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, lyricsTiming, setLyricsOffset, autoLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime }), [
+    bpm, songInsight, loudness, setLoudness, warm, notice, unavailable, changeKind, direction, transitionFx, setTransitionFx, blendLength, setBlendLength, sourceInfo, surround, setSurround, audioOutput, track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, lyricsTiming, setLyricsOffset, autoLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime,
+  ]);
 }
 export default usePlayer;
