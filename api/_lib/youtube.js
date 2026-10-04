@@ -14,7 +14,7 @@ const HEADERS = {
 };
 
 export async function innertube(endpoint, body, { timeout = 4500, signal } = {}) {
-  if (!['search', 'browse'].includes(endpoint)) throw new Error('Unsupported endpoint');
+  if (!['search', 'browse', 'next'].includes(endpoint)) throw new Error('Unsupported endpoint');
   const response = await fetch(`https://www.youtube.com/youtubei/v1/${endpoint}?key=${INNERTUBE_KEY}`, {
     method: 'POST', headers: HEADERS, redirect: 'error',
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout),
@@ -105,4 +105,39 @@ export async function searchYouTube(query, kind = 'videos', options) {
 export async function playlistTracks(id, options) {
   if (!/^[\w-]{2,64}$/.test(id)) throw new Error('Invalid playlist');
   return parsePlaylist(await innertube('browse', { browseId: `VL${id}` }, options));
+}
+
+// "Most replayed": YouTube's normalised replay intensity across the video, shown
+// once a video has enough views. Two generations: entity mutations (current) and
+// the player bar's heat markers (older). Chapters and other markers are ignored.
+const VIDEO_ID = /^[\w-]{11}$/;
+const MAX_MARKERS = 400;
+
+function replayMarker(start, duration, score) {
+  const [from, length, value] = [start, duration, score].map(Number);
+  if (![from, length, value].every(Number.isFinite) || from < 0 || length <= 0 || value < 0 || value > 1) return null;
+  return { start: from / 1000, end: (from + length) / 1000, score: value };
+}
+
+export function parseReplays(data) {
+  const mutations = data?.frameworkUpdates?.entityBatchUpdate?.mutations;
+  const entity = (Array.isArray(mutations) ? mutations : [])
+    .map(mutation => mutation?.payload?.macroMarkersListEntity?.markersList)
+    .find(list => list?.markerType === 'MARKER_TYPE_HEATMAP');
+  let markers = Array.isArray(entity?.markers)
+    ? entity.markers.map(marker => replayMarker(marker?.startMillis, marker?.durationMillis, marker?.intensityScoreNormalized))
+    : [];
+  if (!markers.length) {
+    const map = data?.playerOverlays?.playerOverlayRenderer?.decoratedPlayerBarRenderer?.decoratedPlayerBarRenderer?.playerBar?.multiMarkersPlayerBarRenderer?.markersMap;
+    const heat = (Array.isArray(map) ? map : []).find(entry => entry?.key === 'HEATSEEKER')?.value?.heatmap?.heatmapRenderer?.heatMarkers;
+    markers = (Array.isArray(heat) ? heat : []).map(({ heatMarkerRenderer: marker } = {}) => replayMarker(marker?.timeRangeStartMillis, marker?.markerDurationMillis, marker?.heatMarkerIntensityScoreNormalized));
+  }
+  // All or nothing: a partly malformed list could misplace the peak.
+  if (!markers.length || markers.length > MAX_MARKERS || markers.some(marker => !marker)) return [];
+  return markers.sort((a, b) => a.start - b.start);
+}
+
+export async function videoReplays(videoId, options) {
+  if (typeof videoId !== 'string' || !VIDEO_ID.test(videoId)) throw new Error('Invalid video id');
+  return parseReplays(await innertube('next', { videoId }, options));
 }
