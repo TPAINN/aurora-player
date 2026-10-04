@@ -1473,6 +1473,13 @@ if (!only || only === 'S') {
   for (const [label, viewport] of [['phone', { width: 390, height: 844 }], ['desktop', { width: 1440, height: 900 }]]) {
     const { context, page, errors } = await newSession(browser, { viewport });
     await page.goto(BASE); await wait(1500);
+    // Painting, not hit-testing, shows the bug: in a shared 3D scene (preserve-3d)
+    // the tilted neighbours' near edges are drawn through the front card even though
+    // clicks still reach it. Each card keeps its own tilt in a flat stack instead.
+    await check('S', `${label}: the front carousel card is never cut through by its tilted neighbours`, async () => {
+      const style = await page.evaluate(() => { const node = document.querySelector('.cover-carousel'); return node && getComputedStyle(node).transformStyle; });
+      ok(style === 'flat', String(style));
+    });
     await page.mouse.wheel(0, 900); await wait(3200);
     await check('S', `${label}: every card in view has revealed`, async () => {
       const hidden = await page.evaluate(() => [...document.querySelectorAll('.album-card, .video-card, .mood-card')].filter(node => { const box = node.getBoundingClientRect(); return box.bottom > 0 && box.top < innerHeight - 120 && box.width > 0 && Number(getComputedStyle(node).opacity) < .99; }).map(node => node.textContent.trim().slice(0, 24)));
@@ -1503,7 +1510,7 @@ if (only === 'T') {
 // On demand: a screenshot tour of the main screens at phone sizes, for visual review.
 if (only === 'V') {
   const dir = process.env.SHOTS || 'shots'; await mkdir(dir, { recursive: true });
-  for (const [label, viewport] of [['phone', { width: 390, height: 844 }], ['small', { width: 360, height: 740 }], ['landscape', { width: 844, height: 390 }]]) {
+  for (const [label, viewport] of [['desktop', { width: 1440, height: 900 }], ['phone', { width: 390, height: 844 }], ['small', { width: 360, height: 740 }], ['landscape', { width: 844, height: 390 }]].filter(([name]) => !process.env.TOUR || process.env.TOUR.split(',').includes(name))) {
     const { context, page, errors } = await newSession(browser, { viewport });
     const shot = async name => { await wait(1300); await page.screenshot({ path: `${dir}/v-${label}-${name}.png` }); };
     const step = async (name, act) => { try { await act(); await shot(name); } catch (error) { console.log(`TOUR-FAIL ${label} ${name}: ${error.message.split('\n')[0]}`); } };
