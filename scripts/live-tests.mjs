@@ -1340,6 +1340,67 @@ if (only === 'Q' || !only) {
   }
 }
 
+// ── R: opening and closing audit — what appears or leaves without motion ──
+if (only === 'R') {
+  const install = () => {
+    const sig = node => { const style = getComputedStyle(node); const box = node.getBoundingClientRect(); return [style.opacity, style.transform, style.scale, style.translate, style.filter, Math.round(box.height), Math.round(box.width), Math.round(box.top), Math.round(box.left)].join('|'); };
+    const chain = node => { const list = []; for (let at = node, i = 0; at && at !== document.body && i < 4; at = at.parentElement, i++) list.push(at); return list; };
+    const label = node => { const name = node.getAttribute?.('aria-label') || node.textContent?.trim().slice(0, 30) || ''; return `${node.tagName.toLowerCase()}.${String(node.className || '').split(' ').filter(Boolean).slice(0, 2).join('.')} "${name}"`; };
+    const visible = node => { const box = node.getBoundingClientRect(); return box.width > 8 && box.height > 8 && box.bottom > 0 && box.top < innerHeight && getComputedStyle(node).visibility !== 'hidden'; };
+    window.__audit = { pops: [], vanishes: [], tracked: new Map() };
+    const tracked = window.__audit.tracked;
+    new MutationObserver(records => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node.nodeType !== 1 || node.closest('iframe, .yt-deck, .toast, svg') || [...tracked.keys()].some(other => other !== node && other.contains?.(node))) continue;
+          const first = chain(node).map(sig);
+          const history = [];
+          tracked.set(node, history);
+          setTimeout(() => { if (!node.isConnected || !visible(node)) return; history.push(chain(node).map(sig).join('#')); }, 20);
+          setTimeout(() => { if (!node.isConnected || !visible(node)) return; const later = chain(node).map(sig); if (later.join('#') === first.join('#') && history[0] === later.join('#')) window.__audit.pops.push(label(node)); }, 160);
+        }
+        for (const node of record.removedNodes) {
+          if (node.nodeType !== 1 || !tracked.has(node)) continue;
+          const history = tracked.get(node); tracked.delete(node);
+          const recent = history.filter(([time]) => typeof time === 'number' && performance.now() - time < 420).map(([, value]) => value);
+          if (recent.length >= 3 && new Set(recent).size === 1 && history.visible) window.__audit.vanishes.push(label(node));
+        }
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+    // Every 40 ms, remember how each tracked element looks, to judge its exit.
+    setInterval(() => { for (const [node, history] of tracked) { if (!node.isConnected) continue; const shown = visible(node); history.visible = shown; if (!shown) continue; history.push([performance.now(), chain(node).map(sig).join('#')]); if (history.length > 14) history.splice(1, history.length - 14); } }, 40);
+  };
+  for (const [label, viewport] of [['desktop', { width: 1440, height: 900 }], ['phone', { width: 390, height: 844 }]]) {
+    const { context, page, errors } = await newSession(browser, { viewport });
+    await page.addInitScript(install);
+    await page.goto(BASE); await wait(2500);
+    const step = async (name, act, settle = 1100) => { await act().catch(error => console.log(`AUDIT-STEP-FAIL ${name}: ${error.message.split('\n')[0]}`)); await wait(settle); };
+    await step('search', () => goSearch(page));
+    await step('type', () => searchFor(page, 'band'));
+    await step('play', () => page.click('.top-result-play'), 1800);
+    await step('open player', async () => { if (!await page.locator('.immersive-player').count()) await page.click('.dock-track'); });
+    await step('lyrics', () => page.keyboard.press('l'));
+    await step('queue', () => page.locator('button:has-text("Queue") >> visible=true').first().click());
+    await step('close queue', () => page.keyboard.press('Escape'));
+    await step('settings', () => page.click('button[aria-label="Player settings"]'));
+    await step('audio sheet', () => page.locator('.sheet button:has-text("Audio") >> visible=true').first().click());
+    await step('back', () => page.locator('button[aria-label="Back to preferences"]').first().click());
+    await step('close settings', () => page.keyboard.press('Escape'));
+    await step('dj sheet', () => page.locator('button[aria-label="DJ transition settings"] >> visible=true').first().click());
+    await step('close dj', () => page.keyboard.press('Escape'));
+    await step('focus', () => page.keyboard.press('i'));
+    await step('unfocus', () => page.keyboard.press('Escape'));
+    await step('next song', () => page.keyboard.press('Shift+ArrowRight'), 2200);
+    await step('close player', () => page.keyboard.press('Escape'));
+    await step('library', () => page.locator('nav button:has-text("Library") >> visible=true, nav button[aria-label="Your library"] >> visible=true').first().click());
+    await step('home', () => page.locator('nav button:has-text("Listen") >> visible=true, nav button[aria-label="Listen now"] >> visible=true').first().click(), 1800);
+    const found = await page.evaluate(() => ({ pops: [...new Set(window.__audit.pops)], vanishes: [...new Set(window.__audit.vanishes)] }));
+    console.log(`AUDIT-R ${label} pops in (${found.pops.length}):\n  ${found.pops.join('\n  ')}\nAUDIT-R ${label} vanishes (${found.vanishes.length}):\n  ${found.vanishes.join('\n  ')}`);
+    await check('R', `${label}: no runtime errors in the transition audit`, async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
 await browser.close();
 const failed = results.filter(result => !result.ok);
 console.log(`\n${results.length} checks · ${results.length - failed.length} passed · ${failed.length} failed`);

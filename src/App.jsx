@@ -74,6 +74,9 @@ import {
   blendSwap,
   coverSwap,
   textSwap,
+  unfold,
+  pop,
+  glyphSwap,
   crossfade,
   HEART_SPRING,
   MAGNET_SPRING,
@@ -412,22 +415,26 @@ function QueueSections({ player, trackRows }) {
             Up next
             <small>{upNext.length ? `${upNext.length} ${upNext.length === 1 ? "song" : "songs"} · ${minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`}` : "Nothing yet"}</small>
           </h3>
-          {upNext.length > 0 && (
-            <button className="text-button" onClick={() => player.setQueue(queue.slice(0, index + 1))}>
-              Clear
-            </button>
-          )}
+          <AnimatePresence initial={false}>
+            {upNext.length > 0 && (
+              <Motion.button key="clear" {...pop} className="text-button" onClick={() => player.setQueue(queue.slice(0, index + 1))}>
+                Clear
+              </Motion.button>
+            )}
+          </AnimatePresence>
         </div>
         {upNext.length > 0 ? trackRows(upNext, true, undefined, index + 1) : <p className="queue-empty">{player.autoplay ? "More like this arrives as you listen." : "Add songs with + to play them next."}</p>}
       </section>
-      {played.length > 0 && (
-        <details className="queue-section queue-played">
-          <summary className="queue-heading">
-            Recently played <small>{played.length}</small>
-          </summary>
-          {trackRows(played, true, undefined, 0)}
-        </details>
-      )}
+      <AnimatePresence initial={false}>
+        {played.length > 0 && (
+          <Motion.details key="played" {...unfold} className="queue-section queue-played">
+            <summary className="queue-heading">
+              Recently played <small>{played.length}</small>
+            </summary>
+            {trackRows(played, true, undefined, 0)}
+          </Motion.details>
+        )}
+      </AnimatePresence>
     </>
   );
 }
@@ -1172,11 +1179,16 @@ function Sheet({ title, close, back, children }) {
           }}
         />
         <header>
-          {back && (
-            <IconButton label="Back to preferences" onClick={back}>
-              <ArrowLeft />
-            </IconButton>
-          )}
+          {/* Going deeper brings a way back: it arrives with the nested sheet. */}
+          <AnimatePresence initial={false}>
+            {back && (
+              <Motion.span key="back" {...pop} className="sheet-back">
+                <IconButton label="Back to preferences" onClick={back}>
+                  <ArrowLeft />
+                </IconButton>
+              </Motion.span>
+            )}
+          </AnimatePresence>
           <h2>{title}</h2>
           <IconButton label={`Close ${title}`} onClick={close}>
             <X />
@@ -1299,7 +1311,11 @@ function DjStatus({ player }) {
       </span>
       <div>
         <strong>{player.djEnabled ? state.label || "Ready when you are" : "DJ transition is off"}</strong>
-        {busy && state.entryAt > 0.5 && <p className="dj-entry">Next song enters at {formatTime(state.entryAt)}</p>}
+        <AnimatePresence initial={false}>
+          {busy && state.entryAt > 0.5 && (
+            <Motion.p key="entry" {...unfold} className="dj-entry">Next song enters at {formatTime(state.entryAt)}</Motion.p>
+          )}
+        </AnimatePresence>
         <p>
           {state.fromBpm && state.toBpm
             ? `${Math.round(state.fromBpm)} → ${Math.round(state.toBpm)} BPM · tempo glide`
@@ -1307,13 +1323,15 @@ function DjStatus({ player }) {
               ? "Local audio · tempo glide, warm bass swap and echo"
               : "Online playback · two-deck volume blend"}
         </p>
-        {effects.length > 0 && (
-          <span className="dj-effects">
-            {effects.map((effect) => (
-              <em key={effect}>{effect}</em>
-            ))}
-          </span>
-        )}
+        <AnimatePresence initial={false}>
+          {effects.length > 0 && (
+            <Motion.span key="effects" {...unfold} className="dj-effects">
+              {effects.map((effect) => (
+                <em key={effect}>{effect}</em>
+              ))}
+            </Motion.span>
+          )}
+        </AnimatePresence>
         <span className="dj-progress" aria-hidden="true">
           <i style={{ transform: `scaleX(${busy ? progress : 0})` }} />
         </span>
@@ -1777,15 +1795,17 @@ export default function App() {
             }}
           >
             <span className="track-number">
-              {selected && player.playing ? (
-                <span className="equalizer">
-                  <i />
-                  <i />
-                  <i />
-                </span>
-              ) : (
-                String(i + 1).padStart(2, "0")
-              )}
+              <AnimatePresence initial={false} mode="popLayout">
+                {selected && player.playing ? (
+                  <Motion.span key="playing" {...glyphSwap} className="equalizer">
+                    <i />
+                    <i />
+                    <i />
+                  </Motion.span>
+                ) : (
+                  <Motion.span key="number" {...glyphSwap}>{String(i + 1).padStart(2, "0")}</Motion.span>
+                )}
+              </AnimatePresence>
             </span>
             <Cover track={track} />
             <span className="track-description">
@@ -1875,9 +1895,9 @@ export default function App() {
         {hint && <small>{hint}</small>}
       </h2>
       {searchType === "all" && kind && categoryItems[kind].length > 4 && (
-        <button className="text-button" onClick={() => setSearchType(kind)}>
+        <Motion.button {...pop} className="text-button" onClick={() => setSearchType(kind)}>
           See all <ArrowRight size={15} />
-        </button>
+        </Motion.button>
       )}
     </div>
   );
@@ -2022,16 +2042,26 @@ export default function App() {
           </AnimatePresence>
           <span className="search-progress" aria-hidden="true" />
         </Motion.label>
+      <AnimatePresence initial={false}>
       {query.trim().length >= 2 && (
-        <div className="search-tabs" role="tablist" aria-label="Search categories">
+        <Motion.div
+          key="tabs"
+          initial={{ opacity: 0, y: -6 }}
+          animate={{ opacity: 1, y: 0, transition: { duration: 0.35, ease: EASE } }}
+          exit={{ opacity: 0, y: -6, transition: { duration: 0.2, ease: EASE_EXIT } }}
+          className="search-tabs"
+          role="tablist"
+          aria-label="Search categories"
+        >
           {SEARCH_TABS.map(([id, label]) => (
             <button key={id} role="tab" aria-selected={searchType === id} className={searchType === id ? "selected" : ""} onClick={() => setSearchType(id)}>
               {searchType === id && <Motion.span layoutId="search-tab" className="nav-pill" transition={PILL_SPRING} />}
               {label}
             </button>
           ))}
-        </div>
+        </Motion.div>
       )}
+      </AnimatePresence>
       <AnimatePresence mode="wait" initial={false}>
         {searching && !hasResults ? (
           <Motion.div key="skeleton" className="search-skeleton" role="status" aria-label="Searching the catalogue" {...fade}>
