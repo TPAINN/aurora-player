@@ -1,5 +1,5 @@
 import { startTransition, useCallback, useEffect, useRef, useState } from 'react';
-import { createPlayhead } from '../lib/playhead';
+import { createPlayhead, heardTime } from '../lib/playhead';
 import { readOffset, saveOffset } from '../lib/lyric-offsets';
 import { songKey } from '../../shared/titles.js';
 import { buildApiUrl } from '../lib/api';
@@ -1402,14 +1402,18 @@ export function usePlayer() {
     return () => { live = false; document.removeEventListener('visibilitychange', take); void lock?.release().catch(() => {}); };
   }, [playing]);
 
-  // Lyrics paint from this every frame. Local audio reports exact time; the embed
+  // Lyrics paint from this every frame. Local audio reports exact time (shifted to
+  // when it is heard); the embed
   // reports coarsely, so its time is carried smoothly between reports. A new deck
   // (a DJ hand-over) starts its own playhead.
   const playhead = useRef({ deck: null, head: createPlayhead() });
   const getPlaybackTime = useCallback(() => {
     if (source.current === 'local') {
-      const value = audio.current?.currentTime;
-      return Number.isFinite(value) ? value : 0;
+      const element = audio.current, value = element?.currentTime;
+      if (!Number.isFinite(value)) return 0;
+      const graph = context.current;
+      const latency = graph?.state === 'running' ? (graph.baseLatency || 0) + (graph.outputLatency || 0) : 0;
+      return heardTime(value, { playing: !element.paused, latency });
     }
     const deck = player.current;
     if (playhead.current.deck !== deck) playhead.current = { deck, head: createPlayhead() };
