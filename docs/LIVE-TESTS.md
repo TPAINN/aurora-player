@@ -1,12 +1,12 @@
 # Live interaction tests
 
-`scripts/live-tests.mjs` drives the real app in Chromium. The catalogue, lyrics and tempo APIs are stubbed (some deliberately slow or failing), and a simulated YouTube player records loads, plays, pauses, seeks, volumes and playback rates. Group G decodes real generated WAV audio. 339 checks in fourteen groups:
+`scripts/live-tests.mjs` drives the real app in Chromium. The catalogue, lyrics and tempo APIs are stubbed (some deliberately slow or failing), and a simulated YouTube player records loads, plays, pauses, seeks, volumes and playback rates. Group G decodes real generated WAV audio. 353 checks in sixteen groups (plus P, a frame-timing profile run on demand):
 
 | Group | Covers | Checks |
 | --- | --- | --- |
 | A | Home, carousel, navigation, sidebar, shortcuts | 16 |
 | B | Search: ideas, dedupe, stale results, skeletons, keys, retry, recents, Play next, 8D variant | 23 |
-| C | Playback, keyboard, seek, volume, likes, lyrics sync/scroll/interlude, backing vocals past the next line, peak backdrop, beat pulse on peaks (tempo, running, frame rate), the player never scrolling into its backdrop overscan, cover direction on Next/Previous, queue and sheets, a11y names | 57 |
+| C | Playback, keyboard, seek, volume, likes, lyrics sync/scroll/interlude, backing vocals past the next line, peak backdrop, beat kick and bar ring on peaks with the lifted backdrop (tempo, running, frame rate), the player never scrolling into its backdrop overscan, cover direction on Next/Previous, queue and sheets, a11y names | 57 |
 | D | DJ priming, overlap, blend curve, hollow sweep, tempo glide bounds, rate read-back, tempos meeting in the middle, manual blend, song B entry past a long intro, 0.05-step embeds, seamless mode, main-thread load | 41 |
 | E | Mobile (390 px), tablet (900 px), reduced motion | 15 |
 | F | Search categories, collections, Back gestures, adaptive radio and home (spotlight, Made for you, Daily rotation), quality chip and audio sheet, blend length, motion backdrop, opening, favicons, local file format | 39 |
@@ -18,8 +18,10 @@
 | L | A seeded 100-action fuzzer (taps, swipes, seeks, skips, sheets, keys) with invariants after every step: one player, a moving clock, title and dock in agreement, no errors | 6 |
 | M | Lyrics focus at five sizes (desktop, laptop, phone, phone on its side, tablet): only cover, name and lyrics; lyrics keep following; Escape, I and Exit focus; closing the player leaves focus | 30 |
 | N | Best parts from the music: the analysis asks for the playing video, Best part jumps to the most-replayed section, the backdrop and timeline light it, the peak lasts whole bars at 120 BPM, replays from a different-length upload are ignored | 8 |
+| O | Lyric timing that adapts to the upload: caption-matched timing applies by itself and is named; the line on screen follows it; settings name the source; a nudge by hand wins and Auto hands back; another edit asks for lyrics timed for its own length and the footer says so otherwise | 8 |
+| Q | Interaction audit on desktop and phone (home, search, player, settings): every visible button answers a press and none moves while pressed | 6 |
 
-Result on the production build (`npm run preview`): **339 / 339 passed**. The hand-over now renders as a React transition, so the long-task check at the blend also passes in development mode.
+Result on the production build (`npm run preview`): **353 / 353 passed**. The hand-over now renders as a React transition, so the long-task check at the blend also passes in development mode.
 
 A separate responsive sweep drives home, search, album, player and lyrics at 13 viewports (320×568 to 2560×1440, including landscape phones). It fails on any element that spills off-screen, then checks that the player never runs under the dock.
 
@@ -43,3 +45,7 @@ Earlier rounds:
 - Pressing Play on a search result replaced the queue, discarding songs queued by hand.
 
 All figures were measured without a GPU; real devices render faster. The online checks cannot hear audio: YouTube, Deezer and LRCLib are unreachable from the test environment.
+
+## Smoothness profile (group P, `node scripts/live-tests.mjs P`)
+
+Phone size with a 4× CPU slowdown; every frame gap and long task is recorded per interaction (`PROFILE=`, `TRACE=`, `CALLERS=` and `LINES=` add CPU, timeline and per-line breakdowns on the dev server). Fixes it led to: lyric lines memoized and faded on the compositor only (20 → 0–1 slow frames while lyrics play), the best-part lift drawn once instead of blurred live, a song change rendering 12 times instead of 38, and the bar ring kept to phones.
