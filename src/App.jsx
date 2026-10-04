@@ -70,6 +70,7 @@ import {
   SHEET_SPRING,
   blendSwap,
   coverSwap,
+  textSwap,
   crossfade,
   HEART_SPRING,
   MAGNET_SPRING,
@@ -2790,7 +2791,7 @@ export default function App() {
                       </span>
                     )}
                     <FluidText as="h1">{player.track.title}</FluidText>
-                    <p>{player.track.artist}</p>
+                    <FluidText as="p">{player.track.artist}</FluidText>
                     <div className="meta-chips">
                       <QualityChip player={player} onClick={() => setSheet("audio")} />
                       <BestPartChip player={player} />
@@ -2836,7 +2837,7 @@ export default function App() {
                 <div className="immersive-track-meta">
                   <div>
                     <FluidText as="h1">{player.track.title}</FluidText>
-                    <p>{player.track.artist}</p>
+                    <FluidText as="p">{player.track.artist}</FluidText>
                     <div className="meta-chips">
                       <QualityChip player={player} onClick={() => setSheet("audio")} />
                       <BestPartChip player={player} />
@@ -2879,11 +2880,23 @@ export default function App() {
             }
           >
             <FadingCover track={player.track} size={160} />
-            <span>
-              <strong>{player.track?.title || "Make yourself at home"}</strong>
-              <small>
-                {player.track?.artist || "Find something you love. Press play."}
-              </small>
+            {/* The name travels with the cover: in from the side the listener is heading, the old one drifting out. */}
+            <span className="dock-text">
+              <AnimatePresence initial={false} mode="popLayout" custom={player.direction || 1}>
+                <Motion.span
+                  key={player.track?.id || "idle"}
+                  custom={player.direction || 1}
+                  variants={textSwap}
+                  initial="initial"
+                  animate="animate"
+                  exit="exit"
+                >
+                  <strong>{player.track?.title || "Make yourself at home"}</strong>
+                  <small>
+                    {player.track?.artist || "Find something you love. Press play."}
+                  </small>
+                </Motion.span>
+              </AnimatePresence>
             </span>
             {player.playing && (
               <span className="equalizer">
