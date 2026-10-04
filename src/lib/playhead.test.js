@@ -26,3 +26,12 @@ test('the playhead does not run ahead of a stalled or paused source', () => {
   assert.equal(head.read({ raw: 30.5, playing: false, rate: 1, now: 2100 }), 30.5, 'paused: the raw time');
   assert.equal(head.read({ raw: Number.NaN, playing: true, rate: 1, now: 2200 }), 0);
 });
+
+test('device audio: lyrics follow what is heard, the output latency behind the decoder', async () => {
+  const { heardTime } = await import('./playhead.js');
+  assert.equal(heardTime(10, { playing: true, latency: 0.12 }), 9.88);
+  assert.equal(heardTime(10, { playing: false, latency: 0.12 }), 10); // paused: exactly where it stopped
+  assert.equal(heardTime(0.05, { playing: true, latency: 0.12 }), 0); // never before the start
+  assert.equal(heardTime(10, { playing: true, latency: 2 }), 9.5); // an implausible report is capped
+  for (const latency of [undefined, NaN, -1]) assert.equal(heardTime(10, { playing: true, latency }), 10);
+});
