@@ -669,6 +669,8 @@ function BestPartChip({ player }) {
 }
 
 const PULSE_DELAY = 1.6;
+// The song's name gliding between the player and its place under the cover in focus.
+const TITLE_GLIDE = { type: "spring", stiffness: 140, damping: 22, mass: 0.9 };
 
 // The artwork backdrop opens up (a slow zoom and lift) through the song's peaks:
 // its refrain and long held notes, read from genuinely timed lyrics only.
@@ -2855,6 +2857,13 @@ export default function App() {
                       </span>
                       {player.playing ? "In the moment" : "Take a moment"}
                     </span>
+                    {/* In lyrics focus the song's name travels here, under the cover: the same
+                        element glides over from its place in the player (a shared layout). */}
+                    {focused && !phoneLayout && (
+                      <Motion.div layoutId="now-title" className="now-title focus-title" transition={{ layout: TITLE_GLIDE }}>
+                        <TrackName track={player.track} live />
+                      </Motion.div>
+                    )}
                   </SwipeCover>
                   <AnimatePresence>
                     {showLyrics && (
@@ -2947,7 +2956,11 @@ export default function App() {
                 </div>
                 <div className="immersive-track-meta">
                   <div>
-                    <TrackName track={player.track} live={!phoneLayout} />
+                    {!(focused && !phoneLayout) && (
+                      <Motion.div layoutId="now-title" className="now-title" transition={{ layout: TITLE_GLIDE }}>
+                        <TrackName track={player.track} live={!phoneLayout} />
+                      </Motion.div>
+                    )}
                     <div className="meta-chips">
                       <QualityChip player={player} onClick={() => setSheet("audio")} />
                       <BestPartChip player={player} />
