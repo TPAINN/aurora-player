@@ -199,6 +199,9 @@ const pairs = [
   { name: '6-probe-120-to-126', a: { bpm: 120, root: 1000, seed: 11, style: 'probe' }, b: { bpm: 126, root: 2500, seed: 12, style: 'probe' } },
   { name: '7-probe-128-to-122', a: { bpm: 128, root: 1000, seed: 13, style: 'probe' }, b: { bpm: 122, root: 2500, seed: 14, style: 'probe' } },
   { name: '8-probe-same-124', a: { bpm: 124, root: 1000, seed: 15, style: 'probe' }, b: { bpm: 124, root: 2500, seed: 16, style: 'probe' } },
+  { name: '9-probe-wide-100-to-112', a: { bpm: 100, root: 1000, seed: 17, style: 'probe' }, b: { bpm: 112, root: 2500, seed: 18, style: 'probe' } },
+  { name: '10-probe-meet-118-to-132', a: { bpm: 118, root: 1000, seed: 19, style: 'probe' }, b: { bpm: 132, root: 2500, seed: 20, style: 'probe' } },
+  { name: '11-probe-double-time-87-to-174', a: { bpm: 87, root: 1000, seed: 21, style: 'probe' }, b: { bpm: 174, root: 2500, seed: 22, style: 'probe' } },
   { name: '5-half-time-87-to-174', a: { bpm: 87, root: 55, seed: 9, style: 'breaks' }, b: { bpm: 174, root: 49, seed: 10, style: 'breaks' } },
 ];
 

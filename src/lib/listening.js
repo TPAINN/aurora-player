@@ -88,21 +88,25 @@ function historySeeds(count) {
   return [...artists.values()].filter(entry => entry.score > 0 && entry.track).sort((a, b) => b.score - a.score || b.at - a.at).slice(0, count).map(entry => entry.track);
 }
 
+// The server's order is the vibe order; it stays the baseline. Known lyrics nudge a
+// song past its neighbour at most; the listener's own history (artists they finish
+// or skip, songs heard today) can move it further.
+const POSITION = .3, LYRICS = .25, TASTE = .5;
 export function rankForTaste(tracks) {
   const history = readHistory();
   const now = Date.now();
-  const score = track => {
-    let value = track.lyricsAvailable === true ? 5 : 0;
+  const score = (track, index) => {
+    let value = -index * POSITION + (track.lyricsAvailable === true ? LYRICS : 0);
     for (const item of history) {
       if (item.artist !== track.artist?.toLowerCase()) continue;
       const recency = Math.max(0, 1 - (now - item.at) / (30 * DAY));
-      value += Math.max(-2, Math.min(3, item.affinity)) * recency * .2;
+      value += Math.max(-2, Math.min(3, item.affinity)) * recency * TASTE;
       if (item.key === identity(track) && now - item.at < DAY) value -= 4;
     }
     return value;
   };
   // Reorder only related candidates; never introduce unrelated taste matches.
-  return tracks.map((track, index) => ({ track, score: score(track), index }))
+  return tracks.map((track, index) => ({ track, score: score(track, index), index }))
     .sort((a, b) => b.score - a.score || a.index - b.index).map(item => item.track);
 }
 
