@@ -133,9 +133,15 @@ export async function getMoodTracks(mood, signal, { lang } = {}) {
 
 // Catalogue tempo for online DJ blends; null when the catalogue does not know it.
 export async function getTrackTempo(track, signal) {
-  const query = new URLSearchParams({ artist: track.artist, title: track.title });
+  return (await getTrackAnalysis(track, null, signal)).bpm;
+}
+
+// Catalogue tempo plus, for the exact video playing, YouTube's "Most replayed" markers.
+export async function getTrackAnalysis(track, videoId, signal) {
+  const query = new URLSearchParams({ artist: track.artist, title: track.title, ...(videoId ? { video: videoId } : {}) });
   const response = await fetch(`/api/tempo?${query}`, { signal });
-  if (!response.ok) throw new Error('Tempo metadata is unavailable.');
-  const { bpm } = await response.json();
-  return Number.isFinite(bpm) && bpm > 0 ? bpm : null;
+  const body = await response.json().catch(() => ({}));
+  const replays = Array.isArray(body.replays) ? body.replays : [];
+  if (!response.ok && !replays.length) throw new Error('Tempo metadata is unavailable.');
+  return { bpm: Number.isFinite(body.bpm) && body.bpm > 0 ? body.bpm : null, replays };
 }
