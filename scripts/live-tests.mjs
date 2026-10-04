@@ -136,7 +136,7 @@ async function check(group, name, fn) {
 const events = page => page.evaluate(() => window.__events);
 const title = page => page.evaluate(() => document.title);
 const searchFor = async (page, text) => { await page.fill('input[aria-label="Search songs or artists"]', text); await wait(700); };
-const goSearch = page => page.click('nav[aria-label="Main navigation"] button[aria-label="Search"]');
+const goSearch = page => page.locator('nav[aria-label="Main navigation"] button[aria-label="Search"] >> visible=true').or(page.locator('nav[aria-label="Mobile navigation"] button:has-text("Search") >> visible=true')).first().click();
 const playerTime = page => page.evaluate(() => Number(document.querySelector('.dock-seek input')?.value || 0));
 async function setSeek(page, seconds) {
   await page.evaluate(value => {
@@ -1076,6 +1076,34 @@ if (!only || only === 'L') {
     await check('L', `${name}: 50 random actions keep the app consistent`, async () => ok(!problems.length, `${problems.slice(0, 6).join(' | ')} — actions: ${log.join(',')}`));
     await check('L', `${name}: once settled, at most one song sounds`, async () => ok(settled <= 1, `${settled} decks on — actions: ${log.join(',')}`));
     await check('L', `${name}: no runtime errors in 50 random actions`, async () => ok(!errors.length, `${errors.slice(0, 3).join(' | ')} — actions: ${log.join(',')}`));
+    await context.close();
+  }
+}
+
+// ── M: lyrics focus — only the cover, the song's name and its lyrics ──────
+if (!only || only === 'M') {
+  const visible = (page, selector) => page.evaluate(selector => { const node = document.querySelector(selector); if (!node) return false; const style = getComputedStyle(node); const box = node.getBoundingClientRect(); return style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity) > 0.5 && box.width > 0 && box.bottom > 0 && box.right > 0 && box.top < innerHeight && box.left < innerWidth; }, selector);
+  const focusView = async (page, label) => {
+    const state = {};
+    for (const [key, selector] of Object.entries({ cover: page.viewportSize().width <= 760 ? '.focus-thumb img' : '.now-playing-art', lyrics: '.desktop-lyrics .lyric-line.current', exit: '.focus-exit', topbar: '.player-topbar', dock: '.player-dock', sidebar: '.sidebar', chips: '.immersive-track-meta .meta-chips' })) state[key] = await visible(page, selector);
+    state.title = await page.evaluate(() => [...document.querySelectorAll('.immersive-track-meta h1, .mobile-player-info h1')].some(node => { const box = node.getBoundingClientRect(); return getComputedStyle(node).display !== 'none' && box.width > 0 && box.top >= 0 && box.bottom <= innerHeight; }));
+    state.overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
+    state.rects = await page.evaluate(() => Object.fromEntries(['.now-playing-art', '.immersive-track-meta', '.mobile-player-info', '.desktop-lyrics', '.player-topbar'].map(selector => { const node = document.querySelector(selector); const box = node?.getBoundingClientRect(); return [selector, box && `${Math.round(box.x)},${Math.round(box.y)} ${Math.round(box.width)}x${Math.round(box.height)} ${getComputedStyle(node).display}`]; })));
+    if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/focus-${label}.png` });
+    return state;
+  };
+  for (const [label, viewport] of [['desktop', { width: 1440, height: 900 }], ['laptop', { width: 1280, height: 720 }], ['phone', { width: 390, height: 844 }], ['phone-landscape', { width: 844, height: 390 }], ['tablet', { width: 820, height: 1180 }]]) {
+    const { context, page, errors } = await newSession(browser, { viewport });
+    await page.goto(BASE); await wait(1500);
+    await startQueue(page); await wait(1200);
+    if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(1000); }
+    await setSeek(page, 10.5); await wait(600);
+    await check('M', `${label}: the focus button opens lyrics focus`, async () => { await page.click('button[aria-label="Lyrics focus"]'); await wait(1300); const state = await focusView(page, label); ok(state.cover && state.lyrics && state.title && state.exit && !state.topbar && !state.dock && !state.sidebar && !state.chips && state.overflow <= 0, JSON.stringify(state)); });
+    await check('M', `${label}: lyrics keep following the song in focus`, async () => { await setSeek(page, 13.1); await wait(1500); ok((await page.textContent('.lyric-line.current')).length > 0); });
+    await check('M', `${label}: Escape leaves focus but keeps the player open`, async () => { await page.keyboard.press('Escape'); await wait(900); ok(await page.locator('.immersive-player').count() === 1 && await page.locator('.focus-exit').count() === 0 && await visible(page, '.player-topbar')); });
+    await check('M', `${label}: I toggles focus, and Exit focus brings everything back`, async () => { await page.keyboard.press('i'); await wait(1100); ok(await visible(page, '.focus-exit')); await page.click('.focus-exit'); await wait(1100); ok(await visible(page, '.player-topbar') && !(await page.locator('.focus-exit').count())); if (viewport.width > 760) ok(await visible(page, '.player-dock') && await visible(page, '.sidebar')); });
+    await check('M', `${label}: closing the player never reopens it in focus`, async () => { await page.keyboard.press('i'); await wait(900); await page.keyboard.press('Escape'); await wait(400); await page.keyboard.press('Escape'); await wait(1000); ok(await page.locator('.immersive-player').count() === 0); await page.keyboard.press('l'); await wait(1300); ok(await page.locator('.focus-exit').count() === 0); });
+    await check('M', `${label}: no runtime errors`, async () => ok(!errors.length, errors.join(' | ')));
     await context.close();
   }
 }

@@ -17,6 +17,7 @@ import {
   ArrowRight,
   ChevronDown,
   ChevronRight,
+  Focus,
   Disc3,
   AudioLines,
   Headphones,
@@ -24,6 +25,7 @@ import {
   House,
   Library,
   ListMusic,
+  Minimize2,
   LoaderCircle,
   Music2,
   Pause,
@@ -1243,6 +1245,8 @@ export default function App() {
   );
   const [showLyrics, setShowLyrics] = useState(false);
   const [video, setVideo] = useState(false);
+  // Lyrics focus: only the cover, the song's name and its lyrics stay on screen.
+  const [focusMode, setFocusMode] = useState(false);
   const ambientVideo = motionArt && !video && immersive && !!player.track && !player.track.localUrl;
   const sheetParent = nav.view.sheetDepth > 1 ? "settings" : null;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -1558,6 +1562,16 @@ export default function App() {
       setNotice("Muted");
     } else player.setVolume(mutedVolume.current || 80);
   };
+  // Leaving the player also leaves focus, so it never reopens in it.
+  if (focusMode && !immersive) setFocusMode(false);
+  const focused = focusMode && immersive && !!player.track;
+  const toggleFocus = () => {
+    if (focused) return setFocusMode(false);
+    setShowLyrics(true);
+    setVideo(false);
+    setImmersive(true);
+    setFocusMode(true);
+  };
   // Always reads the latest player and handlers without re-binding the listener.
   const onShortcut = useEffectEvent((e) => {
     if (!player.track && e.key !== "/") return;
@@ -1568,6 +1582,7 @@ export default function App() {
       m: () => toggleMute(),
       l: () => { setShowLyrics((value) => !value); setImmersive(true); },
       f: () => toggleFavorite(player.track),
+      i: () => toggleFocus(),
       "/": () => navigate("search"),
     }[e.key.length === 1 ? e.key.toLowerCase() : e.key];
     if (!handled) return;
@@ -1580,8 +1595,11 @@ export default function App() {
         navigate("search");
         focusSearch();
       }
-      if (e.key === "Escape" && !sheet && !e.target.closest?.("input, textarea, select"))
-        setImmersive(false);
+      // Escape steps back one level: out of lyrics focus first, then the player.
+      if (e.key === "Escape" && !sheet && !e.target.closest?.("input, textarea, select")) {
+        if (focused) setFocusMode(false);
+        else setImmersive(false);
+      }
       // Media shortcuts never steal keys from fields, controls or open dialogs.
       // Fields keep every key; sliders keep their arrows; buttons keep Space.
       if (sheet || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -2115,7 +2133,7 @@ export default function App() {
     <MotionConfig reducedMotion="user">
       <Welcome onLeave={reveal} />
       <div
-        className={`aurora-app ${revealed ? "" : "is-veiled"} ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${immersive ? "is-immersive" : ""} ${video && immersive ? "has-video" : ""} ${video && showLyrics ? "video-with-lyrics" : ""} ${ambientVideo ? "motion-art" : ""}`}
+        className={`aurora-app ${revealed ? "" : "is-veiled"} ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${immersive ? "is-immersive" : ""} ${video && immersive ? "has-video" : ""} ${video && showLyrics ? "video-with-lyrics" : ""} ${ambientVideo ? "motion-art" : ""} ${focused ? "is-focus" : ""}`}
         style={{ "--art-color": color }}
       >
         <div
@@ -2212,7 +2230,7 @@ export default function App() {
         </aside>
         <Motion.main
           layout="position"
-          layoutDependency={sidebarCollapsed}
+          layoutDependency={`${sidebarCollapsed}:${focused}`}
           transition={{ layout: { duration: 0.6, ease: EASE } }}
           className="main-content"
         >
@@ -2683,6 +2701,9 @@ export default function App() {
                         <Video size={19} />
                       </IconButton>
                     </div>
+                    <IconButton label="Lyrics focus" onClick={toggleFocus}>
+                      <Focus size={19} />
+                    </IconButton>
                     <IconButton
                       label="Player settings"
                       onClick={() => setSheet("settings")}
@@ -2691,6 +2712,21 @@ export default function App() {
                     </IconButton>
                   </div>
                 </header>
+                <AnimatePresence>
+                  {focused && (
+                    <Motion.button
+                      key="focus-exit"
+                      type="button"
+                      className="focus-exit"
+                      onClick={() => setFocusMode(false)}
+                      initial={{ opacity: 0, y: -8 }}
+                      animate={{ opacity: 1, y: 0, transition: { duration: 0.6, ease: EASE, delay: 0.35 } }}
+                      exit={{ opacity: 0, y: -8, transition: { duration: 0.25, ease: EASE_EXIT } }}
+                    >
+                      <Minimize2 size={15} /> Exit focus
+                    </Motion.button>
+                  )}
+                </AnimatePresence>
                 <div className="now-playing-body">
                   <SwipeCover player={player} onClose={() => setImmersive(false)}>
                     <FadingCover track={player.track} eager size={1200} direction={player.direction} blend={player.changeKind === "blend"} />
@@ -2738,6 +2774,21 @@ export default function App() {
                     )}
                   </AnimatePresence>
                   <div className="mobile-player-info">
+                    {/* Phones show the artwork as the backdrop; focus adds a small cover beside the name. */}
+                    {focused && (
+                      <span className="focus-thumb" aria-hidden="true">
+                        <AnimatePresence initial={false}>
+                          <Motion.img
+                            key={player.track.artwork || player.track.id}
+                            src={player.track.artwork ? artworkAt(player.track.artwork, 200) : undefined}
+                            alt=""
+                            initial={{ opacity: 0, scale: 1.06 }}
+                            animate={{ opacity: 1, scale: 1, transition: { duration: 0.7, ease: EASE } }}
+                            exit={{ opacity: 0, transition: { duration: 0.5, ease: EASE_IN_OUT } }}
+                          />
+                        </AnimatePresence>
+                      </span>
+                    )}
                     <FluidText as="h1">{player.track.title}</FluidText>
                     <p>{player.track.artist}</p>
                     <div className="meta-chips">
