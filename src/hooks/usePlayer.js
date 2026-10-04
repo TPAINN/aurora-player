@@ -1,6 +1,6 @@
 import { startTransition, useCallback, useEffect, useRef, useState } from 'react';
 import { createPlayhead, heardTime } from '../lib/playhead';
-import { readOffset, saveOffset } from '../lib/lyric-offsets';
+import { clearOffset, readOffset, saveOffset, versionGap } from '../lib/lyric-offsets';
 import { songKey } from '../../shared/titles.js';
 import { buildApiUrl } from '../lib/api';
 import { getSimilarTracks, getTrackAnalysis, getTrackTempo } from '../lib/catalog';
@@ -122,7 +122,8 @@ export function usePlayer() {
   const [repeat, setRepeat] = useState('off');
   const [lyrics, setLyrics] = useState(null);
   const [lyricsLoading, setLyricsLoading] = useState(false);
-  const [lyricsOffset, updateLyricsOffset] = useState(0);
+  // The listener's own timing for this song, or null to follow automatic timing.
+  const [userOffset, setUserOffset] = useState(null);
   // 1 when the listener moves forward (next, blend, pick), -1 for Previous: drives the change animation.
   const [direction, setDirection] = useState(1);
   // How the current song arrived: 'blend' (a DJ transition) or 'skip' (a direct change).
@@ -246,7 +247,7 @@ export function usePlayer() {
       if (!response.ok) throw new Error('The music source could not connect. Please retry.');
       const data = await response.json();
       if (!data.videoId) { markUnplayable(selected); return { videoId: null }; }
-      const entry = { ...(prepared.current.get(selected.id) || {}), videoId: data.videoId, source: describeSource(data) };
+      const entry = { ...(prepared.current.get(selected.id) || {}), videoId: data.videoId, duration: Number(data.duration) || 0, source: describeSource(data) };
       alternates.current.set(selected.id, (data.candidates || []).map(candidate => candidate.videoId).filter(id => id && id !== data.videoId).slice(0, 4));
       prepared.current.set(selected.id, entry);
       while (prepared.current.size > 12) prepared.current.delete(prepared.current.keys().next().value);
@@ -469,7 +470,7 @@ export function usePlayer() {
   }, []);
 
   // Lyrics are optional and never block playback; stale generations are ignored.
-  const fetchLyrics = useCallback((selected, videoId, signal) => fetch(buildApiUrl('/api/lyrics/structured', { artist: selected.artist, title: selected.title, album: selected.album, duration: selected.duration, videoId }), { signal })
+  const fetchLyrics = useCallback((selected, videoId, signal, duration = selected.duration) => fetch(buildApiUrl('/api/lyrics/structured', { artist: selected.artist, title: selected.title, album: selected.album, duration, videoId }), { signal })
     .then(response => response.ok ? response.json() : null)
     .catch(() => null), []);
   const showLyricsFor = useCallback((selected, token, controller, videoId) => {
@@ -548,7 +549,7 @@ export function usePlayer() {
     updateQueue(nextQueue); setQueueIndex(nextQueue.findIndex(item => item.id === selected.id));
     setDjWindow(null);
     setDirection(travel.current); travel.current = 1; setChangeKind('skip');
-    setTrack(selected); clock.set(0); setDuration(selected.duration || 0); setPlaying(false); setLoading(true); setError(''); setLyrics(null); updateLyricsOffset(readOffset(selected));
+    setTrack(selected); clock.set(0); setDuration(selected.duration || 0); setPlaying(false); setLoading(true); setError(''); setLyrics(null); setUserOffset(readOffset(selected));
     setLyricsLoading(!selected.localUrl);
     const cached = prepared.current.get(selected.id);
     const lyricsRequest = showLyricsFor(selected, token, controller);
@@ -576,15 +577,22 @@ export function usePlayer() {
           throw new Error(`“${selected.title}” isn’t available to play here. Try another song.`);
         }
         autoSkips.current = 0;
-        if (!selected.videoId && !cached?.lyrics) {
+        // Lyrics are timed for one edit. When the upload that plays is another edit
+        // (a music video's intro, a radio or extended cut), ask for timing for its
+        // own length; without it, keep the catalogue timing and say which edit it fits.
+        const uploadLength = prepared.current.get(selected.id)?.duration;
+        const gap = versionGap(uploadLength, selected.duration);
+        if ((!selected.videoId && !cached?.lyrics) || gap) {
           // SimpMusic needs the resolved YouTube ID; preserve a stronger initial result.
           void lyricsRequest.then(async initial => {
-            if (!mounted.current || token !== generation.current || initial?.sync === 'word') return;
+            if (!mounted.current || token !== generation.current || (!gap && initial?.sync === 'word')) return;
             setLyricsLoading(true);
-            const fallback = await fetchLyrics(selected, videoId, controller.signal);
+            const fallback = await fetchLyrics(selected, videoId, controller.signal, gap ? uploadLength : selected.duration);
             if (!mounted.current || token !== generation.current) return;
             const rank = { plain: 1, line: 2, word: 3 };
-            if (fallback && (rank[fallback.sync] || 0) > (rank[initial?.sync] || 0)) setLyrics(fallback);
+            const found = rank[fallback?.sync] || 0, had = rank[initial?.sync] || 0;
+            if (gap ? found >= 2 && found >= had : found > had) setLyrics(fallback);
+            else if (gap && had >= 2) setLyrics({ ...initial, versionGap: gap });
             setLyricsLoading(false);
           });
         }
@@ -688,7 +696,7 @@ export function usePlayer() {
       setTrack(selected); setDuration(length);
       setQueueIndex(current.current.queue.findIndex(item => item.id === selected.id));
       // Pre-loaded lyrics appear at once; no "finding the words" flash mid-blend.
-      setLyrics(ready?.lyrics || null); updateLyricsOffset(readOffset(selected)); setLyricsLoading(!selected.localUrl && !ready?.lyrics); setPlaying(true); setError('');
+      setLyrics(ready?.lyrics || null); setUserOffset(readOffset(selected)); setLyricsLoading(!selected.localUrl && !ready?.lyrics); setPlaying(true); setError('');
       setSourceInfo(selected.localUrl ? { kind: 'local', format: selected.format || null } : ready?.source || { kind: 'youtube', official: false });
     });
     if (!selected.localUrl && !ready?.lyrics) showLyricsFor(selected, token, controller, videoId);
@@ -789,8 +797,13 @@ export function usePlayer() {
   // A lyric offset set by hand sticks to the song for next time.
   const setLyricsOffset = useCallback(value => {
     const offset = Math.round((Number(value) || 0) * 100) / 100;
-    updateLyricsOffset(offset);
+    setUserOffset(offset);
     saveOffset(current.current.track, offset);
+  }, []);
+  // Back to automatic timing: the playing video's captions decide, or none.
+  const autoLyricsOffset = useCallback(() => {
+    setUserOffset(null);
+    clearOffset(current.current.track);
   }, []);
   const setLoudness = useCallback(value => {
     if (!LOUDNESS[value]) return;
@@ -1420,8 +1433,13 @@ export function usePlayer() {
     return playhead.current.head.read({ raw: deck?.getCurrentTime?.(), playing: deck?.getPlayerState?.() === 1, rate: deck?.getPlaybackRate?.() ?? 1, now: performance.now() });
   }, []);
 
+  // Lyric timing: the listener's choice first, then the offset measured against
+  // the playing video's captions, otherwise the lyrics as published.
+  const captionOffset = Number.isFinite(lyrics?.alignment?.offset) ? lyrics.alignment.offset : null;
+  const lyricsOffset = userOffset ?? captionOffset ?? 0;
+  const lyricsTiming = userOffset !== null ? 'manual' : captionOffset !== null ? 'captions' : 'published';
   const songInsight = songAnalysis.id === track?.id ? songAnalysis : null;
   const bpm = songInsight?.bpm ?? null;
-  return { bpm, songInsight, loudness, setLoudness, warm, notice, unavailable, changeKind, direction, transitionFx, setTransitionFx, blendLength, setBlendLength, sourceInfo, surround, setSurround, audioOutput, track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, setLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime };
+  return { bpm, songInsight, loudness, setLoudness, warm, notice, unavailable, changeKind, direction, transitionFx, setTransitionFx, blendLength, setBlendLength, sourceInfo, surround, setSurround, audioOutput, track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, lyricsTiming, setLyricsOffset, autoLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime };
 }
 export default usePlayer;

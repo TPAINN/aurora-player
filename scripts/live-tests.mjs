@@ -75,7 +75,7 @@ const categories = term => ({
   playlists: [{ id: 'PLroads', title: 'Road trip', owner: 'Aurora fan', count: 2, artwork: 'https://img.test/c/pl.jpg' }],
   top: /^band of night$/i.test(term.trim()) ? { kind: 'artist', id: 7 } : /slowed|mashup/i.test(term) ? { kind: 'video', id: 'VVVVVVVVVV1' } : { kind: 'song', id: 1 },
 });
-async function newSession(browser, { viewport = { width: 1440, height: 900 }, prefs = {}, reducedMotion = 'no-preference', searchDelay = 120, failSearch = () => false, recommendations = [], welcome = false, longIntro = false, incomingBpm = 124, unplayable = [], replays = null, tempoLog = null } = {}) {
+async function newSession(browser, { viewport = { width: 1440, height: 900 }, prefs = {}, reducedMotion = 'no-preference', searchDelay = 120, failSearch = () => false, recommendations = [], welcome = false, longIntro = false, incomingBpm = 124, unplayable = [], replays = null, tempoLog = null, alignment = null, editGap = 0, lyricLog = null } = {}) {
   const context = await browser.newContext({ viewport, reducedMotion, hasTouch: viewport.width < 700 });
   await context.addInitScript(values => {
     if (!sessionStorage.getItem('seeded')) { for (const [key, value] of Object.entries(values)) localStorage.setItem(key, value); sessionStorage.setItem('seeded', '1'); }
@@ -112,13 +112,16 @@ async function newSession(browser, { viewport = { width: 1440, height: 900 }, pr
     const title = new URL(route.request().url()).searchParams.get('title');
     if (unplayable.includes(title)) return route.fulfill({ json: { videoId: null, candidates: [] } });
     const videoId = { 'Night Drive': 'AAAAAAAAAAA', 'Morning Light': 'BBBBBBBBBBB', 'Slow Tide': 'CCCCCCCCCCC' }[title] || 'DDDDDDDDDDD';
-    return route.fulfill({ json: { videoId, channel: title === 'Night Drive' ? 'Band - Topic' : 'Band Uploads', title, candidates: [{ videoId }, { videoId: 'EEEEEEEEEEE' }] } });
+    return route.fulfill({ json: { videoId, channel: title === 'Night Drive' ? 'Band - Topic' : 'Band Uploads', title, ...(editGap && title === 'Morning Light' ? { duration: 60 + editGap } : {}), candidates: [{ videoId }, { videoId: 'EEEEEEEEEEE' }] } });
   });
   await page.route('**/api/lyrics/structured?*', async route => {
-    const title = new URL(route.request().url()).searchParams.get('title');
+    const params = new URL(route.request().url()).searchParams, title = params.get('title');
+    lyricLog?.push(`${title}@${params.get('duration')}`);
     await wait(title === 'Slow Tide' ? 900 : 150);
+    // The upload is another edit with no lyrics timed for its length.
+    if (editGap && title === 'Morning Light' && Number(params.get('duration')) === 60 + editGap) return route.fulfill({ json: { source: null, sync: 'plain', lines: [] } }).catch(() => {});
     const incoming = longIntro ? { ...lineLyrics, lines: lineLyrics.lines.map(line => ({ ...line, time: line.time + 37, end: line.end + 37 })) } : lineLyrics;
-    return route.fulfill({ json: title === 'Night Drive' ? wordLyrics : title === 'Morning Light' ? incoming : { source: null, sync: 'plain', lines: [] } }).catch(() => {});
+    return route.fulfill({ json: title === 'Night Drive' ? (alignment === null ? wordLyrics : { ...wordLyrics, alignment: { offset: alignment, matches: 12, lines: 5 } }) : title === 'Morning Light' ? incoming : { source: null, sync: 'plain', lines: [] } }).catch(() => {});
   });
   await page.route('**/api/tempo?*', route => {
     const url = new URL(route.request().url());
@@ -284,7 +287,7 @@ if (!only || only === 'C') {
   await check('C', 'queue row removal animates out', async () => { await page.click('dialog.sheet button[aria-label="Remove Slow Tide from queue"]'); await wait(700); ok(await page.locator('dialog.sheet .track-row').count() === 2); });
   await check('C', 'play from queue row', async () => { await page.click('dialog.sheet details.queue-played summary').catch(() => {}); await wait(400); await page.click('dialog.sheet .track-row:has-text("Morning Light") .track-main'); await wait(1200); ok((await title(page)).startsWith('Morning Light')); });
   await check('C', 'Escape closes the sheet', async () => { if (!await page.locator('dialog.sheet[open]').count()) await page.click('.dock-actions button[aria-label="Open queue"]'); await wait(700); await page.keyboard.press('Escape'); await wait(700); ok(await page.locator('dialog.sheet').count() === 0); });
-  await check('C', 'settings sheet changes lyric offset', async () => { await page.click('button[aria-label="Player settings"]'); await wait(700); await page.selectOption('select[aria-label="Lyrics timing offset"]', '0.5'); ok(await page.inputValue('select[aria-label="Lyrics timing offset"]') === '0.5'); });
+  await check('C', 'settings sheet changes lyric offset', async () => { await page.click('button[aria-label="Player settings"]'); await wait(700); for (let i = 0; i < 5; i++) { await page.click('button[aria-label="Show lyrics earlier"]'); await wait(80); } ok((await page.textContent('output[aria-label="Current lyrics offset"]')).trim() === '+0.5 s'); ok(await page.locator('.offset-stepper .small-pill:has-text("Auto")').count() === 1, 'no Auto once set by hand'); await page.click('.offset-stepper .small-pill:has-text("Auto")'); await wait(500); ok((await page.textContent('output[aria-label="Current lyrics offset"]')).trim() === '0.0 s', 'Auto returns to published timing'); for (let i = 0; i < 5; i++) await page.click('button[aria-label="Show lyrics earlier"]'); });
   await check('C', 'settings lists keyboard shortcuts', async () => ok(await page.locator('.shortcut-list kbd').count() >= 6));
   await check('C', 'settings → DJ link with back', async () => { await page.click('.dj-settings-link'); await wait(800); ok(await page.locator('dialog[aria-label="DJ transition"]').count() === 1); });
   await check('C', 'back returns to settings', async () => { await page.click('button[aria-label="Back to preferences"]'); await wait(800); ok(await page.locator('dialog[aria-label="Make it yours"]').count() === 1); });
@@ -1146,6 +1149,91 @@ if (!only || only === 'N') {
       });
     }
     await check('N', `${label}: no runtime errors`, async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
+// ── P: smoothness profile — phone size, 4× CPU slowdown, every frame timed ──
+if (only === 'P') {
+  for (const [label, viewport] of [['phone', { width: 390, height: 844 }], ['desktop', { width: 1440, height: 900 }]]) {
+    const { context, page, errors } = await newSession(browser, { viewport });
+    await page.goto(BASE); await wait(1500);
+    await startQueue(page); await wait(1500);
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
+    // Frame gaps and long tasks for one interaction: p95 gap, frames over 25 ms and the worst gap.
+    const profile = async (name, act, seconds = 3) => {
+      await page.evaluate(() => {
+        window.__gaps = []; window.__long = 0; let last = performance.now();
+        const tick = now => { window.__gaps.push(now - last); last = now; if (window.__profiling) requestAnimationFrame(tick); };
+        window.__profiling = true; requestAnimationFrame(tick);
+        try { new PerformanceObserver(list => { for (const entry of list.getEntries()) window.__long += entry.duration; }).observe({ type: 'longtask' }); } catch { /* unsupported */ }
+      });
+      const cpu = process.env.PROFILE && name.startsWith(process.env.PROFILE);
+      if (cpu) { await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 200 }); await cdp.send('Profiler.start'); }
+      await act(); await wait(seconds * 1000);
+      if (cpu) {
+        const { profile: trace } = await cdp.send('Profiler.stop');
+        const self = new Map(), byId = new Map(trace.nodes.map(node => [node.id, node]));
+        const dt = trace.timeDeltas; trace.samples.forEach((id, i) => { const node = byId.get(id); const f = node.callFrame; const key = `${f.functionName || '(anon)'} ${f.url.split('/').pop()}:${f.lineNumber}`; self.set(key, (self.get(key) || 0) + (dt[i] || 0) / 1000); });
+        // Inclusive time per app component: which of ours re-rendered, and for how long.
+        const parent = new Map(); trace.nodes.forEach(node => (node.children || []).forEach(child => parent.set(child, node.id)));
+        const inclusive = new Map();
+        trace.samples.forEach((id, i) => { const seen = new Set(); for (let at = id; at; at = parent.get(at)) { const f = byId.get(at).callFrame; if (!/\/src\//.test(f.url)) continue; const key = `${f.functionName || '(anon)'} ${f.url.split('/src/').pop().split('?')[0]}:${f.lineNumber}`; if (seen.has(key)) continue; seen.add(key); inclusive.set(key, (inclusive.get(key) || 0) + (dt[i] || 0) / 1000); } });
+        console.log(`APP ${label} ${name}\n` + [...inclusive].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([key, ms]) => `  ${ms.toFixed(0).padStart(6)} ms  ${key}`).join('\n'));
+        console.log(`CPU ${label} ${name}\n` + [...self].sort((a, b) => b[1] - a[1]).slice(0, 22).map(([key, ms]) => `  ${ms.toFixed(0).padStart(6)} ms  ${key}`).join('\n'));
+      }
+      const stats = await page.evaluate(() => { window.__profiling = false; const gaps = window.__gaps.slice(1).sort((a, b) => a - b); return { frames: gaps.length, p95: Math.round(gaps[Math.floor(gaps.length * 0.95)] || 0), over25: gaps.filter(gap => gap > 25).length, worst: Math.round(gaps.at(-1) || 0), longTaskMs: Math.round(window.__long) }; });
+      console.log(`PERF ${label} ${name} ${JSON.stringify(stats)}`);
+      return stats;
+    };
+    if (!await page.locator('.immersive-player').count()) await page.click('.dock-track, .mobile-mini-player, .player-dock').catch(() => {});
+    await wait(1200);
+    await profile('close player', () => page.keyboard.press('Escape'), 1.5);
+    await profile('open player', () => page.click('.dock-track').catch(() => page.keyboard.press('l')), 1.5);
+    await profile('lyrics on', () => page.keyboard.press('l'), 1.5);
+    await profile('lyrics playing across lines', () => setSeek(page, 9.6), 6);
+    await profile('best part (zoom + pulse)', () => setSeek(page, 26.4), 4);
+    await profile('next song', () => page.keyboard.press('Shift+ArrowRight'), 3);
+    await profile('queue sheet open', () => page.keyboard.press('Escape').then(() => wait(800)).then(() => page.click('button[aria-label="Open queue"], .queue-pull, button:has-text("Queue") >> visible=true').catch(() => {})), 1.5);
+    await profile('queue sheet close', () => page.keyboard.press('Escape'), 1.5);
+    await check('P', `${label}: no runtime errors while profiling`, async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
+// ── O: lyric timing that adapts to the upload that plays ──────────────────
+if (!only || only === 'O') {
+  {
+    const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 }, alignment: -1.8 });
+    await page.goto(BASE); await wait(1500);
+    await startQueue(page); await wait(1500);
+    if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(1000); }
+    await page.keyboard.press('l'); await wait(1200);
+    await check('O', 'captions-matched timing applies by itself and is named in the footer', async () => { const footer = await page.textContent('.lyric-footer'); ok(/synced to this video \(-1\.8 s\)/.test(footer), footer); });
+    await check('O', 'the line on screen follows the corrected timing', async () => { await setSeek(page, 12.3); await wait(1500); const text = await page.textContent('.lyric-line.current'); ok(text.includes('wheel'), text); });
+    await check('O', 'settings say where the timing comes from', async () => { await page.click('button[aria-label="Player settings"]'); await wait(800); ok((await page.textContent('output[aria-label="Current lyrics offset"]')).trim() === '-1.8 s'); ok((await page.textContent('.sheet')).includes('Matched to this video’s captions')); });
+    await check('O', 'a nudge by hand wins, and Auto hands timing back to the captions', async () => {
+      await page.click('button[aria-label="Show lyrics earlier"]'); await wait(300);
+      ok((await page.textContent('output[aria-label="Current lyrics offset"]')).trim() === '-1.7 s');
+      ok((await page.textContent('.sheet')).includes('Your timing'));
+      await page.click('.offset-stepper .small-pill:has-text("Auto")'); await wait(500);
+      ok((await page.textContent('output[aria-label="Current lyrics offset"]')).trim() === '-1.8 s');
+    });
+    await check('O', 'no runtime errors (captions timing)', async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+  {
+    const lyricLog = [];
+    const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 }, editGap: 6, lyricLog });
+    await page.goto(BASE); await wait(1500);
+    await startQueue(page); await wait(1200);
+    await page.keyboard.press('Shift+ArrowRight'); await wait(2500);
+    if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(1000); }
+    await page.keyboard.press('l'); await wait(1500);
+    await check('O', 'another edit of the song asks for lyrics timed for its own length', async () => ok(lyricLog.includes('Morning Light@66'), lyricLog.join(' ')));
+    await check('O', 'without them the catalogue timing stays, and the footer says so', async () => { const footer = await page.textContent('.lyric-footer'); ok(/timed for a 6\.0 s shorter edit/.test(footer), footer); ok(await page.locator('.desktop-lyrics .lyric-line').count() > 0); });
+    await check('O', 'no runtime errors (other edit)', async () => ok(!errors.length, errors.join(' | ')));
     await context.close();
   }
 }
