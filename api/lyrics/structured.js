@@ -1,4 +1,6 @@
 import { fetchLyrics } from '../_lib/lyrics-providers.js';
+import { withAlignment } from '../_lib/caption-align.js';
+import { videoCaptions } from '../_lib/youtube.js';
 const cache = new Map();
 const requests = new Map();
 const pending = new Map();
@@ -37,7 +39,8 @@ export default async function handler(req, res) {
   if (requests.size >= 1000) requests.delete(requests.keys().next().value);
   requests.set(ip, { until: window?.until > now ? window.until : now + 60000, count: window?.until > now ? window.count + 1 : 1 });
   if (!pending.has(key) && pending.size >= 30) return res.status(503).json({ error: 'Lyrics service busy. Please retry.' });
-  if (!pending.has(key)) pending.set(key, fetchLyrics(track));
+  // The playing video's captions are fetched alongside, to check the lyric timing.
+  if (!pending.has(key)) pending.set(key, withAlignment(fetchLyrics(track), videoId ? videoCaptions(videoId).catch(() => null) : null));
   try {
     const value = await pending.get(key) || empty;
     if (cache.size >= 200) cache.delete(cache.keys().next().value);

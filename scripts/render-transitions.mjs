@@ -12,11 +12,12 @@ import { analyzeSamples, planTransition } from '../src/lib/dj.js';
 const BASE = process.env.BASE || 'http://localhost:5188/';
 const OUT = process.argv[2] || 'transitions';
 const RATE = 44100;
-const BLEND = 8;
+// Auto, as the app plays it: the longest phrase up to 32 s, at most a quarter of either song.
+import { MAX_BLEND } from '../src/lib/dj.js';
 mkdirSync(OUT, { recursive: true });
 
 // ── Song synthesis ───────────────────────────────────────────────────────────
-function song({ bpm, root, seconds = 70, seed = 1, style = 'house' }) {
+function song({ bpm, root, seconds = 140, seed = 1, style = 'house' }) {
   let state = seed;
   const random = () => ((state = (state * 1664525 + 1013904223) >>> 0) / 4294967296) * 2 - 1;
   const beat = 60 / bpm, bar = beat * 4;
@@ -206,7 +207,7 @@ const report = [];
 for (const pair of pairs.filter(item => !ONLY || ONLY.test(item.name))) {
   const a = song(pair.a), b = song(pair.b);
   const from = analyzeSamples(a, RATE), to = analyzeSamples(b, RATE);
-  const plan = planTransition(from.outro, to.intro, BLEND);
+  const plan = planTransition(from.outro, to.intro, Math.min(MAX_BLEND, from.duration / 4, to.duration / 4));
   const exit = Math.min(from.duration - plan.seconds, from.mixStart);
   // Ten seconds of song A before anything moves, then glide, blend, recovery and song B alone.
   const start = Math.max(0, exit - plan.rampSeconds - 10);
@@ -214,7 +215,7 @@ for (const pair of pairs.filter(item => !ONLY || ONLY.test(item.name))) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   await context.addInitScript(() => {
     sessionStorage.setItem('aurora:welcome-seen', '1');
-    localStorage.setItem('aurora-dj', 'true'); localStorage.setItem('aurora-autoplay', 'false'); localStorage.setItem('aurora-blend', '8');
+    localStorage.setItem('aurora-dj', 'true'); localStorage.setItem('aurora-autoplay', 'false'); localStorage.setItem('aurora-blend', 'auto');
     // Tap everything the app sends to the speakers.
     window.__recording = [];
     window.__mediaLog = [];

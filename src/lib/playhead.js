@@ -20,3 +20,12 @@ export function createPlayhead() {
     reset() { raw = null; last = null; },
   };
 }
+
+// Device audio runs through Web Audio, so the speaker plays a sample the graph's
+// base and output latency after the decoder reports it; Bluetooth adds the most.
+// While playing, lyrics follow what is heard. Capped, as a few drivers misreport.
+const MAX_LATENCY = 0.5;
+export function heardTime(mediaTime, { playing, latency }) {
+  if (!playing || !Number.isFinite(latency) || latency <= 0) return mediaTime;
+  return Math.max(0, Math.round((mediaTime - Math.min(MAX_LATENCY, latency)) * 1e6) / 1e6);
+}

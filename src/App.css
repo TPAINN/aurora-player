@@ -40,8 +40,11 @@ button:disabled {
   cursor: default;
   opacity: 0.4;
 }
+/* Press feedback uses the independent scale property: it composes with any
+   transform a button already carries (Motion positions, centring translates), so
+   every button answers a press and none of them jumps. */
 button:active:not(:disabled) {
-  transform: scale(0.97);
+  scale: 0.97;
 }
 a {
   color: inherit;
@@ -761,6 +764,13 @@ kbd {
 .dock-track > span {
   min-width: 0;
 }
+.dock-text {
+  position: relative;
+}
+.dock-text > span {
+  display: block;
+  min-width: 0;
+}
 .dock-track strong {
   font-size: 11px;
   font-weight: 650;
@@ -1031,7 +1041,9 @@ input[type="range"]::-moz-range-thumb {
   position: relative;
   isolation: isolate;
   min-height: calc(100dvh - 125px);
-  overflow: hidden;
+  /* Clip, never hidden: a hidden box can still be scrolled into the backdrop's
+     overscan when a lyric line takes focus, shifting the whole player. */
+  overflow: clip;
   display: flex;
   flex-direction: column;
   background: #151719;
@@ -1830,7 +1842,7 @@ input[type="range"]::-moz-range-thumb {
   .immersive-player {
     min-height: 100dvh;
     height: 100dvh;
-    overflow: hidden;
+    overflow: clip;
   }
   .player-art-background {
     inset: 0;
@@ -2176,9 +2188,12 @@ input[type="range"]::-moz-range-thumb {
   }
 }
 
-/* Motion owns carousel transforms; CSS must not interpolate the same property. */
+/* Motion owns carousel transforms; CSS must not interpolate the same property.
+   The press is the separate scale property, so it eases without touching them. */
 .carousel-card {
-  transition: opacity 160ms ease;
+  transition:
+    opacity 160ms ease,
+    scale 180ms var(--ease-soft);
 }
 .toast {
   translate: -50% 0;
@@ -2666,6 +2681,7 @@ input[type="range"].dragging {
 button {
   transition:
     transform 220ms var(--ease-soft),
+    scale 180ms var(--ease-soft),
     opacity 260ms var(--ease-soft),
     background-color 320ms var(--ease-soft),
     color 320ms var(--ease-soft);
@@ -2676,6 +2692,7 @@ button {
 .dj-pill {
   transition:
     transform 220ms var(--ease-soft),
+    scale 180ms var(--ease-soft),
     background-color 360ms var(--ease-soft),
     color 360ms var(--ease-soft),
     box-shadow 480ms var(--ease-soft);
@@ -4572,5 +4589,495 @@ html.scroll-locked {
   }
   .stage-copy h2 {
     font-size: calc(25px * var(--title-fit, 1));
+  }
+}
+
+/* Phones with lyrics shown: the artwork sits dimmer behind the words, so a best part
+   lifts it too, not only the veil. */
+@media (max-width: 760px) {
+  .with-lyrics .player-art-background.is-peak {
+    opacity: 0.72;
+  }
+}
+
+/* Queue as a set list: now playing, up next (with its length), recently played. */
+.queue-section {
+  margin-top: 18px;
+}
+.queue-section:first-of-type {
+  margin-top: 4px;
+}
+.queue-heading-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.queue-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.queue-heading small {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: #8f9e93;
+}
+.queue-empty {
+  font-size: 12px;
+  color: #8f9e93;
+  padding: 10px 0 4px;
+}
+.queue-played summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 6px 0;
+}
+.queue-played summary::-webkit-details-marker {
+  display: none;
+}
+.queue-played summary::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  margin-left: 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 0.3s var(--ease-soft);
+}
+.queue-played[open] summary::after {
+  transform: translateY(1px) rotate(-135deg);
+}
+.queue-played .track-row {
+  opacity: 0.62;
+}
+.queue-played .track-row:hover {
+  opacity: 1;
+}
+
+/* The page never scrolls sideways: a sliding layout (the sidebar glide moves the
+   page with a transform) is clipped instead of flashing a horizontal scrollbar.
+   `clip`, unlike `hidden`, keeps sticky positioning working. */
+html,
+body {
+  overflow-x: clip;
+}
+
+/* ── Best parts: brighter, richer, more contrast ────────────────────────────
+   The cover pre-lit (brighter, richer colour, more contrast) fades in over the
+   backdrop through a peak while the vignette deepens: the centre lifts, the edges
+   fall away. It is drawn once as a soft 32 px image (see lit-artwork.js), so its
+   fade never redraws a blur, and it frames exactly like the backdrop. */
+.player-art-boost {
+  position: absolute;
+  /* Pre-blurred, so no blur overscan is needed: the peak zoom covers the edges. */
+  inset: 0;
+  z-index: -3;
+  background-image: var(--lit-soft);
+  background-size: cover;
+  background-position: center;
+  pointer-events: none;
+  opacity: 0;
+  transition:
+    opacity 2.4s var(--ease-soft),
+    scale 3.4s var(--ease-soft);
+}
+.player-art-boost.is-peak {
+  opacity: 0.82;
+  scale: 1.07;
+  /* Sequenced after the zoom has begun: the two never peak together. */
+  transition-delay: 0.9s, 0s;
+}
+.has-video .player-art-boost,
+.with-video .player-art-boost,
+.motion-art .player-art-boost {
+  display: none;
+}
+.player-veil.is-peak::after {
+  opacity: 0.85;
+}
+@media (max-width: 760px) {
+  .player-art-boost {
+    inset: -4%;
+    animation: backdrop-drift 38s ease-in-out infinite alternate;
+  }
+  /* Phones show the cover sharp: the lift is the sharp cover, colour-lifted once. */
+  .immersive-player:not(.with-lyrics) .player-art-boost {
+    background-image: var(--lit-sharp);
+    filter: brightness(calc(0.94 * var(--art-exposure, 1))) saturate(1.3) contrast(1.18);
+  }
+  .with-lyrics .player-art-boost {
+    transform: scale(1.1);
+  }
+  .with-lyrics .player-art-boost.is-peak {
+    opacity: 0.76;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .player-art-boost {
+    animation: none;
+    transition: opacity 0.6s linear;
+  }
+  .player-art-boost.is-peak {
+    scale: none;
+  }
+}
+
+/* Best-part beat pulse: a light that kicks on each beat and decays (attack, then
+   release), and a soft ring that travels out once a bar. Both phase-locked. */
+.beat-pulse {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  overflow: hidden;
+}
+.beat-pulse-wave,
+.beat-pulse-ring {
+  position: absolute;
+  /* Only the glow's own footprint is composited, never the full screen. */
+  left: 22%;
+  right: 22%;
+  top: 14%;
+  bottom: 26%;
+  opacity: 0;
+  will-change: transform, opacity;
+}
+/* The bar ring is for phones: on large screens its travelling area doubled the
+   blending cost of a peak (measured), while the beat kick alone carries the beat. */
+@media (min-width: 761px) {
+  .beat-pulse-ring {
+    display: none;
+  }
+}
+.beat-pulse-wave {
+  background: radial-gradient(closest-side, #f1fff82e 0%, #d2f7e614 50%, transparent 100%);
+  animation: beat-kick var(--pulse-period, 0.5s) cubic-bezier(0.16, 0.8, 0.3, 1) infinite;
+}
+.beat-pulse-ring {
+  background: radial-gradient(closest-side, transparent 30%, #eafff50f 62%, transparent 96%);
+  animation: beat-ring var(--pulse-bar, 2s) cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
+}
+@keyframes beat-kick {
+  0% {
+    opacity: 1;
+    transform: scale(1.035);
+  }
+  100% {
+    opacity: 0.22;
+    transform: scale(0.97);
+  }
+}
+@keyframes beat-ring {
+  0% {
+    opacity: 0.8;
+    transform: scale(0.7);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.32);
+  }
+}
+@media (max-width: 760px) {
+  .beat-pulse-wave,
+  .beat-pulse-ring {
+    left: 6%;
+    right: 6%;
+    top: 14%;
+    bottom: 30%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .beat-pulse {
+    display: none;
+  }
+}
+/* ── Lyrics focus ────────────────────────────────────────────────────────────
+   Everything but the cover, the song's name and its lyrics eases away: the
+   sidebar slides out, the dock sinks, the controls fade. One quiet button and
+   Escape bring them back. */
+.player-topbar,
+.immersive-track-meta .meta-chips,
+.art-caption {
+  transition:
+    opacity 0.45s var(--ease-soft),
+    visibility 0.45s var(--ease-soft);
+}
+.immersive-track-meta > .icon-button {
+  transition:
+    transform 220ms var(--ease-soft),
+    background-color 360ms var(--ease-soft),
+    color 360ms var(--ease-soft),
+    box-shadow 480ms var(--ease-soft),
+    opacity 0.45s var(--ease-soft),
+    visibility 0.45s var(--ease-soft);
+}
+@media (min-width: 761px) {
+  .sidebar {
+    transition:
+      width 0.6s var(--ease-soft),
+      padding 0.6s var(--ease-soft),
+      translate 0.6s var(--ease-soft),
+      opacity 0.45s var(--ease-soft),
+      visibility 0.6s var(--ease-soft);
+  }
+  .player-dock {
+    transition:
+      left 0.6s var(--ease-soft),
+      translate 0.6s var(--ease-soft),
+      opacity 0.45s var(--ease-soft),
+      visibility 0.6s var(--ease-soft);
+  }
+}
+.is-focus .sidebar {
+  translate: -100% 0;
+  opacity: 0;
+  visibility: hidden;
+}
+.is-focus .main-content {
+  margin-left: 0;
+  padding-bottom: 0;
+}
+.is-focus .player-dock {
+  translate: 0 140%;
+  opacity: 0;
+  visibility: hidden;
+}
+.is-focus .immersive-player {
+  min-height: 100dvh;
+}
+.is-focus .player-topbar,
+.is-focus .immersive-track-meta .meta-chips,
+.is-focus .immersive-track-meta > .icon-button,
+.is-focus .art-caption {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.focus-exit {
+  position: absolute;
+  top: max(22px, env(safe-area-inset-top));
+  right: max(24px, env(safe-area-inset-right));
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid #ffffff1f;
+  border-radius: 999px;
+  background: #0d121080;
+  backdrop-filter: blur(16px);
+  color: #e9f3ee;
+  font: 600 13px/1 inherit;
+  cursor: pointer;
+}
+.focus-exit:not(:hover, :focus-visible) {
+  color: #e9f3eebf;
+}
+.focus-exit:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+@media (min-width: 761px) {
+  .is-focus .is-immersive .main-content,
+  .is-focus.is-immersive .main-content {
+    padding-bottom: 0;
+  }
+  .is-focus .desktop-lyrics {
+    height: calc(100dvh - 230px);
+  }
+}
+/* Phones on their side: the dock normally names the song; in focus the stage does. */
+@media (min-width: 761px) and (max-height: 520px) {
+  .is-focus .immersive-player {
+    height: 100dvh;
+  }
+  .is-focus .player-topbar {
+    min-height: 0;
+    height: 0;
+    padding-block: 0;
+  }
+  .is-focus .now-playing-body {
+    height: 100dvh;
+    padding-block: 14px;
+    align-items: center;
+  }
+  .is-focus .desktop-lyrics {
+    height: calc(100dvh - 28px);
+    min-height: 0;
+  }
+  .is-focus .immersive-track-meta {
+    display: flex;
+    position: absolute;
+    left: 35px;
+    bottom: max(16px, env(safe-area-inset-bottom));
+    margin: 0;
+    padding: 0;
+  }
+}
+@media (max-width: 760px) {
+  .is-focus .mobile-player-info {
+    display: grid;
+    grid-template-columns: 54px minmax(0, 1fr);
+    column-gap: 14px;
+    align-items: center;
+    padding-top: 14px;
+  }
+  .is-focus .mobile-player-info > :not(h1, p, .focus-thumb) {
+    display: none;
+  }
+  .is-focus .mobile-player-info > h1,
+  .is-focus .mobile-player-info > p {
+    grid-column: 2;
+    margin: 0;
+  }
+  .is-focus .mobile-player-info > p {
+    margin-top: 3px;
+  }
+  .focus-thumb {
+    grid-row: 1 / span 2;
+    position: relative;
+    width: 54px;
+    aspect-ratio: 1;
+    border-radius: 10px;
+    overflow: hidden;
+    background: #ffffff12;
+    box-shadow: 0 8px 24px #0006;
+  }
+  .focus-thumb img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+}
+@media (min-width: 761px) {
+  .focus-thumb {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .player-dock,
+  .player-topbar,
+  .art-caption {
+    transition: none;
+  }
+}
+
+/* ── Lyric lines on the compositor ───────────────────────────────────────────
+   Line states used to animate colour and a hairline blur, and neither runs on the
+   compositor: two or three lines repainted every frame for 1.5 s at each change.
+   Now each line keeps one colour and its state is carried by opacity and scale
+   alone; the opacities reproduce the earlier effective brightness exactly
+   (colour alpha × opacity), so the look is unchanged and the motion is free. */
+.lyric-line {
+  color: #fff;
+  filter: none;
+  opacity: 0.14;
+  transition:
+    opacity 1.3s var(--ease-soft),
+    transform 1.5s var(--ease-soft);
+}
+.lyric-line.upcoming {
+  opacity: 0.2;
+}
+.lyric-line.past {
+  opacity: 0.084;
+}
+.lyric-line.past.is-singing {
+  opacity: 0.185;
+}
+.lyric-line.current,
+.lyric-line.plain {
+  opacity: 1;
+}
+.lyric-line.plain {
+  color: #e6ede5;
+}
+.lyric-line.at-edge:not(.current) {
+  opacity: 0.028;
+}
+/* Word-timed lines: the unsung text is 36% white; sung words fill to full white. */
+.lyric-line.has-words,
+.lyric-line.has-words.current {
+  color: #ffffff5c;
+  opacity: 0.39;
+}
+.lyric-line.has-words.upcoming {
+  opacity: 0.56;
+}
+.lyric-line.has-words.past {
+  opacity: 0.3;
+}
+.lyric-line.has-words.past.is-singing {
+  opacity: 0.51;
+}
+.lyric-line.has-words.current {
+  opacity: 1;
+}
+.lyric-line.has-words.at-edge:not(.current) {
+  opacity: 0.078;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lyric-line {
+    transition: opacity 0.2s linear;
+  }
+}
+
+/* Lyrics timing: a fine stepper with a live readout. */
+.offset-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.offset-stepper output {
+  min-width: 56px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  font-size: 13px;
+}
+.offset-stepper .icon-button {
+  width: 36px;
+  height: 36px;
+}
+.offset-stepper .small-pill {
+  margin-left: 4px;
+}
+
+/* A changed artist line arrives softly; compositor-only. */
+.swap-in {
+  animation: swap-in 0.6s var(--ease-soft) both;
+}
+@keyframes swap-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .swap-in {
+    animation: none;
+  }
+}
+
+/* The magnet leans only on the wide layout; a transform on the phone layout would
+   become the containing block of the absolutely placed button inside it. */
+@media (max-width: 760px) {
+  .magnetic {
+    transform: none !important;
   }
 }
