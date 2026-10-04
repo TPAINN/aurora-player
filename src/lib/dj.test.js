@@ -378,3 +378,13 @@ test('tempo is read precisely enough to hold a 16-bar blend together', async () 
     assert.ok(error < .0002, `${bpm} read as ${found.bpm}`);
   }
 });
+
+test('the online sweep is deep and subtle: a low band, quiet, with a long sub underneath', async () => {
+  const { sweepShape, SWEEP_TAIL, SWEEP_LEVEL, SUB_LEVEL } = await import('./sweep.js');
+  let highest = 0;
+  for (let i = 0; i <= 100; i++) highest = Math.max(highest, sweepShape((i / 100) * (1 + SWEEP_TAIL)).frequency);
+  assert.ok(highest <= 1000, `the band peaks at ${Math.round(highest)} Hz: hiss, not depth`);
+  assert.ok(sweepShape(1 + SWEEP_TAIL).frequency <= 120, 'it ends in the bass');
+  assert.ok(SWEEP_LEVEL <= 0.2, `noise level ${SWEEP_LEVEL} sits over the music`);
+  assert.ok(SUB_LEVEL > SWEEP_LEVEL, 'the depth (sub) leads, the noise follows');
+});

@@ -1304,7 +1304,7 @@ function DjStatus({ player }) {
           {state.fromBpm && state.toBpm
             ? `${Math.round(state.fromBpm)} → ${Math.round(state.toBpm)} BPM · tempo glide`
             : player.track?.localUrl
-              ? "Local audio · tempo glide, hollow filter and echo"
+              ? "Local audio · tempo glide, warm bass swap and echo"
               : "Online playback · two-deck volume blend"}
         </p>
         {effects.length > 0 && (
@@ -3214,12 +3214,12 @@ export default function App() {
               </div>
               <div className="setting-row">
                 <div>
-                  <strong>Hollow sweep</strong>
-                  <p>A deep, echoing sweep over online blends, whose audio YouTube keeps unfiltered.</p>
+                  <strong>Deep sweep</strong>
+                  <p>A low, warm swell with a sub drop under online blends, whose audio YouTube keeps unfiltered.</p>
                 </div>
                 <button
                   role="switch"
-                  aria-label="Hollow sweep"
+                  aria-label="Deep sweep"
                   aria-checked={!!player.transitionFx}
                   className="setting-switch"
                   onClick={() => player.setTransitionFx?.(!player.transitionFx)}
@@ -3259,7 +3259,7 @@ export default function App() {
                   <>
                     <li>Finds a quiet phrase in the last 30 seconds and the first beat of the next song.</li>
                     <li>Glides the ending song up to ±8% into the next song’s measured tempo, pitch preserved.</li>
-                    <li>A five-second, bar-length blend with a hollow filter sweep and echo tail.</li>
+                    <li>A phrase-long blend: the bass swaps on a bar line, the next song arrives warm and full, the last one echoes out softly.</li>
                   </>
                 ) : (
                   <>
@@ -3270,10 +3270,10 @@ export default function App() {
                 )}
               </ul>
               <p className="provider-note">
-                YouTube does not share its audio with the page, so the hollow
-                filter, echo and measured beat matching work with your own
-                audio files. Online songs blend with volume and, when possible,
-                tempo.
+                YouTube does not share its audio with the page, so the filters,
+                warmth, echo and measured beat matching work with your own audio
+                files. Online songs blend with volume, a deep sweep and, when the
+                player allows, tempo.
               </p>
               <button
                 className="primary-button"

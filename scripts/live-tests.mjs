@@ -355,7 +355,7 @@ if (!only || only === 'D') {
   await check('D', 'equal-power curve reaches full volume', async () => { const vols = await page.evaluate(() => window.__vols.filter(v => v[1] === 'BBBBBBBBBBB')); ok(vols.at(-1)[2] === 68, `ends at the Normal loudness level (80 × 0.85): ${JSON.stringify(vols.at(-1))}`); });
   await check('D', 'midpoint loudness is equal power', async () => { const vols = await page.evaluate(() => window.__vols.filter(v => v[1] === 'BBBBBBBBBBB' && v[2] > 0)); const mid = vols.find(v => v[2] >= 50); ok(mid && mid[2] <= 62, JSON.stringify(mid)); });
   await check('D', 'outgoing deck stops after the blend', async () => ok((await events(page)).some(row => row[1] === 'pause' && row[2] === 'AAAAAAAAAAA')));
-  await check('D', 'a hollow sweep plays over the online blend', async () => ok(await page.evaluate(() => window.__sweeps) >= 1, 'no sweep started'));
+  await check('D', 'a deep sweep plays under the online blend', async () => ok(await page.evaluate(() => window.__sweeps) >= 1, 'no sweep started'));
   await check('D', 'coarse player rates never claim tempo matching', async () => ok(!(await events(page)).some(row => row[1] === 'rate' && row[3] !== 1)));
   await check('D', 'blend main thread stays free of long tasks', async () => { const tasks = await page.evaluate(() => window.__longtasks); ok(tasks.filter(t => t > 120).length <= 1, `blend-window long tasks: ${tasks.join(',')}`); });
   await check('D', 'no runtime errors during DJ blend', async () => ok(!errors.length, errors.join(' | ')));
