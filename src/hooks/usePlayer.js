@@ -5,7 +5,7 @@ import { songKey } from '../../shared/titles.js';
 import { buildApiUrl } from '../lib/api';
 import { getSimilarTracks, getTrackAnalysis, getTrackTempo } from '../lib/catalog';
 import { pickSeed, recordListening, tasteFilter } from '../lib/listening';
-import { MAX_BLEND, MIN_BLEND, ONLINE_MAX_BLEND, swapTime, adaptiveBlend, analyzeLocalTempo, beatAlignedEntry, blendCurve, vocalSpans, chooseEntry, equalPower, glideRate, gridRate, nudgePlan, phaseOffset, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
+import { MAX_BLEND, MIN_BLEND, ONLINE_MAX_BLEND, swapTime, adaptiveBlend, analyzeLocalTempo, beatAlignedEntry, blendCurve, vocalSpans, chooseEntry, equalPower, chooseBend, glideRate, gridRate, nudgePlan, phaseOffset, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
 import { playSweep } from '../lib/sweep';
 import { nextPlayable } from '../lib/queue';
 import { detectLanguage } from '../../shared/language.js';
@@ -86,6 +86,14 @@ const START_LEAD = .35;
 // when time runs short it shrinks, never below SHORT_BLEND, rather than cutting.
 const LATE_PRIME = 1.5;
 const SHORT_BLEND = 2.5;
+// A Next chosen by hand blends like a DJ cut-in: song A keeps playing at full level
+// while song B buffers, then the two overlap for this long. If B is not ready in
+// RUSH_WAIT, or Next is pressed again, the change happens gaplessly at once.
+const MANUAL_BLEND = 5;
+const RUSH_WAIT = 5000;
+// Without a ready standby at the natural end, song B starts this long before the end
+// on the other deck while A plays on, so the change never goes through silence.
+const HANDOFF_LEAD = 5;
 const START_TIMEOUT = 3000;
 // Blend lengths offered: 5–10 s, the range a DJ would ride two songs together.
 const BLENDS = ['auto', 8, 16, 32];
@@ -159,6 +167,8 @@ export function usePlayer() {
   const attemptedMix = useRef('');
   const preferences = useRef({ djEnabled, autoplay, liveDjChanges, surround, blendLength, transitionFx, loudness });
   const manualChange = useRef(null);
+  // A manual Next waiting for its blend: { id, from, timer }.
+  const rush = useRef(null);
   const pendingNext = useRef(null);
   const player = useRef(null);
   const yt = useRef([{ player: null, ready: null }, { player: null, ready: null }]);
@@ -525,6 +535,7 @@ export function usePlayer() {
     if (!auto && unplayable.current.delete(selected.id)) setUnavailable(new Set(unplayable.current));
     flushListening();
     cancelMix();
+    if (rush.current) { clearTimeout(rush.current.timer); rush.current = null; }
     attemptedMix.current = '';
     waitingForRadio.current = false;
     recommendationRequest.current?.abort();
@@ -733,7 +744,7 @@ export function usePlayer() {
     if (!incoming) return false;
     incoming.setVolume(0); incoming.unMute?.();
     // Song B starts at the shared tempo when the tempos meet in the middle.
-    blend.inRate = blend.verified && blend.plan?.inRate ? blend.plan.inRate : 1;
+    blend.inRate = (blend.verified || blend.plan?.rate === 1) && blend.plan?.inRate ? blend.plan.inRate : 1;
     incoming.setPlaybackRate?.(blend.inRate);
     incoming.playVideo();
     if (preferences.current.djEnabled && preferences.current.transitionFx) audioContext();
@@ -759,20 +770,26 @@ export function usePlayer() {
     if (ended !== true && preferences.current.djEnabled && preferences.current.liveDjChanges && isPlaying && selected.id !== state.track?.id) {
       const blend = mix.current;
       // A primed standby deck lets a manual skip overlap instead of fading through silence.
-      if (blend?.kind === 'online-blend' && blend.stage === 'primed' && blend.selected.id === selected.id) { attemptedMix.current = blend.key; beginOnlineBlend(blend, 3); return; }
+      if (blend?.kind === 'online-blend' && blend.stage === 'primed' && blend.selected.id === selected.id) { rush.current = null; attemptedMix.current = blend.key; beginOnlineBlend(blend, MANUAL_BLEND); return; }
+      // Next again while the blend is still being prepared: change now, gaplessly.
+      if (rush.current?.id === selected.id) { const waiting = rush.current; rush.current = null; clearTimeout(waiting.timer); loadTrack(selected, state.queue, false, true); return; }
       cancelMix();
       if (source.current === 'local' && selected.localUrl && context.current?.state === 'running') {
         void actions.current.manualMix?.(selected, Math.max(.1, audio.current.duration - audio.current.currentTime), 3);
         return;
       }
       if (source.current === 'youtube') {
-        pendingNext.current = selected.id;
-        const started = performance.now();
-        manualChange.current = setInterval(() => {
-          const progress = Math.min(1, (performance.now() - started) / 700);
-          player.current?.setVolume?.(state.volume * Math.cos(progress * Math.PI / 2));
-          if (progress >= 1) { clearInterval(manualChange.current); manualChange.current = null; void loadTrack(selected, state.queue, true, true); }
-        }, 25);
+        // Song A plays on at full level while song B buffers on the standby deck; the
+        // mixer then blends them from here (see the rushed cue in tickMix). Should B
+        // not be ready in time, the change happens gaplessly instead of through a dip.
+        const from = state.track?.id;
+        const timer = setTimeout(() => {
+          if (rush.current?.timer !== timer) return;
+          rush.current = null;
+          if (current.current.track?.id === from && mix.current?.stage !== 'mixing') void loadTrack(selected, current.current.queue, false, true);
+        }, RUSH_WAIT);
+        rush.current = { id: selected.id, from, timer };
+        attemptedMix.current = '';
         return;
       }
     }
@@ -989,7 +1006,7 @@ export function usePlayer() {
     mix.current = token;
     const from = analysis.current.get(current.current.track?.id);
     const to = analysis.current.get(selected.id);
-    const plan = planTransition(from?.outro, to?.intro, blendTarget({}, { lengths: [from?.duration, to?.duration] }));
+    const plan = planTransition(from?.outro, to?.intro, blendTarget({}, { lengths: [from?.duration, to?.duration] }), { bend: chooseBend() });
     try {
       if (incoming.element.src !== selected.localUrl) incoming.element.src = selected.localUrl;
       incoming.element.playbackRate = plan.inRate; incoming.element.preservesPitch = true;
@@ -1221,7 +1238,7 @@ export function usePlayer() {
       if (!element || element.paused || !selected.localUrl || !Number.isFinite(element.duration)) return;
       const remaining = element.duration - element.currentTime;
       const from = analysis.current.get(state.track?.id);
-      const plan = planTransition(from?.outro, analysis.current.get(selected.id)?.intro, blendTarget({}, { lengths: [from?.duration, analysis.current.get(selected.id)?.duration] }));
+      const plan = planTransition(from?.outro, analysis.current.get(selected.id)?.intro, blendTarget({}, { lengths: [from?.duration, analysis.current.get(selected.id)?.duration] }), { bend: chooseBend() });
       const start = Math.min(element.duration - plan.seconds, from?.mixStart ?? element.duration - plan.seconds);
       const rampStart = start - plan.rampSeconds;
       const standby = decks.current.find(deck => deck.element !== element);
@@ -1253,7 +1270,9 @@ export function usePlayer() {
     const timed = lyricsData => (lyricsData?.sync && lyricsData.sync !== 'plain' ? lyricsData.lines : []);
     const spans = vocalSpans({ duration: length, outLines: timed(state.lyrics), inLines: timed(prepared.current.get(selected.id)?.lyrics), entry: 0 });
     const target = blendTarget({ outroSpan: spans.outroSpan - 2.5, introSpan: spans.introSpan }, { online: true, lengths: [length, selected.duration] });
-    const tempoPlan = options => planTransition(tempoA ? { bpm: tempoA, confidence: 1 } : null, tempoB ? { bpm: tempoB, confidence: 1 } : null, target, options);
+    // Which song carries the tempo change: where the voices are decides (see chooseBend).
+    const bend = chooseBend({ outroSpan: spans.outroSpan - 2.5, introSpan: spans.introSpan, seconds: target });
+    const tempoPlan = options => planTransition(tempoA ? { bpm: tempoA, confidence: 1 } : null, tempoB ? { bpm: tempoB, confidence: 1 } : null, target, { bend, ...options });
     let plan = tempoPlan();
     const rates = active.getAvailablePlaybackRates?.();
     // Only glide when this embed actually plays the rates we need: it lists them,
@@ -1273,9 +1292,11 @@ export function usePlayer() {
     const fallbackEnd = length - .5;
     // Landing in or just before the blend (a seek into the marked zone): the blend is
     // planned again from here and the next song starts buffering at once.
-    if (dj && !blend && attemptedMix.current !== key && position >= cue.start - 1) {
+    // A Next pressed by hand blends from here the same way, a little shorter.
+    const rushed = rush.current?.id === selected.id && rush.current.from === state.track?.id;
+    if (dj && !blend && attemptedMix.current !== key && (rushed || position >= cue.start - 1)) {
       const start = position + LATE_PRIME;
-      const seconds = Math.min(plan.seconds, fallbackEnd - start);
+      const seconds = Math.min(rushed ? MANUAL_BLEND : plan.seconds, fallbackEnd - start);
       if (seconds >= SHORT_BLEND) cue = { start, end: start + seconds, seconds, source: 'late', from: position };
     }
     // A late cue glides only over the time left before it, never from the past; a
@@ -1328,14 +1349,14 @@ export function usePlayer() {
       return;
     }
     if (blend || !dj) return;
-    // Fallback without a ready standby: a gentle fade into the natural ending.
+    // Fallback without a ready standby: song B starts on the other deck while song A
+    // plays on, and they cross over once B sounds (the gapless hand-over), never a
+    // fade to silence, a wait, and a fade back in.
     const remaining = fallbackEnd - position;
-    if (remaining <= 0 && activeMix?.kind === 'online-out') { actions.current.ended?.(); return; }
-    if (remaining > 0 && remaining <= 3) {
+    if (remaining > 0 && remaining <= HANDOFF_LEAD && activeMix?.kind !== 'online-out' && state.repeat !== 'one') {
       mix.current = { kind: 'online-out' };
-      const progress = 1 - remaining / 3;
-      active.setVolume(state.volume * Math.cos(progress * Math.PI / 2));
-      announce({ phase: 'mixing', label: 'Gentle fade out', mode: 'online', progress });
+      announce({ phase: 'mixing', label: 'Handing over', mode: 'online', progress: 0 });
+      void actions.current.load?.(selected, state.queue, false, true);
     }
   }, [cancelMix, startLocalMix, tickLocalMix, tickOnlineBlend, ensurePlayer, beginOnlineBlend, announce, mixProgress, audioContext, upcoming, resolveSource, blendTarget]);
 

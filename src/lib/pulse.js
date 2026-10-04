@@ -38,3 +38,67 @@ export function beatPhase(words, period) {
   const origin = ((Math.atan2(y, x) / (2 * Math.PI)) * period + period) % period;
   return { origin: Math.round(origin * 1000) / 1000, strength: Math.round(strength * 100) / 100 };
 }
+
+// Line-timed lyrics carry no syllables, but lines start on the grid (mostly on
+// downbeats), so their starts place a known tempo on the beat just as well.
+export function linePhase(lines, period) {
+  if (!Array.isArray(lines)) return null;
+  const starts = lines.map(line => Number(line?.time ?? line?.start)).filter(Number.isFinite);
+  return beatPhase(starts.map(start => ({ start, end: start + 1 })), period);
+}
+
+// With no catalogue tempo, word-timed vocals still show the beat: their onsets
+// cohere on the beat circle at the song's beat period (or a whole multiple of it)
+// and nowhere else. The period is scanned from 55 to 300 BPM (sung syllables often
+// lock best on the half beat) and refined; only a
+// lock far above what scattered onsets reach is accepted, so a free-timed vocal
+// yields null and no beat is invented. The pulse only needs a period on the beat,
+// so a half- or double-time answer is as good as the beat itself.
+const SCAN = [0.2, 1.1];
+const MIN_ONSETS = 40;
+const MEASURED_LOCK = 0.38;
+const SIGNIFICANCE = 6;
+function coherence(onsets, period) {
+  let x = 0, y = 0;
+  for (const [time, weight] of onsets) {
+    const angle = (2 * Math.PI * time) / period;
+    x += weight * Math.cos(angle); y += weight * Math.sin(angle);
+  }
+  return [x, y];
+}
+export function lyricBeat(words) {
+  if (!Array.isArray(words)) return null;
+  const onsets = words
+    .filter(word => Number.isFinite(word?.start))
+    .map(word => [word.start, Math.min(1, Math.max(0.05, (Number(word.end) || word.start) - word.start))]);
+  if (onsets.length < MIN_ONSETS) return null;
+  const total = onsets.reduce((sum, [, weight]) => sum + weight, 0);
+  const squares = onsets.reduce((sum, [, weight]) => sum + weight * weight, 0);
+  const strength = period => Math.hypot(...coherence(onsets, period)) / total;
+  // Coarse scan in steps of 0.15 % of the period, then refine around the best.
+  let best = SCAN[0], top = 0;
+  for (let period = SCAN[0]; period <= SCAN[1]; period *= 1.0015) {
+    const value = strength(period);
+    if (value > top) { top = value; best = period; }
+  }
+  for (let period = best * 0.998; period <= best * 1.002; period += best * 0.00002) {
+    const value = strength(period);
+    if (value > top) { top = value; best = period; }
+  }
+  // Scattered onsets cohere at about 1/sqrt(n) by chance; demand far more.
+  const effective = (total * total) / squares;
+  if (top < MEASURED_LOCK || top * Math.sqrt(effective) < SIGNIFICANCE) return null;
+  const [x, y] = coherence(onsets, best);
+  let origin = ((Math.atan2(y, x) / (2 * Math.PI)) * best + best) % best;
+  // A half-beat lock is quicker than the pulse should run: double it. The doubled
+  // grid can only sit on the measured grid, on one of its two halves; the one the
+  // weighted (long, stressed, held) words lean toward is the beat.
+  while (best < FASTEST) {
+    const [dx, dy] = coherence(onsets, best * 2);
+    const angle = (2 * Math.PI * origin) / (best * 2);
+    if (dx * Math.cos(angle) + dy * Math.sin(angle) < 0) origin += best;
+    best *= 2;
+  }
+  origin %= best;
+  return { period: Math.round(best * 100000) / 100000, origin: Math.round(origin * 1000) / 1000, strength: Math.round(top * 100) / 100 };
+}
