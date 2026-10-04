@@ -4857,7 +4857,7 @@ body {
 .is-focus .immersive-player {
   min-height: 100dvh;
 }
-.is-focus .player-topbar,
+.is-focus .listening-label,
 .is-focus .immersive-track-meta .meta-chips,
 .is-focus .immersive-track-meta > .icon-button,
 .is-focus .art-caption {
@@ -4866,14 +4866,10 @@ body {
   pointer-events: none;
 }
 .focus-exit {
-  position: absolute;
-  top: max(22px, env(safe-area-inset-top));
-  right: max(24px, env(safe-area-inset-right));
-  z-index: 5;
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  min-height: 36px;
+  height: 36px;
   padding: 0 14px;
   border: 1px solid #ffffff1f;
   border-radius: 999px;
@@ -4881,7 +4877,36 @@ body {
   backdrop-filter: blur(16px);
   color: #e9f3ee;
   font: 600 13px/1 inherit;
+  white-space: nowrap;
   cursor: pointer;
+}
+.focus-enter {
+  display: inline-flex;
+}
+/* In focus the player's controls stay at hand but step back: a little smaller,
+   dimmer and without colour, until the pointer or keyboard reaches them. */
+.player-topbar > .icon-button,
+.player-top-actions > .icon-button,
+.player-top-actions > .focus-enter,
+.mode-switch {
+  transition:
+    opacity 0.5s var(--ease-soft),
+    scale 0.5s var(--ease-soft),
+    filter 0.5s var(--ease-soft);
+}
+.is-focus .player-topbar > .icon-button,
+.is-focus .player-top-actions > .icon-button,
+.is-focus .mode-switch {
+  opacity: 0.42;
+  scale: 0.86;
+  filter: grayscale(1);
+}
+.is-focus .player-topbar > .icon-button:is(:hover, :focus-visible),
+.is-focus .player-top-actions > .icon-button:is(:hover, :focus-visible),
+.is-focus .mode-switch:is(:hover, :focus-within) {
+  opacity: 0.9;
+  scale: 0.94;
+  filter: none;
 }
 .focus-exit:not(:hover, :focus-visible) {
   color: #e9f3eebf;
@@ -4905,9 +4930,11 @@ body {
     height: 100dvh;
   }
   .is-focus .player-topbar {
+    position: absolute;
+    inset: 0 0 auto;
+    z-index: 5;
     min-height: 0;
-    height: 0;
-    padding-block: 0;
+    padding-block: 10px;
   }
   .is-focus .now-playing-body {
     height: 100dvh;
@@ -4920,6 +4947,15 @@ body {
   }
 }
 @media (max-width: 760px) {
+  /* Phones keep the way out to an icon, so it clears the centred mode switch. */
+  .focus-exit {
+    width: 38px;
+    padding: 0;
+    justify-content: center;
+  }
+  .focus-exit > span {
+    display: none;
+  }
   .is-focus .mobile-player-info {
     display: grid;
     grid-template-columns: 54px minmax(0, 1fr);
