@@ -137,8 +137,11 @@ export function planTransition(outro, intro, target = TARGET_OVERLAP, { step = 0
       seconds = bars * bar >= MIN_BLEND - 1e-9 ? bars * bar : Math.min(MAX_BLEND, Math.ceil(MIN_BLEND / bar - 1e-9) * bar);
     }
   }
-  // Roughly one percent per second, never rushed and never dragged out.
-  const easeFor = value => value !== 1 ? Math.min(8, Math.max(3, Math.abs(value - 1) * 120)) : 0;
+  // A DJ rides the tempo fader over whole phrases, so the change is felt, not heard:
+  // at least four bars of the blend tempo, about 0.6 % per second for larger
+  // changes, never longer than twelve seconds.
+  const bars = blendBpm ? (4 * 240) / blendBpm : 4;
+  const easeFor = value => value !== 1 ? Math.min(12, Math.max(bars, Math.abs(value - 1) * 160)) : 0;
   return { rate, inRate, matched, seconds, rampSeconds: easeFor(rate), recoverSeconds: easeFor(inRate), targetBpm: matched ? targetBpm : null, blendBpm, beatSeconds: blendBpm ? 60 / blendBpm : null };
 }
 
@@ -151,14 +154,15 @@ export function recoverRate(elapsed, seconds, inRate) {
 // DJ-style overlap: the incoming song rises under a held outgoing song, then the
 // outgoing one gives way. Both follow equal-power quarter-sine laws on offset,
 // smoothed windows, so combined power never dips below one (no hole mid-blend).
-// Longer blends ride the faders like a DJ: song B comes up early, both songs play
-// at full body through the middle while the EQ shares the spectrum, and song A
-// leaves at the end. Short blends keep the quick overlap. The sum is held within
-// +1 dB, so the overlap never swells or sags.
+// It rides the faders like a DJ, not a crossfade: song B comes up early, both
+// songs play at full body through the middle (two thirds of the blend within
+// 6 dB of full) while the EQ shares the spectrum, and song A leaves at the end.
+// Longer blends give the shared middle a little more room. The sum is held
+// within +1 dB, so the overlap never swells or sags.
 export function blendCurve(progress, seconds = 8) {
   const p = Math.max(0, Math.min(1, progress));
   const long = Math.max(0, Math.min(1, (seconds - 8) / 16));
-  const rise = .8 - .5 * long, leave = .2 + .5 * long;
+  const rise = .42 - .08 * long, leave = .58 + .08 * long;
   const incoming = smoothstep(p / rise), outgoing = smoothstep((p - leave) / (1 - leave));
   const out = Math.cos(outgoing * Math.PI / 2), into = Math.sin(incoming * Math.PI / 2);
   const scale = Math.min(1, Math.sqrt(1.26 / (out * out + into * into)));
@@ -193,6 +197,18 @@ export function glideRate(time, rampStart, rampSeconds, rate) {
   if (time < rampStart) return 1;
   if (!(rampSeconds > 0)) return rate;
   return 1 + (rate - 1) * smoothstep((time - rampStart) / rampSeconds);
+}
+
+// Rate changes on media elements are applied in small steps (each one costs a
+// resample). Snapping a glide to an even grid between its two ends keeps every
+// step within `grain` and makes the last step land exactly on the target, instead
+// of stalling one sub-grain step short of it.
+export function gridRate(value, from, to, grain) {
+  const span = to - from;
+  const steps = Math.ceil(Math.abs(span) / grain - 1e-9);
+  if (!steps) return to;
+  const k = Math.min(steps, Math.max(0, Math.round(((value - from) / span) * steps)));
+  return Number((from + (span * k) / steps).toFixed(6));
 }
 
 export function snapToBeat(time, grid) {

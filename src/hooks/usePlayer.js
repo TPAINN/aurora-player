@@ -5,7 +5,7 @@ import { songKey } from '../../shared/titles.js';
 import { buildApiUrl } from '../lib/api';
 import { getSimilarTracks, getTrackAnalysis, getTrackTempo } from '../lib/catalog';
 import { pickSeed, recordListening, tasteFilter } from '../lib/listening';
-import { MAX_BLEND, MIN_BLEND, ONLINE_MAX_BLEND, swapTime, adaptiveBlend, analyzeLocalTempo, beatAlignedEntry, blendCurve, vocalSpans, chooseEntry, equalPower, glideRate, nudgePlan, phaseOffset, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
+import { MAX_BLEND, MIN_BLEND, ONLINE_MAX_BLEND, swapTime, adaptiveBlend, analyzeLocalTempo, beatAlignedEntry, blendCurve, vocalSpans, chooseEntry, equalPower, glideRate, gridRate, nudgePlan, phaseOffset, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
 import { playSweep } from '../lib/sweep';
 import { nextPlayable } from '../lib/queue';
 import { detectLanguage } from '../../shared/language.js';
@@ -322,6 +322,8 @@ export function usePlayer() {
         for (const [param, value] of [[deck.dry.gain, 1], [deck.wet.gain, 0]]) {
           param.cancelScheduledValues(now); param.setTargetAtTime(value, now, .02);
         }
+        // Warmth is on the direct route too: it settles back slowly, never steps.
+        if (deck.warmth) { deck.warmth.gain.cancelScheduledValues(now); deck.warmth.gain.setTargetAtTime(0, now, 1.2); }
       }
     }
     const standby = yt.current[standbyIndex()].player;
@@ -366,7 +368,10 @@ export function usePlayer() {
       // The vocal band (presence, around 1.6 kHz): neutral except while two songs
       // overlap, when the voice that is not leading is pulled back.
       const presence = graph.createBiquadFilter(); presence.type = 'peaking'; presence.frequency.value = 1600; presence.Q.value = .7; presence.gain.value = 0;
-      input.connect(presence);
+      // Warmth (a low shelf, 0 dB and so transparent at rest): song B arrives with a
+      // fuller low end from the bass swap, then settles back to its own sound.
+      const warmth = graph.createBiquadFilter(); warmth.type = 'lowshelf'; warmth.frequency.value = 140; warmth.gain.value = 0;
+      input.connect(warmth).connect(presence);
       presence.connect(dry).connect(gain);
       presence.connect(highpass).connect(lowpass).connect(wet).connect(gain);
       gain.connect(masterOf(graph));
@@ -377,7 +382,7 @@ export function usePlayer() {
       // eslint-disable-next-line react-hooks/immutability
       element.volume = 1;
       element.preservesPitch = true;
-      Object.assign(deck, { input, presence, highpass, lowpass, gain, echoSend, delay, dry, wet });
+      Object.assign(deck, { input, warmth, presence, highpass, lowpass, gain, echoSend, delay, dry, wet });
     }
     void graph.resume().catch(() => {});
     return graph;
@@ -1012,8 +1017,8 @@ export function usePlayer() {
         deck.dry.gain.cancelScheduledValues(now); deck.dry.gain.setTargetAtTime(0, now, .015);
         deck.wet.gain.cancelScheduledValues(now); deck.wet.gain.setTargetAtTime(1, now, .015);
       }
-      // Hollow and deep: the outgoing band narrows toward a resonant mid band and
-      // echoes out. Bass swap: song B enters without its low end, and on the beat
+      // Deep, with only a touch of hollow: the outgoing song thins gently (never to a
+      // whistle) and echoes out softly while song B arrives warm and full. Bass swap: song B enters without its low end, and on the beat
       // at the middle of the blend the low end moves from song A to song B, so the
       // two kick drums and bass lines never stack.
       // The swap lands on song A's nearest bar line to the middle of the blend.
@@ -1021,24 +1026,28 @@ export function usePlayer() {
       // Voices never clash: song B's vocal band enters 9 dB down and opens over the
       // beat after the swap, while song A's is pulled out over that same beat.
       const beat = Math.max(.25, Math.min(.75, plan.beatSeconds || .5));
-      incoming.presence.gain.cancelScheduledValues(now); incoming.presence.gain.setValueAtTime(-9, now);
-      incoming.presence.gain.setValueAtTime(-9, mid); incoming.presence.gain.linearRampToValueAtTime(0, mid + beat);
+      incoming.presence.gain.cancelScheduledValues(now); incoming.presence.gain.setValueAtTime(-5, now);
+      incoming.presence.gain.setValueAtTime(-5, mid); incoming.presence.gain.linearRampToValueAtTime(0, mid + beat);
       outgoing.presence.gain.cancelScheduledValues(now); outgoing.presence.gain.setValueAtTime(0, now);
-      outgoing.presence.gain.setValueAtTime(0, mid); outgoing.presence.gain.linearRampToValueAtTime(-12, mid + beat);
+      outgoing.presence.gain.setValueAtTime(0, mid); outgoing.presence.gain.linearRampToValueAtTime(-7, mid + beat);
+      // Song B's low end blooms on the swap (+3 dB shelf) and is still warm when song A
+      // has gone; it settles back once the blend completes.
+      incoming.warmth.gain.cancelScheduledValues(now); incoming.warmth.gain.setValueAtTime(0, now);
+      incoming.warmth.gain.setValueAtTime(0, mid); incoming.warmth.gain.linearRampToValueAtTime(3, mid + beat * 2);
       outgoing.delay.delayTime.setValueAtTime(Math.min(1.5, (plan.beatSeconds || .5) * .75), now);
       // Song A keeps its full range (and the only bass) until the swap, so the mix
       // never thins out; after it, song A narrows into the hollow band and echoes out.
       outgoing.highpass.frequency.setValueAtTime(20, now);
       outgoing.highpass.frequency.setValueAtTime(20, mid);
-      outgoing.highpass.frequency.exponentialRampToValueAtTime(380, mid + swap);
-      outgoing.highpass.frequency.exponentialRampToValueAtTime(850, now + seconds);
+      outgoing.highpass.frequency.exponentialRampToValueAtTime(200, mid + swap);
+      outgoing.highpass.frequency.exponentialRampToValueAtTime(260, now + seconds);
       outgoing.lowpass.frequency.setValueAtTime(20000, now);
       outgoing.lowpass.frequency.setValueAtTime(20000, mid);
-      outgoing.lowpass.frequency.exponentialRampToValueAtTime(1200, now + seconds);
+      outgoing.lowpass.frequency.exponentialRampToValueAtTime(3500, now + seconds);
       outgoing.lowpass.Q.setValueAtTime(.8, mid);
-      outgoing.lowpass.Q.linearRampToValueAtTime(4, now + seconds);
+      outgoing.lowpass.Q.linearRampToValueAtTime(1.6, now + seconds);
       outgoing.echoSend.gain.setValueAtTime(0, now);
-      outgoing.echoSend.gain.linearRampToValueAtTime(.5 * volume, now + seconds * .65);
+      outgoing.echoSend.gain.linearRampToValueAtTime(.28 * volume, now + seconds * .65);
       outgoing.echoSend.gain.linearRampToValueAtTime(0, now + seconds * 1.1);
       incoming.highpass.frequency.setValueAtTime(320, now);
       incoming.highpass.frequency.setValueAtTime(320, mid);
@@ -1048,7 +1057,7 @@ export function usePlayer() {
       Object.assign(token, { starting: false, started: now, seconds, plan, from, to, startRate: outgoing.element.playbackRate });
       audio.current = incoming.element;
       commitIncoming(selected, { duration: Number.isFinite(incoming.element.duration) ? incoming.element.duration : 0, position: incoming.element.currentTime });
-      announce({ phase: 'mixing', label: plan.matched ? 'Tempo matched · hollow blend' : 'Hollow blend', mode: 'local', progress: 0, entryAt: incoming.element.currentTime, fromBpm: plan.matched ? from.outro.bpm : undefined, toBpm: plan.targetBpm ?? undefined, effects: ['hollow', 'echo', 'bass swap', ...(plan.matched ? ['tempo'] : [])] });
+      announce({ phase: 'mixing', label: plan.matched ? 'Tempo matched · warm blend' : 'Warm blend', mode: 'local', progress: 0, entryAt: incoming.element.currentTime, fromBpm: plan.matched ? from.outro.bpm : undefined, toBpm: plan.targetBpm ?? undefined, effects: ['warm', 'echo', 'bass swap', ...(plan.matched ? ['tempo'] : [])] });
     } catch {
       if (mix.current === token) { cancelMix(); if (overrideSeconds) void loadTrack(selected, current.current.queue); }
       // The original track continues; normal advance retries the next file.
@@ -1067,7 +1076,7 @@ export function usePlayer() {
       if (!outgoing.element.paused) outgoing.element.pause();
       const after = context.current.currentTime - activeMix.finished;
       if (plan.recoverSeconds > 0 && after < plan.recoverSeconds) {
-        setRate(incoming.element, recoverRate(after, plan.recoverSeconds, plan.inRate));
+        setRate(incoming.element, gridRate(recoverRate(after, plan.recoverSeconds, plan.inRate), plan.inRate, 1, RATE_GRAIN), 1e-6);
         return;
       }
       setRate(incoming.element, 1, 0);
@@ -1122,13 +1131,13 @@ export function usePlayer() {
     if (blend.stage === 'starting') {
       if (incoming.getPlayerState?.() === 1 && incoming.getVideoData?.().video_id === blend.videoId) {
         blend.stage = 'mixing'; blend.started = performance.now(); blend.outgoing = player.current;
-        // YouTube audio cannot be filtered, so the hollow is a synthesized sweep laid over the blend.
+        // YouTube audio cannot be filtered, so the depth is a synthesized sweep laid under the blend.
         const graph = preferences.current.djEnabled && preferences.current.transitionFx ? context.current : null;
         if (graph?.state === 'running') blend.stopSweep = playSweep(graph, { seconds: blend.seconds, volume: volume / 100, beatSeconds: blend.plan?.beatSeconds });
         ytActive.current = blend.index; player.current = incoming; activeVideo.current = blend.videoId;
         showDeck(blend.index);
         commitIncoming(blend.selected, { videoId: blend.videoId, position: incoming.getCurrentTime?.() || 0 });
-        if (preferences.current.djEnabled) announce(previous => ({ ...previous, label: `${blend.verified ? 'Tempo matched' : 'Blending'}${blend.stopSweep ? ' · hollow sweep' : ''}`, progress: 0, effects: [...(blend.stopSweep ? ['hollow sweep'] : []), ...(blend.verified ? ['tempo'] : [])] }));
+        if (preferences.current.djEnabled) announce(previous => ({ ...previous, label: `${blend.verified ? 'Tempo matched' : 'Blending'}${blend.stopSweep ? ' · deep sweep' : ''}`, progress: 0, effects: [...(blend.stopSweep ? ['deep sweep'] : []), ...(blend.verified ? ['tempo'] : [])] }));
       } else if (performance.now() - blend.requested > START_TIMEOUT) {
         // The standby deck could not start in time: keep the current song and fade normally.
         cancelMix(); attemptedMix.current = blend.key;
@@ -1223,7 +1232,7 @@ export function usePlayer() {
       if (attemptedMix.current === key || element.duration <= 12) return;
       // Song A glides into song B's tempo before the overlap, so the blend starts beat-matched.
       if (plan.matched && element.currentTime >= rampStart && element.currentTime < start) {
-        setRate(element, glideRate(element.currentTime, rampStart, plan.rampSeconds, plan.rate));
+        setRate(element, gridRate(glideRate(element.currentTime, rampStart, plan.rampSeconds, plan.rate), 1, plan.rate, RATE_GRAIN), 1e-6);
         announce({ phase: 'gliding', label: 'Matching the next tempo', mode: 'local', progress: (element.currentTime - rampStart) / plan.rampSeconds, fromBpm: from.outro.bpm, toBpm: plan.targetBpm });
         // Before the glide (for example after seeking back) song A plays at its own
         // tempo; from the blend's start the matched rate holds, so song A never falls

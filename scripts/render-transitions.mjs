@@ -141,7 +141,8 @@ function measure(samples, rate, { before = 10, after = 8 } = {}) {
 // Ground truth for a probe pair: each song's tick onsets (narrow-band), the phase
 // error between the two songs' beats while both play, each song's tempo through the
 // glide, and the loudness dip.
-function goertzelOnsets(samples, rate, freq) {
+// One song's narrow-band power every 2 ms.
+function goertzelPower(samples, rate, freq) {
   const hop = Math.round(rate * 0.002), size = Math.round(rate * 0.006);
   const k = 2 * Math.cos(2 * Math.PI * freq / rate), power = [];
   for (let i = 0; i + size <= samples.length; i += hop) {
@@ -149,6 +150,10 @@ function goertzelOnsets(samples, rate, freq) {
     for (let j = i; j < i + size; j++) { const s0 = samples[j] + k * s1 - s2; s2 = s1; s1 = s0; }
     power.push(s1 * s1 + s2 * s2 - k * s1 * s2);
   }
+  return power;
+}
+function goertzelOnsets(samples, rate, freq) {
+  const power = goertzelPower(samples, rate, freq);
   const loud = Math.max(...power), onsets = [];
   for (let i = 1; i < power.length; i++) if (power[i] > loud * 0.04 && power[i - 1] <= loud * 0.04 && (!onsets.length || i * 0.002 - onsets.at(-1) > 0.15)) onsets.push(i * 0.002);
   return onsets;
@@ -181,7 +186,16 @@ function probeSync(samples, rate, fA, fB, expectedPeriod, blendSeconds) {
   // Per-beat windows: loudness as it is heard, not the gaps between kicks.
   for (let t = firstB; t + expectedPeriod <= blendEnd; t += 0.1) lowest = Math.min(lowest, rms(t, t + expectedPeriod));
   if (process.env.TIMELINE) { const ref = rms(blendEnd + 1, blendEnd + 5); const curve = []; for (let t = firstB - 2; t < blendEnd + 2; t += 0.5) curve.push([+(t - firstB).toFixed(1), +(20 * Math.log10(rms(t, t + 0.5) / ref)).toFixed(1)]); console.error(JSON.stringify({ loudness: curve })); }
+  // A real blend, not a fade-out then fade-in: how long each song is heard within
+  // 6 dB of its own solo level at the same time, per beat-long window.
+  const pa = goertzelPower(samples, rate, fA), pb = goertzelPower(samples, rate, fB);
+  const band = (power, from, to) => { let sum = 0, n = 0; for (let i = Math.max(0, Math.floor(from / .002)); i < Math.min(power.length, to / .002); i++) { sum += power[i]; n++; } return sum / Math.max(1, n); };
+  const window = Math.max(expectedPeriod, .4);
+  const soloA = band(pa, firstB - 6, firstB - 1), soloB = band(pb, blendEnd + 1, blendEnd + 5);
+  let together = 0;
+  for (let t = firstB - 1; t + window <= blendEnd + 1; t += .1) if (10 * Math.log10(band(pa, t, t + window) / soloA) >= -6 && 10 * Math.log10(band(pb, t, t + window) / soloB) >= -6) together += .1;
   return {
+    togetherSeconds: +together.toFixed(1),
     overlapDipDb: +(20 * Math.log10(lowest / after)).toFixed(1),
     overlapBeats: both.length,
     phaseErrorMs: { median: +median(errors).toFixed(1), worst: +Math.max(0, ...errors).toFixed(1) },
@@ -199,6 +213,9 @@ const pairs = [
   { name: '6-probe-120-to-126', a: { bpm: 120, root: 1000, seed: 11, style: 'probe' }, b: { bpm: 126, root: 2500, seed: 12, style: 'probe' } },
   { name: '7-probe-128-to-122', a: { bpm: 128, root: 1000, seed: 13, style: 'probe' }, b: { bpm: 122, root: 2500, seed: 14, style: 'probe' } },
   { name: '8-probe-same-124', a: { bpm: 124, root: 1000, seed: 15, style: 'probe' }, b: { bpm: 124, root: 2500, seed: 16, style: 'probe' } },
+  { name: '9-probe-wide-100-to-112', a: { bpm: 100, root: 1000, seed: 17, style: 'probe' }, b: { bpm: 112, root: 2500, seed: 18, style: 'probe' } },
+  { name: '10-probe-meet-118-to-132', a: { bpm: 118, root: 1000, seed: 19, style: 'probe' }, b: { bpm: 132, root: 2500, seed: 20, style: 'probe' } },
+  { name: '11-probe-double-time-87-to-174', a: { bpm: 87, root: 1000, seed: 21, style: 'probe' }, b: { bpm: 174, root: 2500, seed: 22, style: 'probe' } },
   { name: '5-half-time-87-to-174', a: { bpm: 87, root: 55, seed: 9, style: 'breaks' }, b: { bpm: 174, root: 49, seed: 10, style: 'breaks' } },
 ];
 

@@ -7,9 +7,11 @@ import {
   useMotionValue,
   useSpring,
   useTransform,
+  useMotionTemplate,
   useIsPresent,
   useReducedMotion,
   usePresence,
+  useInView,
 } from "framer-motion";
 import {
   ArrowDown,
@@ -49,7 +51,7 @@ import {
 } from "lucide-react";
 import { usePlayer } from "./hooks/usePlayer";
 import { useStore } from "./hooks/useStore";
-import { pulsePeriod, pulsePhase } from "./lib/pulse";
+import { beatPhase, pulsePeriod, pulsePhase } from "./lib/pulse";
 import { useNavigation } from "./hooks/useNavigation";
 import { getCollection, getFeaturedTracks, getMoodTracks, getSimilarTracks, searchCatalog } from "./lib/catalog";
 import { MOODS } from "../shared/moods.js";
@@ -74,6 +76,9 @@ import {
   blendSwap,
   coverSwap,
   textSwap,
+  unfold,
+  pop,
+  glyphSwap,
   crossfade,
   HEART_SPRING,
   MAGNET_SPRING,
@@ -252,10 +257,15 @@ function PlayButton({ player, large = false }) {
 
 // Its own presence boundary: the page switcher skips entrance states on first
 // load (initial={false}), which would leave nothing for the scroll reveal to play.
+// The reveal is driven by state rather than whileInView: cards that arrive after
+// the section has come into view (recommendations load late) then inherit "shown"
+// and cascade in, instead of staying hidden.
 function RevealSection(props) {
+  const ref = useRef(null);
+  const inView = useInView(ref, revealSection.viewport);
   return (
     <AnimatePresence>
-      <Motion.section {...revealSection} {...props} />
+      <Motion.section ref={ref} variants={revealSection.variants} initial="hidden" animate={inView ? "shown" : "hidden"} {...props} />
     </AnimatePresence>
   );
 }
@@ -305,6 +315,31 @@ function SwipeCover({ player, onClose, children }) {
       <Motion.span className="swipe-hint is-previous" style={{ opacity: previousHint }} aria-hidden="true">
         <ArrowLeft size={15} /> Previous
       </Motion.span>
+    </Motion.div>
+  );
+}
+
+// The now-playing cover leans toward a fine pointer on a spring and catches the
+// light: a sheen follows the pointer across it. Motion values write styles
+// directly (no React render); off on touch, on phones' layout and under reduced
+// motion, and never while the cover is being dragged.
+const TILT_SPRING = { stiffness: 170, damping: 18, mass: 0.6 };
+function TiltCover({ children }) {
+  const rx = useSpring(0, TILT_SPRING), ry = useSpring(0, TILT_SPRING), glow = useSpring(0, TILT_SPRING);
+  const gx = useMotionValue(50), gy = useMotionValue(30);
+  const sheen = useMotionTemplate`radial-gradient(circle at ${gx}% ${gy}%, rgba(255,255,255,0.22), rgba(255,255,255,0) 58%)`;
+  const move = (event) => {
+    if (event.pointerType !== "mouse" || event.buttons || !window.matchMedia?.("(min-width: 761px)").matches || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    const box = event.currentTarget.getBoundingClientRect();
+    const px = (event.clientX - box.left) / box.width, py = (event.clientY - box.top) / box.height;
+    ry.set((px - 0.5) * 14); rx.set((0.5 - py) * 14);
+    gx.set(px * 100); gy.set(py * 100); glow.set(1);
+  };
+  const leave = () => { rx.set(0); ry.set(0); glow.set(0); };
+  return (
+    <Motion.div className="tilt-cover" style={{ rotateX: rx, rotateY: ry, transformPerspective: 900 }} onPointerMove={move} onPointerLeave={leave} onPointerDown={leave}>
+      {children}
+      <Motion.span className="tilt-sheen" aria-hidden="true" style={{ backgroundImage: sheen, opacity: glow }} />
     </Motion.div>
   );
 }
@@ -412,22 +447,26 @@ function QueueSections({ player, trackRows }) {
             Up next
             <small>{upNext.length ? `${upNext.length} ${upNext.length === 1 ? "song" : "songs"} · ${minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`}` : "Nothing yet"}</small>
           </h3>
-          {upNext.length > 0 && (
-            <button className="text-button" onClick={() => player.setQueue(queue.slice(0, index + 1))}>
-              Clear
-            </button>
-          )}
+          <AnimatePresence initial={false}>
+            {upNext.length > 0 && (
+              <Motion.button key="clear" {...pop} className="text-button" onClick={() => player.setQueue(queue.slice(0, index + 1))}>
+                Clear
+              </Motion.button>
+            )}
+          </AnimatePresence>
         </div>
         {upNext.length > 0 ? trackRows(upNext, true, undefined, index + 1) : <p className="queue-empty">{player.autoplay ? "More like this arrives as you listen." : "Add songs with + to play them next."}</p>}
       </section>
-      {played.length > 0 && (
-        <details className="queue-section queue-played">
-          <summary className="queue-heading">
-            Recently played <small>{played.length}</small>
-          </summary>
-          {trackRows(played, true, undefined, 0)}
-        </details>
-      )}
+      <AnimatePresence initial={false}>
+        {played.length > 0 && (
+          <Motion.details key="played" {...unfold} className="queue-section queue-played">
+            <summary className="queue-heading">
+              Recently played <small>{played.length}</small>
+            </summary>
+            {trackRows(played, true, undefined, 0)}
+          </Motion.details>
+        )}
+      </AnimatePresence>
     </>
   );
 }
@@ -617,15 +656,25 @@ function useMoments(player) {
     const lyricPeaks = lines ? peakMoments(lines) : [];
     // Replays describe one upload: trusted only when it is as long as what is playing.
     const replays = insight?.replays?.length && Math.abs(insight.replays.at(-1).end - duration) <= 8 ? insight.replays : null;
+    // Online songs only know their tempo: the beat phase comes from the sung words
+    // (playback time). Device audio already carries a measured grid.
+    let grid = insight?.grid || null;
+    if (grid?.period && !Number.isFinite(grid.origin) && lines) {
+      const words = lines.flatMap((line) => line.words || []).map((word) => ({ start: word.start - offset, end: word.end - offset }));
+      const phase = beatPhase(words, grid.period);
+      if (phase) grid = { ...grid, origin: phase.origin };
+    }
     const { peaks, best } = bestMoments({
       lyricPeaks: lyricPeaks.map((range) => ({ start: range.start - offset, end: range.end - offset })),
       replays,
       energy: insight?.energy,
-      grid: insight?.grid,
+      grid,
       duration,
     });
     const toLyricTime = (range) => range && { start: range.start + offset, end: range.end + offset };
-    return { peaks: peaks.map(toLyricTime), best: toLyricTime(best) };
+    // The beat grid in lyric time, for the pulse (null when its phase is unknown).
+    const beat = Number.isFinite(grid?.origin) ? { period: grid.period, origin: grid.origin + offset } : null;
+    return { peaks: peaks.map(toLyricTime), best: toLyricTime(best), beat };
   }, [lines, insight, offset, duration]);
 }
 function usePeaks(player) {
@@ -659,11 +708,13 @@ function BestPartChip({ player }) {
 }
 
 const PULSE_DELAY = 1.6;
+// The song's name gliding between the player and its place under the cover in focus.
+const TITLE_GLIDE = { type: "spring", stiffness: 140, damping: 22, mass: 0.9 };
 
 // The artwork backdrop opens up (a slow zoom and lift) through the song's peaks:
 // its refrain and long held notes, read from genuinely timed lyrics only.
 function ArtBackdrop({ player }) {
-  const peaks = usePeaks(player);
+  const { peaks, beat } = useMoments(player);
   const offset = player.lyricsOffset || 0;
   const peak = useStore(player.clock, (value) => peaks.length > 0 && isPeakAt(peaks, value + offset));
   // The pulse joins once the opening zoom has mostly settled, so the two never
@@ -727,7 +778,7 @@ function ArtBackdrop({ player }) {
       <div className={`player-veil ${peak ? "is-peak" : ""}`} />
       <AnimatePresence>
         {peakIndex >= 0 && period && player.playing && !reduce && (
-          <BeatPulse key={`${player.track?.id}:${peakIndex}`} player={player} anchor={peaks[peakIndex].start} period={period} />
+          <BeatPulse key={`${player.track?.id}:${peakIndex}`} player={player} anchor={peaks[peakIndex].start} beatOrigin={beat?.origin ?? peaks[peakIndex].start} period={period} />
         )}
       </AnimatePresence>
     </>
@@ -735,37 +786,36 @@ function ArtBackdrop({ player }) {
 }
 
 // Through a peak the backdrop breathes with the music: a glow that kicks on each
-// beat (fast attack, slow decay) and a soft ring that travels out once a bar, both
-// phase-locked to the peak's start. Opacity and scale only, so they stay on the
-// compositor. Realigned only when the playhead jumps (a seek).
-function BeatPulse({ player, anchor, period }) {
+// beat (fast attack, slow decay) and a soft ring that travels out once a bar. The
+// kick is locked to the song's beat grid (measured for device audio, read from the
+// sung words online) on the smooth playhead, checked every frame; drift over 20 ms is
+// corrected by setting
+// the running animation's time, so a correction never restarts it. Opacity and
+// scale only, so it stays on the compositor.
+function BeatPulse({ player, anchor, beatOrigin, period }) {
   const wave = useRef(null);
   const ring = useRef(null);
   const offset = player.lyricsOffset || 0;
+  const { getPlaybackTime } = player;
   useEffect(() => {
-    const element = wave.current;
-    if (!element) return undefined;
-    let origin = null;
+    // The two running animations, looked up once they exist (not every frame).
+    const tracks = [[wave, period, beatOrigin], [ring, period * 4, anchor]].map(([ref, cycle, from]) => ({ ref, cycle, from, animation: null }));
     const align = () => {
-      const phase = pulsePhase(player.clock.get() + offset, anchor, period);
-      const now = performance.now() / 1000;
-      if (origin !== null) {
-        const drift = Math.abs(pulsePhase(now - origin, 0, period) - phase);
-        if (Math.min(drift, period - drift) < 0.12) return;
-      }
-      origin = now - phase;
-      const bar = pulsePhase(player.clock.get() + offset, anchor, period * 4);
-      for (const [node, delay] of [[element, phase], [ring.current, bar]]) {
-        if (!node) continue;
-        node.style.animation = "none";
-        void node.offsetWidth;
-        node.style.animation = "";
-        node.style.animationDelay = `${-delay}s`;
+      const time = getPlaybackTime() + offset;
+      for (const track of tracks) {
+        track.animation ||= track.ref.current?.getAnimations?.()[0] || null;
+        const { animation, cycle, from } = track;
+        if (!animation) continue;
+        const want = pulsePhase(time, from, cycle) * 1000;
+        const have = ((Number(animation.currentTime) % (cycle * 1000)) + cycle * 1000) % (cycle * 1000);
+        const drift = Math.abs(want - have);
+        if (Math.min(drift, cycle * 1000 - drift) > 20) animation.currentTime = want;
       }
     };
-    align();
-    return player.clock.subscribe(align);
-  }, [player.clock, offset, anchor, period]);
+    // Checked every frame (a few subtractions): a busy moment never lets it drift.
+    let frame = requestAnimationFrame(function lock() { align(); frame = requestAnimationFrame(lock); });
+    return () => cancelAnimationFrame(frame);
+  }, [getPlaybackTime, offset, anchor, beatOrigin, period]);
   return (
     <Motion.div
       className="beat-pulse"
@@ -774,7 +824,7 @@ function BeatPulse({ player, anchor, period }) {
       animate={{ opacity: 1, transition: { duration: 2.4, ease: EASE } }}
       exit={{ opacity: 0, transition: { duration: 1.6, ease: EASE_IN_OUT } }}
     >
-      <div ref={wave} className="beat-pulse-wave" style={{ "--pulse-period": `${period}s` }} />
+      <div ref={wave} className="beat-pulse-wave" style={{ "--pulse-period": `${period}s` }} data-beat-origin={beatOrigin} data-period={period} />
       <div ref={ring} className="beat-pulse-ring" style={{ "--pulse-bar": `${period * 4}s` }} />
     </Motion.div>
   );
@@ -1161,11 +1211,16 @@ function Sheet({ title, close, back, children }) {
           }}
         />
         <header>
-          {back && (
-            <IconButton label="Back to preferences" onClick={back}>
-              <ArrowLeft />
-            </IconButton>
-          )}
+          {/* Going deeper brings a way back: it arrives with the nested sheet. */}
+          <AnimatePresence initial={false}>
+            {back && (
+              <Motion.span key="back" {...pop} className="sheet-back">
+                <IconButton label="Back to preferences" onClick={back}>
+                  <ArrowLeft />
+                </IconButton>
+              </Motion.span>
+            )}
+          </AnimatePresence>
           <h2>{title}</h2>
           <IconButton label={`Close ${title}`} onClick={close}>
             <X />
@@ -1288,21 +1343,27 @@ function DjStatus({ player }) {
       </span>
       <div>
         <strong>{player.djEnabled ? state.label || "Ready when you are" : "DJ transition is off"}</strong>
-        {busy && state.entryAt > 0.5 && <p className="dj-entry">Next song enters at {formatTime(state.entryAt)}</p>}
+        <AnimatePresence initial={false}>
+          {busy && state.entryAt > 0.5 && (
+            <Motion.p key="entry" {...unfold} className="dj-entry">Next song enters at {formatTime(state.entryAt)}</Motion.p>
+          )}
+        </AnimatePresence>
         <p>
           {state.fromBpm && state.toBpm
             ? `${Math.round(state.fromBpm)} → ${Math.round(state.toBpm)} BPM · tempo glide`
             : player.track?.localUrl
-              ? "Local audio · tempo glide, hollow filter and echo"
+              ? "Local audio · tempo glide, warm bass swap and echo"
               : "Online playback · two-deck volume blend"}
         </p>
-        {effects.length > 0 && (
-          <span className="dj-effects">
-            {effects.map((effect) => (
-              <em key={effect}>{effect}</em>
-            ))}
-          </span>
-        )}
+        <AnimatePresence initial={false}>
+          {effects.length > 0 && (
+            <Motion.span key="effects" {...unfold} className="dj-effects">
+              {effects.map((effect) => (
+                <em key={effect}>{effect}</em>
+              ))}
+            </Motion.span>
+          )}
+        </AnimatePresence>
         <span className="dj-progress" aria-hidden="true">
           <i style={{ transform: `scaleX(${busy ? progress : 0})` }} />
         </span>
@@ -1314,6 +1375,20 @@ function DjStatus({ player }) {
 export default function App() {
   const player = usePlayer();
   const reduce = useReducedMotion();
+  // Cursor spotlight: a soft light follows a fine pointer across the card or row it
+  // is over. One listener; only the hovered element repaints, and only while hovered.
+  useEffect(() => {
+    const move = (event) => {
+      if (event.pointerType !== "mouse") return;
+      const card = event.target.closest?.(".track-row, .album-card, .video-card, .artist-card, .mood-card");
+      if (!card) return;
+      const box = card.getBoundingClientRect();
+      card.style.setProperty("--mx", `${event.clientX - box.left}px`);
+      card.style.setProperty("--my", `${event.clientY - box.top}px`);
+    };
+    window.addEventListener("pointermove", move, { passive: true });
+    return () => window.removeEventListener("pointermove", move);
+  }, []);
   // Which of the player's two layouts is on screen (phone below 761 px).
   const phoneLayout = useMediaQuery("(max-width: 760px)");
   const [notice, setNotice] = useState("");
@@ -1766,15 +1841,17 @@ export default function App() {
             }}
           >
             <span className="track-number">
-              {selected && player.playing ? (
-                <span className="equalizer">
-                  <i />
-                  <i />
-                  <i />
-                </span>
-              ) : (
-                String(i + 1).padStart(2, "0")
-              )}
+              <AnimatePresence initial={false} mode="popLayout">
+                {selected && player.playing ? (
+                  <Motion.span key="playing" {...glyphSwap} className="equalizer">
+                    <i />
+                    <i />
+                    <i />
+                  </Motion.span>
+                ) : (
+                  <Motion.span key="number" {...glyphSwap}>{String(i + 1).padStart(2, "0")}</Motion.span>
+                )}
+              </AnimatePresence>
             </span>
             <Cover track={track} />
             <span className="track-description">
@@ -1864,9 +1941,9 @@ export default function App() {
         {hint && <small>{hint}</small>}
       </h2>
       {searchType === "all" && kind && categoryItems[kind].length > 4 && (
-        <button className="text-button" onClick={() => setSearchType(kind)}>
+        <Motion.button {...pop} className="text-button" onClick={() => setSearchType(kind)}>
           See all <ArrowRight size={15} />
-        </button>
+        </Motion.button>
       )}
     </div>
   );
@@ -2011,16 +2088,26 @@ export default function App() {
           </AnimatePresence>
           <span className="search-progress" aria-hidden="true" />
         </Motion.label>
+      <AnimatePresence initial={false}>
       {query.trim().length >= 2 && (
-        <div className="search-tabs" role="tablist" aria-label="Search categories">
+        <Motion.div
+          key="tabs"
+          initial={{ opacity: 0, y: -6 }}
+          animate={{ opacity: 1, y: 0, transition: { duration: 0.35, ease: EASE } }}
+          exit={{ opacity: 0, y: -6, transition: { duration: 0.2, ease: EASE_EXIT } }}
+          className="search-tabs"
+          role="tablist"
+          aria-label="Search categories"
+        >
           {SEARCH_TABS.map(([id, label]) => (
             <button key={id} role="tab" aria-selected={searchType === id} className={searchType === id ? "selected" : ""} onClick={() => setSearchType(id)}>
               {searchType === id && <Motion.span layoutId="search-tab" className="nav-pill" transition={PILL_SPRING} />}
               {label}
             </button>
           ))}
-        </div>
+        </Motion.div>
       )}
+      </AnimatePresence>
       <AnimatePresence mode="wait" initial={false}>
         {searching && !hasResults ? (
           <Motion.div key="skeleton" className="search-skeleton" role="status" aria-label="Searching the catalogue" {...fade}>
@@ -2798,6 +2885,8 @@ export default function App() {
                         aria-pressed={video}
                         disabled={!!player.track?.localUrl}
                         onClick={() => {
+                          // Focus is built around the cover; the video takes the whole stage.
+                          setFocusMode(false);
                           setVideo(!video);
                         }}
                       >
@@ -2805,9 +2894,27 @@ export default function App() {
                         <Video size={19} />
                       </IconButton>
                     </div>
-                    <IconButton label="Lyrics focus" onClick={toggleFocus}>
-                      <Focus size={19} />
-                    </IconButton>
+                    {/* The focus button becomes the way out of focus, in the same place. */}
+                    <AnimatePresence initial={false} mode="popLayout">
+                      {focused ? (
+                        <Motion.button
+                          key="focus-exit"
+                          type="button"
+                          className="focus-exit"
+                          aria-label="Exit focus"
+                          onClick={() => setFocusMode(false)}
+                          {...pop}
+                        >
+                          <Minimize2 size={15} /> <span>Exit focus</span>
+                        </Motion.button>
+                      ) : (
+                        <Motion.span key="focus-enter" className="focus-enter" {...pop}>
+                          <IconButton label="Lyrics focus" onClick={toggleFocus}>
+                            <Focus size={19} />
+                          </IconButton>
+                        </Motion.span>
+                      )}
+                    </AnimatePresence>
                     <IconButton
                       label="Player settings"
                       onClick={() => setSheet("settings")}
@@ -2816,24 +2923,11 @@ export default function App() {
                     </IconButton>
                   </div>
                 </header>
-                <AnimatePresence>
-                  {focused && (
-                    <Motion.button
-                      key="focus-exit"
-                      type="button"
-                      className="focus-exit"
-                      onClick={() => setFocusMode(false)}
-                      initial={{ opacity: 0, y: -8 }}
-                      animate={{ opacity: 1, y: 0, transition: { duration: 0.6, ease: EASE, delay: 0.35 } }}
-                      exit={{ opacity: 0, y: -8, transition: { duration: 0.25, ease: EASE_EXIT } }}
-                    >
-                      <Minimize2 size={15} /> Exit focus
-                    </Motion.button>
-                  )}
-                </AnimatePresence>
                 <div className="now-playing-body">
                   <SwipeCover player={player} onClose={() => setImmersive(false)}>
-                    <FadingCover track={player.track} eager size={1200} direction={player.direction} blend={player.changeKind === "blend"} />
+                    <TiltCover>
+                      <FadingCover track={player.track} eager size={1200} direction={player.direction} blend={player.changeKind === "blend"} />
+                    </TiltCover>
                     <span className="art-caption">
                       <span
                         className={
@@ -2846,6 +2940,13 @@ export default function App() {
                       </span>
                       {player.playing ? "In the moment" : "Take a moment"}
                     </span>
+                    {/* In lyrics focus the song's name travels here, under the cover: the same
+                        element glides over from its place in the player (a shared layout). */}
+                    {focused && !phoneLayout && (
+                      <Motion.div layoutId="now-title" className="now-title focus-title" transition={{ layout: TITLE_GLIDE }}>
+                        <TrackName track={player.track} live />
+                      </Motion.div>
+                    )}
                   </SwipeCover>
                   <AnimatePresence>
                     {showLyrics && (
@@ -2879,20 +2980,22 @@ export default function App() {
                   </AnimatePresence>
                   <div className="mobile-player-info">
                     {/* Phones show the artwork as the backdrop; focus adds a small cover beside the name. */}
-                    {focused && (
-                      <span className="focus-thumb" aria-hidden="true">
-                        <AnimatePresence initial={false}>
-                          <Motion.img
-                            key={player.track.artwork || player.track.id}
-                            src={player.track.artwork ? artworkAt(player.track.artwork, 200) : undefined}
-                            alt=""
-                            initial={{ opacity: 0, scale: 1.06 }}
-                            animate={{ opacity: 1, scale: 1, transition: { duration: 0.7, ease: EASE } }}
-                            exit={{ opacity: 0, transition: { duration: 0.5, ease: EASE_IN_OUT } }}
-                          />
+                    <AnimatePresence>
+                      {focused && (
+                        <Motion.span key="focus-thumb" className="focus-thumb" aria-hidden="true" {...pop}>
+                          <AnimatePresence initial={false}>
+                            <Motion.img
+                              key={player.track.artwork || player.track.id}
+                              src={player.track.artwork ? artworkAt(player.track.artwork, 200) : undefined}
+                              alt=""
+                              initial={{ opacity: 0, scale: 1.06 }}
+                              animate={{ opacity: 1, scale: 1, transition: { duration: 0.7, ease: EASE } }}
+                              exit={{ opacity: 0, transition: { duration: 0.5, ease: EASE_IN_OUT } }}
+                            />
                         </AnimatePresence>
-                      </span>
+                      </Motion.span>
                     )}
+                    </AnimatePresence>
                     <TrackName track={player.track} live={phoneLayout} />
                     <div className="meta-chips">
                       <QualityChip player={player} onClick={() => setSheet("audio")} />
@@ -2938,7 +3041,11 @@ export default function App() {
                 </div>
                 <div className="immersive-track-meta">
                   <div>
-                    <TrackName track={player.track} live={!phoneLayout} />
+                    {!(focused && !phoneLayout) && (
+                      <Motion.div layoutId="now-title" className="now-title" transition={{ layout: TITLE_GLIDE }}>
+                        <TrackName track={player.track} live={!phoneLayout} />
+                      </Motion.div>
+                    )}
                     <div className="meta-chips">
                       <QualityChip player={player} onClick={() => setSheet("audio")} />
                       <BestPartChip player={player} />
@@ -2999,13 +3106,15 @@ export default function App() {
                 </Motion.span>
               </AnimatePresence>
             </span>
-            {player.playing && (
-              <span className="equalizer">
-                <i />
-                <i />
-                <i />
-              </span>
-            )}
+            <AnimatePresence initial={false}>
+              {player.playing && (
+                <Motion.span key="equalizer" className="equalizer" {...pop}>
+                  <i />
+                  <i />
+                  <i />
+                </Motion.span>
+              )}
+            </AnimatePresence>
           </Motion.button>
           <div className="dock-seek">
             <Seek key={player.track?.id || "idle"} player={player} />
@@ -3192,12 +3301,12 @@ export default function App() {
               </div>
               <div className="setting-row">
                 <div>
-                  <strong>Hollow sweep</strong>
-                  <p>A deep, echoing sweep over online blends, whose audio YouTube keeps unfiltered.</p>
+                  <strong>Deep sweep</strong>
+                  <p>A low, warm swell with a sub drop under online blends, whose audio YouTube keeps unfiltered.</p>
                 </div>
                 <button
                   role="switch"
-                  aria-label="Hollow sweep"
+                  aria-label="Deep sweep"
                   aria-checked={!!player.transitionFx}
                   className="setting-switch"
                   onClick={() => player.setTransitionFx?.(!player.transitionFx)}
@@ -3237,7 +3346,7 @@ export default function App() {
                   <>
                     <li>Finds a quiet phrase in the last 30 seconds and the first beat of the next song.</li>
                     <li>Glides the ending song up to ±8% into the next song’s measured tempo, pitch preserved.</li>
-                    <li>A five-second, bar-length blend with a hollow filter sweep and echo tail.</li>
+                    <li>A phrase-long blend: the bass swaps on a bar line, the next song arrives warm and full, the last one echoes out softly.</li>
                   </>
                 ) : (
                   <>
@@ -3248,10 +3357,10 @@ export default function App() {
                 )}
               </ul>
               <p className="provider-note">
-                YouTube does not share its audio with the page, so the hollow
-                filter, echo and measured beat matching work with your own
-                audio files. Online songs blend with volume and, when possible,
-                tempo.
+                YouTube does not share its audio with the page, so the filters,
+                warmth, echo and measured beat matching work with your own audio
+                files. Online songs blend with volume, a deep sweep and, when the
+                player allows, tempo.
               </p>
               <button
                 className="primary-button"

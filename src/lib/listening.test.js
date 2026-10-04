@@ -107,3 +107,12 @@ test('the day seed rotates the home mix without inventing songs', async () => {
   assert.deepEqual(rotateForDay(list, new Date('2026-09-28T23:00:00')), monday, 'stable within a day');
   assert.deepEqual(rotateForDay([], new Date()), []);
 });
+
+test('taste ranking keeps the vibe order: known lyrics only nudge, they never leapfrog', () => {
+  withStorage(() => {
+    // The server ranked these by vibe; the third has lyrics, the first two unknown.
+    const candidates = [{ title: 'Closest vibe', artist: 'A' }, { title: 'Next vibe', artist: 'B' }, { title: 'Far vibe', artist: 'C', lyricsAvailable: true }];
+    const ranked = rankForTaste(candidates).map(track => track.title);
+    assert.deepEqual(ranked.slice(0, 2), ['Closest vibe', 'Next vibe'], ranked.join(' > '));
+  });
+});

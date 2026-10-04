@@ -1126,7 +1126,8 @@ input[type="range"]::-moz-range-thumb {
   width: min(46vh, 400px);
   flex-shrink: 0;
 }
-.now-playing-art > .cover {
+.now-playing-art > .cover,
+.now-playing-art > .tilt-cover > .cover {
   width: 100%;
   aspect-ratio: 1;
   border-radius: 16px;
@@ -3935,7 +3936,8 @@ button {
     scale: none;
   }
 }
-.now-playing-art > .fading-cover {
+.now-playing-art > .fading-cover,
+.now-playing-art > .tilt-cover > .fading-cover {
   background: #0d1110;
 }
 
@@ -4855,7 +4857,7 @@ body {
 .is-focus .immersive-player {
   min-height: 100dvh;
 }
-.is-focus .player-topbar,
+.is-focus .listening-label,
 .is-focus .immersive-track-meta .meta-chips,
 .is-focus .immersive-track-meta > .icon-button,
 .is-focus .art-caption {
@@ -4864,14 +4866,10 @@ body {
   pointer-events: none;
 }
 .focus-exit {
-  position: absolute;
-  top: max(22px, env(safe-area-inset-top));
-  right: max(24px, env(safe-area-inset-right));
-  z-index: 5;
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  min-height: 36px;
+  height: 36px;
   padding: 0 14px;
   border: 1px solid #ffffff1f;
   border-radius: 999px;
@@ -4879,7 +4877,36 @@ body {
   backdrop-filter: blur(16px);
   color: #e9f3ee;
   font: 600 13px/1 inherit;
+  white-space: nowrap;
   cursor: pointer;
+}
+.focus-enter {
+  display: inline-flex;
+}
+/* In focus the player's controls stay at hand but step back: a little smaller,
+   dimmer and without colour, until the pointer or keyboard reaches them. */
+.player-topbar > .icon-button,
+.player-top-actions > .icon-button,
+.player-top-actions > .focus-enter,
+.mode-switch {
+  transition:
+    opacity 0.5s var(--ease-soft),
+    scale 0.5s var(--ease-soft),
+    filter 0.5s var(--ease-soft);
+}
+.is-focus .player-topbar > .icon-button,
+.is-focus .player-top-actions > .icon-button,
+.is-focus .mode-switch {
+  opacity: 0.42;
+  scale: 0.86;
+  filter: grayscale(1);
+}
+.is-focus .player-topbar > .icon-button:is(:hover, :focus-visible),
+.is-focus .player-top-actions > .icon-button:is(:hover, :focus-visible),
+.is-focus .mode-switch:is(:hover, :focus-within) {
+  opacity: 0.9;
+  scale: 0.94;
+  filter: none;
 }
 .focus-exit:not(:hover, :focus-visible) {
   color: #e9f3eebf;
@@ -4903,9 +4930,11 @@ body {
     height: 100dvh;
   }
   .is-focus .player-topbar {
+    position: absolute;
+    inset: 0 0 auto;
+    z-index: 5;
     min-height: 0;
-    height: 0;
-    padding-block: 0;
+    padding-block: 10px;
   }
   .is-focus .now-playing-body {
     height: 100dvh;
@@ -4916,16 +4945,17 @@ body {
     height: calc(100dvh - 28px);
     min-height: 0;
   }
-  .is-focus .immersive-track-meta {
-    display: flex;
-    position: absolute;
-    left: 35px;
-    bottom: max(16px, env(safe-area-inset-bottom));
-    margin: 0;
-    padding: 0;
-  }
 }
 @media (max-width: 760px) {
+  /* Phones keep the way out to an icon, so it clears the centred mode switch. */
+  .focus-exit {
+    width: 38px;
+    padding: 0;
+    justify-content: center;
+  }
+  .focus-exit > span {
+    display: none;
+  }
   .is-focus .mobile-player-info {
     display: grid;
     grid-template-columns: 54px minmax(0, 1fr);
@@ -5079,5 +5109,123 @@ body {
 @media (max-width: 760px) {
   .magnetic {
     transform: none !important;
+  }
+}
+
+/* Lyrics focus: the song's name sits under the cover (it glides there from the
+   player). Absolutely placed, so the cover never moves when it arrives. */
+.now-playing-art {
+  position: relative;
+}
+.focus-title {
+  position: absolute;
+  top: calc(100% + 22px);
+  left: 0;
+  right: 0;
+  text-align: center;
+  pointer-events: none;
+}
+.focus-title h1 {
+  font-size: clamp(20px, 2.1vw, 28px);
+  line-height: 1.15;
+  letter-spacing: -0.4px;
+}
+.focus-title p {
+  margin-top: 6px;
+  font-size: 14px;
+  color: #ffffffb3;
+}
+.is-focus .art-caption {
+  display: none;
+}
+@media (min-width: 761px) and (max-height: 520px) {
+  .focus-title {
+    top: calc(100% + 12px);
+  }
+  .focus-title h1 {
+    font-size: 17px;
+  }
+  .focus-title p {
+    font-size: 12px;
+  }
+}
+
+/* Unfolding lines and sections clip while their height grows. */
+.dj-entry,
+.dj-effects,
+.queue-played {
+  overflow: hidden;
+}
+.dj-effects {
+  display: flex;
+  /* Spacing as padding: it unfolds with the height instead of jumping. */
+  margin-top: 0;
+  padding-top: 10px;
+}
+.sheet-back {
+  display: inline-flex;
+}
+.track-number {
+  display: inline-grid;
+  place-items: center;
+}
+.queue-played.queue-section {
+  margin-top: 0;
+  padding-top: 18px;
+}
+
+/* ── Light that follows the hand ───────────────────────────────────────────
+   Cursor spotlight on cards and rows, and the now-playing cover's tilt sheen. */
+@media (hover: hover) and (pointer: fine) {
+  .track-row,
+  .album-card,
+  .video-card,
+  .artist-card,
+  .mood-card {
+    position: relative;
+    isolation: isolate;
+  }
+  .track-row::before,
+  .album-card::before,
+  .video-card::before,
+  .artist-card::before,
+  .mood-card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    pointer-events: none;
+    background: radial-gradient(220px circle at var(--mx, 50%) var(--my, 50%), #c3ebcf17, transparent 65%);
+    opacity: 0;
+    transition: opacity 0.4s var(--ease-soft);
+  }
+  .track-row:hover::before,
+  .album-card:hover::before,
+  .video-card:hover::before,
+  .artist-card:hover::before,
+  .mood-card:hover::before {
+    opacity: 1;
+  }
+}
+.tilt-cover {
+  position: relative;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+.tilt-sheen {
+  position: absolute;
+  inset: 0;
+  border-radius: 16px;
+  pointer-events: none;
+  mix-blend-mode: soft-light;
+}
+@media (prefers-reduced-motion: reduce) {
+  .track-row::before,
+  .album-card::before,
+  .video-card::before,
+  .artist-card::before,
+  .mood-card::before {
+    transition: none;
   }
 }
