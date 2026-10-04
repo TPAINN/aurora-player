@@ -2879,6 +2879,8 @@ export default function App() {
                         aria-pressed={video}
                         disabled={!!player.track?.localUrl}
                         onClick={() => {
+                          // Focus is built around the cover; the video takes the whole stage.
+                          setFocusMode(false);
                           setVideo(!video);
                         }}
                       >
@@ -2886,9 +2888,27 @@ export default function App() {
                         <Video size={19} />
                       </IconButton>
                     </div>
-                    <IconButton label="Lyrics focus" onClick={toggleFocus}>
-                      <Focus size={19} />
-                    </IconButton>
+                    {/* The focus button becomes the way out of focus, in the same place. */}
+                    <AnimatePresence initial={false} mode="popLayout">
+                      {focused ? (
+                        <Motion.button
+                          key="focus-exit"
+                          type="button"
+                          className="focus-exit"
+                          aria-label="Exit focus"
+                          onClick={() => setFocusMode(false)}
+                          {...pop}
+                        >
+                          <Minimize2 size={15} /> <span>Exit focus</span>
+                        </Motion.button>
+                      ) : (
+                        <Motion.span key="focus-enter" className="focus-enter" {...pop}>
+                          <IconButton label="Lyrics focus" onClick={toggleFocus}>
+                            <Focus size={19} />
+                          </IconButton>
+                        </Motion.span>
+                      )}
+                    </AnimatePresence>
                     <IconButton
                       label="Player settings"
                       onClick={() => setSheet("settings")}
@@ -2897,21 +2917,6 @@ export default function App() {
                     </IconButton>
                   </div>
                 </header>
-                <AnimatePresence>
-                  {focused && (
-                    <Motion.button
-                      key="focus-exit"
-                      type="button"
-                      className="focus-exit"
-                      onClick={() => setFocusMode(false)}
-                      initial={{ opacity: 0, y: -8 }}
-                      animate={{ opacity: 1, y: 0, transition: { duration: 0.6, ease: EASE, delay: 0.35 } }}
-                      exit={{ opacity: 0, y: -8, transition: { duration: 0.25, ease: EASE_EXIT } }}
-                    >
-                      <Minimize2 size={15} /> Exit focus
-                    </Motion.button>
-                  )}
-                </AnimatePresence>
                 <div className="now-playing-body">
                   <SwipeCover player={player} onClose={() => setImmersive(false)}>
                     <TiltCover>

@@ -1121,6 +1121,7 @@ if (!only || only === 'M') {
     for (const [key, selector] of Object.entries({ cover: page.viewportSize().width <= 760 ? '.focus-thumb img' : '.now-playing-art', lyrics: '.desktop-lyrics .lyric-line.current', exit: '.focus-exit', topbar: '.player-topbar', dock: '.player-dock', sidebar: '.sidebar', chips: '.immersive-track-meta .meta-chips' })) state[key] = await visible(page, selector);
     state.title = await page.evaluate(() => [...document.querySelectorAll('.immersive-track-meta h1, .mobile-player-info h1, .focus-title h1')].some(node => { const box = node.getBoundingClientRect(); return getComputedStyle(node).display !== 'none' && box.width > 0 && box.top >= 0 && box.bottom <= innerHeight; }));
     state.overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
+    state.subdued = await page.evaluate(() => { const node = document.querySelector('.mode-switch'); const style = node && getComputedStyle(node); return !!style && Number(style.opacity) < .6 && style.filter.includes('grayscale') && Number(style.scale) < 1; });
     state.rects = await page.evaluate(() => Object.fromEntries(['.now-playing-art', '.immersive-track-meta', '.mobile-player-info', '.desktop-lyrics', '.player-topbar'].map(selector => { const node = document.querySelector(selector); const box = node?.getBoundingClientRect(); return [selector, box && `${Math.round(box.x)},${Math.round(box.y)} ${Math.round(box.width)}x${Math.round(box.height)} ${getComputedStyle(node).display}`]; })));
     if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/focus-${label}.png` });
     return state;
@@ -1131,10 +1132,11 @@ if (!only || only === 'M') {
     await startQueue(page); await wait(1200);
     if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(1000); }
     await setSeek(page, 10.5); await wait(600);
-    await check('M', `${label}: the focus button opens lyrics focus`, async () => { await page.click('button[aria-label="Lyrics focus"]'); await wait(180); if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/focus-${label}-glide.png` }); await wait(1120); const state = await focusView(page, label); ok(state.cover && state.lyrics && state.title && state.exit && !state.topbar && !state.dock && !state.sidebar && !state.chips && state.overflow <= 0, JSON.stringify(state)); });
+    await check('M', `${label}: the focus button opens lyrics focus`, async () => { await page.click('button[aria-label="Lyrics focus"]'); await wait(180); if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/focus-${label}-glide.png` }); await wait(1120); const state = await focusView(page, label); ok(state.cover && state.lyrics && state.title && state.exit && state.topbar && state.subdued && !state.dock && !state.sidebar && !state.chips && state.overflow <= 0, JSON.stringify(state)); });
     await check('M', `${label}: lyrics keep following the song in focus`, async () => { await setSeek(page, 13.1); await wait(1500); ok((await page.textContent('.lyric-line.current')).length > 0); });
     await check('M', `${label}: Escape leaves focus but keeps the player open`, async () => { await page.keyboard.press('Escape'); await wait(900); ok(await page.locator('.immersive-player').count() === 1 && await page.locator('.focus-exit').count() === 0 && await visible(page, '.player-topbar')); });
     await check('M', `${label}: I toggles focus, and Exit focus brings everything back`, async () => { await page.keyboard.press('i'); await wait(1100); ok(await visible(page, '.focus-exit')); await page.click('.focus-exit'); await wait(1100); ok(await visible(page, '.player-topbar') && !(await page.locator('.focus-exit').count())); if (viewport.width > 760) ok(await visible(page, '.player-dock') && await visible(page, '.sidebar')); });
+    await check('M', `${label}: the video toggle stays reachable in focus and hands the stage to the video`, async () => { await page.keyboard.press('i'); await wait(1000); const toggle = page.locator('button[aria-label="Video mode"]'); ok(await toggle.isVisible() && await toggle.isEnabled()); await toggle.click(); await wait(1100); ok(await page.locator('.focus-exit').count() === 0 && await page.locator('.immersive-player.with-video').count() === 1); await page.click('button[aria-label="Artwork mode"]'); await wait(900); ok(await page.locator('.immersive-player.with-video').count() === 0); });
     await check('M', `${label}: closing the player never reopens it in focus`, async () => { await page.keyboard.press('i'); await wait(900); await page.keyboard.press('Escape'); await wait(400); await page.keyboard.press('Escape'); await wait(1000); ok(await page.locator('.immersive-player').count() === 0); await page.keyboard.press('l'); await wait(1300); ok(await page.locator('.focus-exit').count() === 0); });
     await check('M', `${label}: no runtime errors`, async () => ok(!errors.length, errors.join(' | ')));
     await context.close();
@@ -1349,7 +1351,7 @@ if (only === 'R') {
     const visible = node => { const box = node.getBoundingClientRect(); return box.width > 8 && box.height > 8 && box.bottom > 0 && box.top < innerHeight && getComputedStyle(node).visibility !== 'hidden'; };
     window.__audit = { pops: [], vanishes: [], tracked: new Map() };
     const tracked = window.__audit.tracked;
-    new MutationObserver(records => {
+    const observer = new MutationObserver(records => {
       for (const record of records) {
         for (const node of record.addedNodes) {
           if (node.nodeType !== 1 || node.closest('iframe, .yt-deck, .toast, svg') || [...tracked.keys()].some(other => other !== node && other.contains?.(node))) continue;
@@ -1366,7 +1368,10 @@ if (only === 'R') {
           if (recent.length >= 3 && new Set(recent).size === 1 && history.visible) window.__audit.vanishes.push(label(node));
         }
       }
-    }).observe(document.body, { childList: true, subtree: true });
+    });
+    // Init scripts run before <body> exists: observe once the document is parsed.
+    const observe = () => observer.observe(document.body, { childList: true, subtree: true });
+    if (document.body) observe(); else document.addEventListener('DOMContentLoaded', observe, { once: true });
     // Every 40 ms, remember how each tracked element looks, to judge its exit.
     setInterval(() => { for (const [node, history] of tracked) { if (!node.isConnected) continue; const shown = visible(node); history.visible = shown; if (!shown) continue; history.push([performance.now(), chain(node).map(sig).join('#')]); if (history.length > 14) history.splice(1, history.length - 14); } }, 40);
   };
