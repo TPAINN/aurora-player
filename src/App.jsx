@@ -58,7 +58,8 @@ import { requestedVariant } from "../shared/audio-variants.js";
 import { artworkAt, artworkSrcSet } from "./lib/artwork";
 import { qualityLabel } from "./lib/audio-format";
 import { homeSeeds, onRepeat, recordLike, rotateForDay, tasteFilter, topArtists } from "./lib/listening";
-import { bestPart, isPeakAt, lineSpan, peakMoments, splitBackingVocals } from "./lib/lyrics";
+import { isPeakAt, lineSpan, peakMoments, splitBackingVocals } from "./lib/lyrics";
+import { bestMoments } from "./lib/best-part";
 import Welcome from "./components/Welcome";
 import { shouldWelcome } from "./lib/welcome";
 import FluidText from "./components/FluidText";
@@ -600,16 +601,36 @@ function Interlude({ clock, offset, start, end }) {
 }
 
 // Peaks (refrain, held notes) come from genuinely timed lyrics only.
+// Best parts: refrains and held notes from timed lyrics, weighed against what the
+// music itself says (listener replays, measured energy) and landed on the beat.
+// Audio evidence runs on playback time; results are in lyric time like the lines.
+function useMoments(player) {
+  const lines = player.lyrics?.sync && player.lyrics.sync !== "plain" ? player.lyrics.lines : null;
+  const insight = player.songInsight;
+  const offset = player.lyricsOffset || 0;
+  const duration = player.duration;
+  return useMemo(() => {
+    const lyricPeaks = lines ? peakMoments(lines) : [];
+    // Replays describe one upload: trusted only when it is as long as what is playing.
+    const replays = insight?.replays?.length && Math.abs(insight.replays.at(-1).end - duration) <= 8 ? insight.replays : null;
+    const { peaks, best } = bestMoments({
+      lyricPeaks: lyricPeaks.map((range) => ({ start: range.start - offset, end: range.end - offset })),
+      replays,
+      energy: insight?.energy,
+      grid: insight?.grid,
+      duration,
+    });
+    const toLyricTime = (range) => range && { start: range.start + offset, end: range.end + offset };
+    return { peaks: peaks.map(toLyricTime), best: toLyricTime(best) };
+  }, [lines, insight, offset, duration]);
+}
 function usePeaks(player) {
-  return useMemo(
-    () => (player.lyrics?.sync && player.lyrics.sync !== "plain" ? peakMoments(player.lyrics.lines) : []),
-    [player.lyrics],
-  );
+  return useMoments(player).peaks;
 }
 
 // Jumps to the song's best part (its longest refrain) and hides while it plays.
 function BestPartChip({ player }) {
-  const best = bestPart(usePeaks(player));
+  const { best } = useMoments(player);
   const offset = player.lyricsOffset || 0;
   const inside = useStore(player.clock, (value) => !!best && value + offset >= best.start - 1 && value + offset < best.end);
   return (

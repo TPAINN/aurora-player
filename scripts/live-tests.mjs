@@ -75,7 +75,7 @@ const categories = term => ({
   playlists: [{ id: 'PLroads', title: 'Road trip', owner: 'Aurora fan', count: 2, artwork: 'https://img.test/c/pl.jpg' }],
   top: /^band of night$/i.test(term.trim()) ? { kind: 'artist', id: 7 } : /slowed|mashup/i.test(term) ? { kind: 'video', id: 'VVVVVVVVVV1' } : { kind: 'song', id: 1 },
 });
-async function newSession(browser, { viewport = { width: 1440, height: 900 }, prefs = {}, reducedMotion = 'no-preference', searchDelay = 120, failSearch = () => false, recommendations = [], welcome = false, longIntro = false, incomingBpm = 124, unplayable = [] } = {}) {
+async function newSession(browser, { viewport = { width: 1440, height: 900 }, prefs = {}, reducedMotion = 'no-preference', searchDelay = 120, failSearch = () => false, recommendations = [], welcome = false, longIntro = false, incomingBpm = 124, unplayable = [], replays = null, tempoLog = null } = {}) {
   const context = await browser.newContext({ viewport, reducedMotion, hasTouch: viewport.width < 700 });
   await context.addInitScript(values => {
     if (!sessionStorage.getItem('seeded')) { for (const [key, value] of Object.entries(values)) localStorage.setItem(key, value); sessionStorage.setItem('seeded', '1'); }
@@ -120,7 +120,13 @@ async function newSession(browser, { viewport = { width: 1440, height: 900 }, pr
     const incoming = longIntro ? { ...lineLyrics, lines: lineLyrics.lines.map(line => ({ ...line, time: line.time + 37, end: line.end + 37 })) } : lineLyrics;
     return route.fulfill({ json: title === 'Night Drive' ? wordLyrics : title === 'Morning Light' ? incoming : { source: null, sync: 'plain', lines: [] } }).catch(() => {});
   });
-  await page.route('**/api/tempo?*', route => route.fulfill({ json: { bpm: new URL(route.request().url()).searchParams.get('title') === 'Night Drive' ? 120 : incomingBpm } }));
+  await page.route('**/api/tempo?*', route => {
+    const url = new URL(route.request().url());
+    tempoLog?.push(url.search);
+    const bpm = url.searchParams.get('title') === 'Night Drive' ? 120 : incomingBpm;
+    const list = replays && url.searchParams.get('video') ? replays(url.searchParams.get('title')) : null;
+    return route.fulfill({ json: list ? { bpm, replays: list } : { bpm } });
+  });
   await page.route('**/api/recommendations?*', route => route.fulfill({ json: { tracks: recommendations } }));
   await page.route('**/api/mood?*', route => { const mood = new URL(route.request().url()).searchParams.get('mood'); return route.fulfill({ json: { tracks: Array.from({ length: 16 }, (_, i) => ({ id: `mood:${mood}:${i}`, title: `${mood} song ${i + 1}`, artist: `Mood artist ${i % 8}`, album: 'LP', artwork: 'https://img.test/c/m.jpg', duration: 60, mood })) } }); });
   await page.route('https://www.youtube.com/**', route => route.abort());
@@ -1104,6 +1110,42 @@ if (!only || only === 'M') {
     await check('M', `${label}: I toggles focus, and Exit focus brings everything back`, async () => { await page.keyboard.press('i'); await wait(1100); ok(await visible(page, '.focus-exit')); await page.click('.focus-exit'); await wait(1100); ok(await visible(page, '.player-topbar') && !(await page.locator('.focus-exit').count())); if (viewport.width > 760) ok(await visible(page, '.player-dock') && await visible(page, '.sidebar')); });
     await check('M', `${label}: closing the player never reopens it in focus`, async () => { await page.keyboard.press('i'); await wait(900); await page.keyboard.press('Escape'); await wait(400); await page.keyboard.press('Escape'); await wait(1000); ok(await page.locator('.immersive-player').count() === 0); await page.keyboard.press('l'); await wait(1300); ok(await page.locator('.focus-exit').count() === 0); });
     await check('M', `${label}: no runtime errors`, async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
+// ── N: best parts from the music itself — listener replays and the beat ──
+if (!only || only === 'N') {
+  // Night Drive runs 60 s; listeners replay 40–52 s, past its last refrain.
+  const heatmap = (from, to, length = 60) => Array.from({ length: length / 2 }, (_, i) => ({ start: i * 2, end: i * 2 + 2, score: i * 2 >= from && i * 2 < to ? 1 : 0.2 }));
+  for (const [label, replays, expect] of [
+    ['most replayed', () => heatmap(40, 52), [39.4, 41]],
+    ['replays from another upload are ignored', () => heatmap(40, 52, 200), [24, 27]],
+  ]) {
+    const tempoLog = [];
+    const { context, page, errors } = await newSession(browser, { viewport: { width: 1280, height: 800 }, replays, tempoLog });
+    await page.goto(BASE); await wait(1500);
+    await startQueue(page); await wait(1500);
+    if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(1000); }
+    await check('N', `${label}: the analysis asks for the video that is playing`, async () => ok(tempoLog.some(search => /video=[\w-]{11}/.test(search)), tempoLog.join(' ')));
+    await check('N', `${label}: Best part jumps to ${expect[0] > 30 ? 'the replayed section' : 'the refrain'}`, async () => {
+      await page.click('.immersive-track-meta .best-part-chip'); await wait(900);
+      const t = await playerTime(page); ok(t >= expect[0] && t <= expect[1], String(t));
+    });
+    if (expect[0] > 30) {
+      await check('N', `${label}: the replayed section lights the backdrop and the timeline`, async () => {
+        await setSeek(page, 46); await wait(700);
+        ok(await page.locator('.player-art-background.is-peak').count() === 1, 'no peak at 46 s');
+        const marks = await page.locator('.seek-track .peak-mark').count(); ok(marks >= 2, `${marks} marks`);
+      });
+      await check('N', `${label}: the peak lasts whole bars at 120 BPM`, async () => {
+        await setSeek(page, 39.2 + 12.6); await wait(700); // 40 s + six 2 s bars ends at 52 s
+        ok(await page.locator('.player-art-background.is-peak').count() === 1, 'peak ended before its last bar');
+        await setSeek(page, 53); await wait(900);
+        ok(await page.locator('.player-art-background.is-peak').count() === 0, 'peak runs past its last bar');
+      });
+    }
+    await check('N', `${label}: no runtime errors`, async () => ok(!errors.length, errors.join(' | ')));
     await context.close();
   }
 }
