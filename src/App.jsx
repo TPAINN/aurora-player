@@ -7,6 +7,7 @@ import {
   useMotionValue,
   useSpring,
   useTransform,
+  useMotionTemplate,
   useIsPresent,
   useReducedMotion,
   usePresence,
@@ -308,6 +309,31 @@ function SwipeCover({ player, onClose, children }) {
       <Motion.span className="swipe-hint is-previous" style={{ opacity: previousHint }} aria-hidden="true">
         <ArrowLeft size={15} /> Previous
       </Motion.span>
+    </Motion.div>
+  );
+}
+
+// The now-playing cover leans toward a fine pointer on a spring and catches the
+// light: a sheen follows the pointer across it. Motion values write styles
+// directly (no React render); off on touch, on phones' layout and under reduced
+// motion, and never while the cover is being dragged.
+const TILT_SPRING = { stiffness: 170, damping: 18, mass: 0.6 };
+function TiltCover({ children }) {
+  const rx = useSpring(0, TILT_SPRING), ry = useSpring(0, TILT_SPRING), glow = useSpring(0, TILT_SPRING);
+  const gx = useMotionValue(50), gy = useMotionValue(30);
+  const sheen = useMotionTemplate`radial-gradient(circle at ${gx}% ${gy}%, rgba(255,255,255,0.22), rgba(255,255,255,0) 58%)`;
+  const move = (event) => {
+    if (event.pointerType !== "mouse" || event.buttons || !window.matchMedia?.("(min-width: 761px)").matches || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    const box = event.currentTarget.getBoundingClientRect();
+    const px = (event.clientX - box.left) / box.width, py = (event.clientY - box.top) / box.height;
+    ry.set((px - 0.5) * 14); rx.set((0.5 - py) * 14);
+    gx.set(px * 100); gy.set(py * 100); glow.set(1);
+  };
+  const leave = () => { rx.set(0); ry.set(0); glow.set(0); };
+  return (
+    <Motion.div className="tilt-cover" style={{ rotateX: rx, rotateY: ry, transformPerspective: 900 }} onPointerMove={move} onPointerLeave={leave} onPointerDown={leave}>
+      {children}
+      <Motion.span className="tilt-sheen" aria-hidden="true" style={{ backgroundImage: sheen, opacity: glow }} />
     </Motion.div>
   );
 }
@@ -1343,6 +1369,20 @@ function DjStatus({ player }) {
 export default function App() {
   const player = usePlayer();
   const reduce = useReducedMotion();
+  // Cursor spotlight: a soft light follows a fine pointer across the card or row it
+  // is over. One listener; only the hovered element repaints, and only while hovered.
+  useEffect(() => {
+    const move = (event) => {
+      if (event.pointerType !== "mouse") return;
+      const card = event.target.closest?.(".track-row, .album-card, .video-card, .artist-card, .mood-card");
+      if (!card) return;
+      const box = card.getBoundingClientRect();
+      card.style.setProperty("--mx", `${event.clientX - box.left}px`);
+      card.style.setProperty("--my", `${event.clientY - box.top}px`);
+    };
+    window.addEventListener("pointermove", move, { passive: true });
+    return () => window.removeEventListener("pointermove", move);
+  }, []);
   // Which of the player's two layouts is on screen (phone below 761 px).
   const phoneLayout = useMediaQuery("(max-width: 760px)");
   const [notice, setNotice] = useState("");
@@ -2874,7 +2914,9 @@ export default function App() {
                 </AnimatePresence>
                 <div className="now-playing-body">
                   <SwipeCover player={player} onClose={() => setImmersive(false)}>
-                    <FadingCover track={player.track} eager size={1200} direction={player.direction} blend={player.changeKind === "blend"} />
+                    <TiltCover>
+                      <FadingCover track={player.track} eager size={1200} direction={player.direction} blend={player.changeKind === "blend"} />
+                    </TiltCover>
                     <span className="art-caption">
                       <span
                         className={

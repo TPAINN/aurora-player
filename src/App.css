@@ -1126,7 +1126,8 @@ input[type="range"]::-moz-range-thumb {
   width: min(46vh, 400px);
   flex-shrink: 0;
 }
-.now-playing-art > .cover {
+.now-playing-art > .cover,
+.now-playing-art > .tilt-cover > .cover {
   width: 100%;
   aspect-ratio: 1;
   border-radius: 16px;
@@ -3935,7 +3936,8 @@ button {
     scale: none;
   }
 }
-.now-playing-art > .fading-cover {
+.now-playing-art > .fading-cover,
+.now-playing-art > .tilt-cover > .fading-cover {
   background: #0d1110;
 }
 
@@ -5134,4 +5136,60 @@ body {
 .queue-played.queue-section {
   margin-top: 0;
   padding-top: 18px;
+}
+
+/* ── Light that follows the hand ───────────────────────────────────────────
+   Cursor spotlight on cards and rows, and the now-playing cover's tilt sheen. */
+@media (hover: hover) and (pointer: fine) {
+  .track-row,
+  .album-card,
+  .video-card,
+  .artist-card,
+  .mood-card {
+    position: relative;
+    isolation: isolate;
+  }
+  .track-row::before,
+  .album-card::before,
+  .video-card::before,
+  .artist-card::before,
+  .mood-card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    pointer-events: none;
+    background: radial-gradient(220px circle at var(--mx, 50%) var(--my, 50%), #c3ebcf17, transparent 65%);
+    opacity: 0;
+    transition: opacity 0.4s var(--ease-soft);
+  }
+  .track-row:hover::before,
+  .album-card:hover::before,
+  .video-card:hover::before,
+  .artist-card:hover::before,
+  .mood-card:hover::before {
+    opacity: 1;
+  }
+}
+.tilt-cover {
+  position: relative;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+.tilt-sheen {
+  position: absolute;
+  inset: 0;
+  border-radius: 16px;
+  pointer-events: none;
+  mix-blend-mode: soft-light;
+}
+@media (prefers-reduced-motion: reduce) {
+  .track-row::before,
+  .album-card::before,
+  .video-card::before,
+  .artist-card::before,
+  .mood-card::before {
+    transition: none;
+  }
 }
