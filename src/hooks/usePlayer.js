@@ -892,6 +892,23 @@ export function usePlayer() {
       } finally { if (!controller.signal.aborted && mounted.current) setRecommendationsLoading(false); }
     });
   }, [autoplay, track, queue.length, queueIndex, radioRetry, setQueue, loadTrack, lyricsLoading, heard]);
+  // The playing song's tempo, for the best-part pulse: measured for device audio,
+  // catalogue BPM online, or null (no pulse) when neither is known.
+  const [tempo, setTempo] = useState({ id: null, bpm: null });
+  useEffect(() => {
+    if (!track) return undefined;
+    const { id } = track;
+    const controller = new AbortController();
+    const known = track.localUrl ? analysis.current.get(id)?.intro?.bpm ?? null : tempos.current.get(id);
+    const lookup = known !== undefined ? Promise.resolve(known) : getTrackTempo(track, controller.signal).then(bpm => {
+      tempos.current.set(id, bpm);
+      while (tempos.current.size > 12) tempos.current.delete(tempos.current.keys().next().value);
+      return bpm;
+    });
+    lookup.then(bpm => { if (!controller.signal.aborted) setTempo({ id, bpm }); }).catch(() => {});
+    return () => controller.abort();
+  }, [track]);
+
   // A song counts as heard after 25 seconds of it.
   useEffect(() => clock.subscribe(() => {
     const id = current.current.track?.id;
@@ -1391,6 +1408,7 @@ export function usePlayer() {
     return playhead.current.head.read({ raw: deck?.getCurrentTime?.(), playing: deck?.getPlayerState?.() === 1, rate: deck?.getPlaybackRate?.() ?? 1, now: performance.now() });
   }, []);
 
-  return { loudness, setLoudness, warm, notice, unavailable, changeKind, direction, transitionFx, setTransitionFx, blendLength, setBlendLength, sourceInfo, surround, setSurround, audioOutput, track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, setLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime };
+  const bpm = tempo.id === track?.id ? tempo.bpm : null;
+  return { bpm, loudness, setLoudness, warm, notice, unavailable, changeKind, direction, transitionFx, setTransitionFx, blendLength, setBlendLength, sourceInfo, surround, setSurround, audioOutput, track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, setLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime };
 }
 export default usePlayer;
