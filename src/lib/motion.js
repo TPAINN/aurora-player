@@ -54,6 +54,13 @@ export const coverSwap = {
   exit: direction => ({ opacity: 0, x: `${direction * -7}%`, scale: 0.96, filter: 'blur(10px)', transition: { duration: 0.8, ease: EASE_IN_OUT } }),
 };
 
+// Small song names (the dock) swap like the cover, at text scale: a short glide.
+export const textSwap = {
+  initial: direction => ({ opacity: 0, x: direction * 10, filter: 'blur(3px)' }),
+  animate: { opacity: 1, x: 0, filter: 'blur(0px)', transition: { duration: 0.5, ease: EASE } },
+  exit: direction => ({ opacity: 0, x: direction * -8, filter: 'blur(2px)', transition: { duration: 0.25, ease: EASE_EXIT } }),
+};
+
 // Sections below the fold reveal as they scroll into view (once), and their cards
 // cascade in after them. Cards take `revealCard` and inherit the section's state.
 export const revealSection = {

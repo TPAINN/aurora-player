@@ -1060,7 +1060,7 @@ if (!only || only === 'L') {
           overflow: document.scrollingElement.scrollWidth - innerWidth,
           seekOk: !seekInput || (Number(seekInput.value) >= 0 && Number(seekInput.value) <= Number(seekInput.max) + 0.5),
           decksOn: Object.values(decks).filter(value => value === 'on').length,
-          titleOk: !document.querySelector('.dock-track strong') || document.title.startsWith(document.querySelector('.dock-track strong').textContent.trim()) || document.title === 'Aurora',
+          titleOk: !document.querySelector('.dock-track strong') || [...document.querySelectorAll('.dock-track strong')].some(node => document.title.startsWith(node.textContent.trim())) || document.title === 'Aurora',
         };
       });
       if (state.players > 1) problems.push(`${step}:${action} two players`);
