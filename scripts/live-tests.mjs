@@ -355,6 +355,15 @@ if (!only || only === 'D') {
   await wait(7500);
   await check('D', 'both songs are audible together', async () => { const vols = await page.evaluate(() => window.__vols); const a = vols.filter(v => v[1] === 'AAAAAAAAAAA' && v[2] > 5 && v[2] < 75); const b = vols.filter(v => v[1] === 'BBBBBBBBBBB' && v[2] > 5 && v[2] < 75); ok(a.length > 3 && b.length > 3, `A:${a.length} B:${b.length} ${JSON.stringify(vols.slice(-6))}`); });
   await check('D', 'equal-power curve reaches full volume', async () => { const vols = await page.evaluate(() => window.__vols.filter(v => v[1] === 'BBBBBBBBBBB')); ok(vols.at(-1)[2] === 68, `ends at the Normal loudness level (80 × 0.85): ${JSON.stringify(vols.at(-1))}`); });
+  await check('D', 'a real blend: both songs ride together, not a fade-out then fade-in', async () => {
+    const vols = await page.evaluate(() => window.__vols.filter(v => v[1] === 'AAAAAAAAAAA' || v[1] === 'BBBBBBBBBBB'));
+    const start = vols.find(v => v[1] === 'BBBBBBBBBBB' && v[2] > 0)?.[0], end = vols.findLast(v => v[1] === 'AAAAAAAAAAA' && v[2] > 0)?.[0];
+    ok(start && end > start, 'blend window');
+    // Both within 6 dB of full (68 at Normal loudness) at the same moment.
+    const level = { AAAAAAAAAAA: 68, BBBBBBBBBBB: 0 }; let together = 0, last = start;
+    for (const [time, id, volume] of vols) { if (time < start) { level[id] = volume; continue; } if (time > end) break; if (level.AAAAAAAAAAA >= 34 && level.BBBBBBBBBBB >= 34) together += time - last; last = time; level[id] = volume; }
+    ok(together / (end - start) >= .55, `${(together / (end - start) * 100).toFixed(0)} % of ${((end - start) / 1000).toFixed(1)} s`);
+  });
   await check('D', 'midpoint loudness is equal power', async () => { const vols = await page.evaluate(() => window.__vols.filter(v => v[1] === 'BBBBBBBBBBB' && v[2] > 0)); const mid = vols.find(v => v[2] >= 50); ok(mid && mid[2] <= 62, JSON.stringify(mid)); });
   await check('D', 'outgoing deck stops after the blend', async () => ok((await events(page)).some(row => row[1] === 'pause' && row[2] === 'AAAAAAAAAAA')));
   await check('D', 'a deep sweep plays under the online blend', async () => ok(await page.evaluate(() => window.__sweeps) >= 1, 'no sweep started'));
@@ -589,9 +598,9 @@ if (!only || only === 'G') {
   await check('G', 'the blend hands over to the incoming song', async () => ok((await title(page)).startsWith('Incoming'), await title(page)));
   await check('G', 'song B enters at the shared tempo (tempos meet in the middle)', async () => { const rates = await page.evaluate(() => window.__rates); ok(rates.some(r => r > .97 && r < .98), rates.slice(-12).join(',')); });
   await check('G', 'song B enters at its first full section, not its quiet intro', async () => { const t = await playerTime(page); ok(t >= 15 && t <= 24, String(t)); });
-  await wait(10000);
-  await check('G', 'song B eases back to its own tempo instead of snapping', async () => { const rates = await page.evaluate(() => window.__rates); const entered = rates.findIndex(r => r > .97 && r < .98); ok(entered >= 0 && rates.slice(entered).some(r => r > .99 && r < 1), rates.slice(-10).join(',')); });
-  await check('G', 'the blend completes and the DJ returns to idle', async () => { await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(700); let text = await page.textContent('.dj-now'); for (let i = 0; i < 24 && !/complete|Ready/i.test(text); i++) { await wait(500); text = await page.textContent('.dj-now'); } ok(/complete|Ready/i.test(text), text); await page.keyboard.press('Escape'); await wait(500); });
+  // The recovery rides over at least four bars (about 8 s at this tempo) after the overlap.
+  await check('G', 'song B eases back to its own tempo instead of snapping', async () => { let rates = []; for (let i = 0; i < 40; i++) { rates = await page.evaluate(() => window.__rates); const at = rates.findIndex(r => r > .97 && r < .98); if (at >= 0 && rates.slice(at).some(r => r > .99 && r < 1)) break; await wait(500); } const entered = rates.findIndex(r => r > .97 && r < .98); ok(entered >= 0 && rates.slice(entered).some(r => r > .99 && r < 1), rates.slice(-10).join(',')); });
+  await check('G', 'the blend completes and the DJ returns to idle', async () => { await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(700); let text = await page.textContent('.dj-now'); for (let i = 0; i < 48 && !/complete|Ready/i.test(text); i++) { await wait(500); text = await page.textContent('.dj-now'); } ok(/complete|Ready/i.test(text), text); await page.keyboard.press('Escape'); await wait(500); });
   await check('G', 'no runtime errors in the local DJ blend', async () => ok(!errors.length, errors.join(' | ')));
   await context.close();
 }
