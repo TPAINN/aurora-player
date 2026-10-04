@@ -3,6 +3,7 @@
 //   npm i --no-save playwright-core && node scripts/live-tests.mjs [A|B|C|D|E]
 // BASE=http://localhost:5188/ targets `npm run preview`; CHROMIUM_PATH selects a browser.
 import { chromium } from 'playwright-core';
+import { mkdir } from 'node:fs/promises';
 
 const BASE = process.env.BASE || 'http://localhost:5187/';
 const only = process.argv[2];
@@ -47,16 +48,23 @@ function fakeYouTube() {
       const frame = document.createElement('iframe'); frame.title = 'stub'; mount.replaceWith(frame);
       log('create', this.vid);
       setTimeout(() => options.events.onReady({ target: this }), 40);
-      this.clock = setInterval(() => { if (this.state === 1) { this.t += .05 * this.rate; if (this.t >= this.dur) { this.t = this.dur; this.set(0); } } }, 50);
+      // A media clock follows real time (like a real player's), but is reported only
+      // in coarse 50 ms updates, as YouTube's embed reports its own.
+      this.base = 0; this.since = performance.now();
+      this.clock = setInterval(() => { if (this.state === 1) { this.t = this.exactTime(); if (this.t >= this.dur) { this.t = this.dur; this.rebase(); this.set(0); } } }, 50);
+      (window.__ytPlayers = window.__ytPlayers || []).push(this);
     }
-    set(state) { this.state = state; this.o.events.onStateChange?.({ target: this, data: state }); }
-    loadVideoById(id, start = 0) { if (JSON.parse(localStorage.getItem('refused') || '[]').includes(id)) { this.vid = id; log('refused', id); setTimeout(() => this.o.events.onError?.({ target: this, data: 150 }), 120); return; } this.vid = id; this.t = start; this.dur = Number(JSON.parse(localStorage.getItem('durations') || '{}')[id] || 60); log('load', id, this.muted, start); this.set(3); setTimeout(() => this.set(1), 250); }
+    rebase() { this.base = this.t; this.since = performance.now(); }
+    set(state) { if (this.state === 1) this.t = Math.min(this.dur, this.exactTime()); this.rebase(); this.state = state; this.o.events.onStateChange?.({ target: this, data: state }); }
+    loadVideoById(id, start = 0) { if (JSON.parse(localStorage.getItem('refused') || '[]').includes(id)) { this.vid = id; log('refused', id); setTimeout(() => this.o.events.onError?.({ target: this, data: 150 }), 120); return; } this.vid = id; this.t = start; this.rebase(); this.dur = Number(JSON.parse(localStorage.getItem('durations') || '{}')[id] || 60); log('load', id, this.muted, start); this.set(3); setTimeout(() => this.set(1), 250); }
     playVideo() { log('play', this.vid, this.muted); setTimeout(() => this.set(1), 150); }
     pauseVideo() { log('pause', this.vid); this.set(2); }
-    stopVideo() { log('stop', this.vid); this.set(5); } seekTo(t) { log('seek', this.vid, Math.round(t * 10) / 10); this.t = t; }
+    stopVideo() { log('stop', this.vid); this.set(5); } seekTo(t) { log('seek', this.vid, Math.round(t * 10) / 10); this.t = t; this.rebase(); }
+    // Ground truth for timing checks: the stepped clock plus the time since its step.
+    exactTime() { return this.state === 1 ? this.base + (performance.now() - this.since) / 1000 * this.rate : this.t; }
     getCurrentTime() { return this.t; } getDuration() { return this.dur; } getPlayerState() { return this.state; }
     setVolume(v) { this.vol = v; window.__vols.push([Math.round(performance.now()), this.vid, Math.round(v)]); } mute() { this.muted = true; } unMute() { this.muted = false; }
-    setPlaybackRate(r) { const applied = fine === '3' ? Math.round(r / .05) * .05 : fine ? r : coarse.reduce((best, rate) => Math.abs(rate - r) < Math.abs(best - r) ? rate : best, 1); this.rate = applied; log('rate', this.vid, applied); } getPlaybackRate() { return this.rate; }
+    setPlaybackRate(r) { if (this.state === 1) this.t = this.exactTime(); this.rebase(); const applied = fine === '3' ? Math.round(r / .05) * .05 : fine ? r : coarse.reduce((best, rate) => Math.abs(rate - r) < Math.abs(best - r) ? rate : best, 1); this.rate = applied; log('rate', this.vid, applied); } getPlaybackRate() { return this.rate; }
     getAvailablePlaybackRates() { return fine === '1' ? Array.from({ length: 41 }, (_, i) => Math.round((.8 + i * .01) * 100) / 100) : coarse; }
     getVideoData() { return { video_id: this.vid }; } destroy() { clearInterval(this.clock); }
   }
@@ -145,6 +153,7 @@ async function check(group, name, fn) {
 const events = page => page.evaluate(() => window.__events);
 const title = page => page.evaluate(() => document.title);
 const searchFor = async (page, text) => { await page.fill('input[aria-label="Search songs or artists"]', text); await wait(700); };
+const goPage = (page, desktop, mobile) => page.locator(`nav[aria-label="Main navigation"] button[aria-label="${desktop}"] >> visible=true`).or(page.locator(`nav[aria-label="Mobile navigation"] button:has-text("${mobile}") >> visible=true`)).first().click();
 const goSearch = page => page.locator('nav[aria-label="Main navigation"] button[aria-label="Search"] >> visible=true').or(page.locator('nav[aria-label="Mobile navigation"] button:has-text("Search") >> visible=true')).first().click();
 const playerTime = page => page.evaluate(() => Number(document.querySelector('.dock-seek input')?.value || 0));
 async function setSeek(page, seconds) {
@@ -262,6 +271,23 @@ if (!only || only === 'C') {
   await check('C', 'the backdrop opens up on a held note, smoothly', async () => { await setSeek(page, 26.6); await wait(400); ok(await page.locator('.player-art-background.is-peak').count() === 1, 'no peak while the note is held'); const rate = await fps(); ok(rate >= 30, `fps ${rate} during the zoom (software rendering)`); });
   await check('C', 'the peak kicks on every beat and rings once a bar (120 BPM → 0.5 s, 2 s), lit brighter', async () => { await setSeek(page, 26.6); await wait(2400); const wave = await page.evaluate(() => { const element = document.querySelector('.beat-pulse-wave'); const ring = document.querySelector('.beat-pulse-ring'); const animation = element?.getAnimations()[0]; return element && { duration: getComputedStyle(element).animationDuration, bar: ring && getComputedStyle(ring).animationDuration, running: animation?.playState, boost: Number(getComputedStyle(document.querySelector('.player-art-boost')).opacity) }; }); ok(wave && wave.duration === '0.5s' && wave.bar === '2s' && wave.running === 'running' && wave.boost > 0.6, JSON.stringify(wave)); const rate = await fps(); ok(rate >= 30, `fps ${rate} while pulsing`); if (process.env.SHOTS) for (const [name, at] of [['crest', 0], ['trough', 0.48]]) { await page.evaluate(at => { for (const node of document.querySelectorAll('.beat-pulse-wave, .beat-pulse-ring')) { const animation = node.getAnimations()[0]; animation.pause(); animation.currentTime = at * 1000; } }, at); await page.screenshot({ path: `${process.env.SHOTS}/pulse-${name}.png` }); await page.evaluate(() => { for (const node of document.querySelectorAll('.beat-pulse-wave, .beat-pulse-ring')) node.getAnimations()[0].play(); }); } });
   await check('C', 'and settles again outside the peak', async () => { await setSeek(page, 7); await wait(900); ok(await page.locator('.player-art-background.is-peak').count() === 0); await wait(2600); if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/pulse-calm.png` }); ok(await page.locator('.beat-pulse').count() === 0, 'pulse lingers outside the peak'); ok(Number(await page.evaluate(() => getComputedStyle(document.querySelector('.player-art-boost')).opacity)) < 0.02, 'the lift lingers outside the peak'); });
+  // Audio-visual sync is imperceptible within about ±45 ms (ITU-R BT.1359).
+  await check('C', 'the kick stays on the beat as the song plays (median ≤ 25 ms, worst ≤ 50 ms)', async () => {
+    await setSeek(page, 26.3); await wait(2200);
+    const errors = [];
+    for (let i = 0; i < 10; i++) {
+      // Both read in the same task: the animation's position and the playing deck's exact time.
+      const sample = await page.evaluate(() => { const node = document.querySelector('.beat-pulse-wave'); const animation = node?.getAnimations()[0]; const deck = (window.__ytPlayers || []).find(p => p.state === 1); return node && animation && deck && { origin: Number(node.dataset.beatOrigin), period: Number(node.dataset.period), at: Number(animation.currentTime) / 1000, time: deck.base + (document.timeline.currentTime - deck.since) / 1000 * deck.rate }; }); // the song's position at this frame's own timestamp
+      const time = sample?.time;
+      if (!sample) { errors.push('no pulse'); break; }
+      const want = (((time - sample.origin) % sample.period) + sample.period) % sample.period;
+      const have = ((sample.at % sample.period) + sample.period) % sample.period;
+      const drift = Math.abs(want - have); errors.push(Math.round(Math.min(drift, sample.period - drift) * 1000));
+      await wait(300);
+    }
+    const sorted = errors.filter(ms => typeof ms === 'number').sort((a, b) => a - b);
+    ok(sorted.length === 10 && sorted[5] <= 25 && sorted.at(-1) <= 50, `drift (ms): ${errors.join(', ')}`);
+  });
   await check('C', 'lyric clicks, wheel, follow and peaks never scroll the player into its backdrop overscan', async () => { const shift = await page.evaluate(() => { const player = document.querySelector('.immersive-player'); return [player.scrollLeft, player.scrollTop]; }); ok(shift.join() === '0,0', `player shifted by ${shift}`); });
   await check('C', 'video mode toggles on', async () => { await page.click('button[aria-label="Video mode"]'); await wait(500); ok(await page.locator('.aurora-app.has-video').count() === 1); });
   await check('C', 'artwork mode toggles back', async () => { await page.click('button[aria-label="Artwork mode"]'); await wait(500); ok(await page.locator('.aurora-app.has-video').count() === 0); });
@@ -329,9 +355,18 @@ if (!only || only === 'D') {
   await wait(7500);
   await check('D', 'both songs are audible together', async () => { const vols = await page.evaluate(() => window.__vols); const a = vols.filter(v => v[1] === 'AAAAAAAAAAA' && v[2] > 5 && v[2] < 75); const b = vols.filter(v => v[1] === 'BBBBBBBBBBB' && v[2] > 5 && v[2] < 75); ok(a.length > 3 && b.length > 3, `A:${a.length} B:${b.length} ${JSON.stringify(vols.slice(-6))}`); });
   await check('D', 'equal-power curve reaches full volume', async () => { const vols = await page.evaluate(() => window.__vols.filter(v => v[1] === 'BBBBBBBBBBB')); ok(vols.at(-1)[2] === 68, `ends at the Normal loudness level (80 × 0.85): ${JSON.stringify(vols.at(-1))}`); });
+  await check('D', 'a real blend: both songs ride together, not a fade-out then fade-in', async () => {
+    const vols = await page.evaluate(() => window.__vols.filter(v => v[1] === 'AAAAAAAAAAA' || v[1] === 'BBBBBBBBBBB'));
+    const start = vols.find(v => v[1] === 'BBBBBBBBBBB' && v[2] > 0)?.[0], end = vols.findLast(v => v[1] === 'AAAAAAAAAAA' && v[2] > 0)?.[0];
+    ok(start && end > start, 'blend window');
+    // Both within 6 dB of full (68 at Normal loudness) at the same moment.
+    const level = { AAAAAAAAAAA: 68, BBBBBBBBBBB: 0 }; let together = 0, last = start;
+    for (const [time, id, volume] of vols) { if (time < start) { level[id] = volume; continue; } if (time > end) break; if (level.AAAAAAAAAAA >= 34 && level.BBBBBBBBBBB >= 34) together += time - last; last = time; level[id] = volume; }
+    ok(together / (end - start) >= .55, `${(together / (end - start) * 100).toFixed(0)} % of ${((end - start) / 1000).toFixed(1)} s`);
+  });
   await check('D', 'midpoint loudness is equal power', async () => { const vols = await page.evaluate(() => window.__vols.filter(v => v[1] === 'BBBBBBBBBBB' && v[2] > 0)); const mid = vols.find(v => v[2] >= 50); ok(mid && mid[2] <= 62, JSON.stringify(mid)); });
   await check('D', 'outgoing deck stops after the blend', async () => ok((await events(page)).some(row => row[1] === 'pause' && row[2] === 'AAAAAAAAAAA')));
-  await check('D', 'a hollow sweep plays over the online blend', async () => ok(await page.evaluate(() => window.__sweeps) >= 1, 'no sweep started'));
+  await check('D', 'a deep sweep plays under the online blend', async () => ok(await page.evaluate(() => window.__sweeps) >= 1, 'no sweep started'));
   await check('D', 'coarse player rates never claim tempo matching', async () => ok(!(await events(page)).some(row => row[1] === 'rate' && row[3] !== 1)));
   await check('D', 'blend main thread stays free of long tasks', async () => { const tasks = await page.evaluate(() => window.__longtasks); ok(tasks.filter(t => t > 120).length <= 1, `blend-window long tasks: ${tasks.join(',')}`); });
   await check('D', 'no runtime errors during DJ blend', async () => ok(!errors.length, errors.join(' | ')));
@@ -563,9 +598,9 @@ if (!only || only === 'G') {
   await check('G', 'the blend hands over to the incoming song', async () => ok((await title(page)).startsWith('Incoming'), await title(page)));
   await check('G', 'song B enters at the shared tempo (tempos meet in the middle)', async () => { const rates = await page.evaluate(() => window.__rates); ok(rates.some(r => r > .97 && r < .98), rates.slice(-12).join(',')); });
   await check('G', 'song B enters at its first full section, not its quiet intro', async () => { const t = await playerTime(page); ok(t >= 15 && t <= 24, String(t)); });
-  await wait(10000);
-  await check('G', 'song B eases back to its own tempo instead of snapping', async () => { const rates = await page.evaluate(() => window.__rates); const entered = rates.findIndex(r => r > .97 && r < .98); ok(entered >= 0 && rates.slice(entered).some(r => r > .99 && r < 1), rates.slice(-10).join(',')); });
-  await check('G', 'the blend completes and the DJ returns to idle', async () => { await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(700); let text = await page.textContent('.dj-now'); for (let i = 0; i < 24 && !/complete|Ready/i.test(text); i++) { await wait(500); text = await page.textContent('.dj-now'); } ok(/complete|Ready/i.test(text), text); await page.keyboard.press('Escape'); await wait(500); });
+  // The recovery rides over at least four bars (about 8 s at this tempo) after the overlap.
+  await check('G', 'song B eases back to its own tempo instead of snapping', async () => { let rates = []; for (let i = 0; i < 40; i++) { rates = await page.evaluate(() => window.__rates); const at = rates.findIndex(r => r > .97 && r < .98); if (at >= 0 && rates.slice(at).some(r => r > .99 && r < 1)) break; await wait(500); } const entered = rates.findIndex(r => r > .97 && r < .98); ok(entered >= 0 && rates.slice(entered).some(r => r > .99 && r < 1), rates.slice(-10).join(',')); });
+  await check('G', 'the blend completes and the DJ returns to idle', async () => { await page.click('.dock-actions button[aria-label="DJ transition settings"]'); await wait(700); let text = await page.textContent('.dj-now'); for (let i = 0; i < 48 && !/complete|Ready/i.test(text); i++) { await wait(500); text = await page.textContent('.dj-now'); } ok(/complete|Ready/i.test(text), text); await page.keyboard.press('Escape'); await wait(500); });
   await check('G', 'no runtime errors in the local DJ blend', async () => ok(!errors.length, errors.join(' | ')));
   await context.close();
 }
@@ -1095,8 +1130,9 @@ if (!only || only === 'M') {
   const focusView = async (page, label) => {
     const state = {};
     for (const [key, selector] of Object.entries({ cover: page.viewportSize().width <= 760 ? '.focus-thumb img' : '.now-playing-art', lyrics: '.desktop-lyrics .lyric-line.current', exit: '.focus-exit', topbar: '.player-topbar', dock: '.player-dock', sidebar: '.sidebar', chips: '.immersive-track-meta .meta-chips' })) state[key] = await visible(page, selector);
-    state.title = await page.evaluate(() => [...document.querySelectorAll('.immersive-track-meta h1, .mobile-player-info h1')].some(node => { const box = node.getBoundingClientRect(); return getComputedStyle(node).display !== 'none' && box.width > 0 && box.top >= 0 && box.bottom <= innerHeight; }));
+    state.title = await page.evaluate(() => [...document.querySelectorAll('.immersive-track-meta h1, .mobile-player-info h1, .focus-title h1')].some(node => { const box = node.getBoundingClientRect(); return getComputedStyle(node).display !== 'none' && box.width > 0 && box.top >= 0 && box.bottom <= innerHeight; }));
     state.overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
+    state.subdued = await page.evaluate(() => { const node = document.querySelector('.mode-switch'); const style = node && getComputedStyle(node); return !!style && Number(style.opacity) < .6 && style.filter.includes('grayscale') && Number(style.scale) < 1; });
     state.rects = await page.evaluate(() => Object.fromEntries(['.now-playing-art', '.immersive-track-meta', '.mobile-player-info', '.desktop-lyrics', '.player-topbar'].map(selector => { const node = document.querySelector(selector); const box = node?.getBoundingClientRect(); return [selector, box && `${Math.round(box.x)},${Math.round(box.y)} ${Math.round(box.width)}x${Math.round(box.height)} ${getComputedStyle(node).display}`]; })));
     if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/focus-${label}.png` });
     return state;
@@ -1107,10 +1143,11 @@ if (!only || only === 'M') {
     await startQueue(page); await wait(1200);
     if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(1000); }
     await setSeek(page, 10.5); await wait(600);
-    await check('M', `${label}: the focus button opens lyrics focus`, async () => { await page.click('button[aria-label="Lyrics focus"]'); await wait(1300); const state = await focusView(page, label); ok(state.cover && state.lyrics && state.title && state.exit && !state.topbar && !state.dock && !state.sidebar && !state.chips && state.overflow <= 0, JSON.stringify(state)); });
+    await check('M', `${label}: the focus button opens lyrics focus`, async () => { await page.click('button[aria-label="Lyrics focus"]'); await wait(180); if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/focus-${label}-glide.png` }); await wait(1120); const state = await focusView(page, label); ok(state.cover && state.lyrics && state.title && state.exit && state.topbar && state.subdued && !state.dock && !state.sidebar && !state.chips && state.overflow <= 0, JSON.stringify(state)); });
     await check('M', `${label}: lyrics keep following the song in focus`, async () => { await setSeek(page, 13.1); await wait(1500); ok((await page.textContent('.lyric-line.current')).length > 0); });
     await check('M', `${label}: Escape leaves focus but keeps the player open`, async () => { await page.keyboard.press('Escape'); await wait(900); ok(await page.locator('.immersive-player').count() === 1 && await page.locator('.focus-exit').count() === 0 && await visible(page, '.player-topbar')); });
     await check('M', `${label}: I toggles focus, and Exit focus brings everything back`, async () => { await page.keyboard.press('i'); await wait(1100); ok(await visible(page, '.focus-exit')); await page.click('.focus-exit'); await wait(1100); ok(await visible(page, '.player-topbar') && !(await page.locator('.focus-exit').count())); if (viewport.width > 760) ok(await visible(page, '.player-dock') && await visible(page, '.sidebar')); });
+    await check('M', `${label}: the video toggle stays reachable in focus and hands the stage to the video`, async () => { await page.keyboard.press('i'); await wait(1000); const toggle = page.locator('button[aria-label="Video mode"]'); ok(await toggle.isVisible() && await toggle.isEnabled()); await toggle.click(); await wait(1100); ok(await page.locator('.focus-exit').count() === 0 && await page.locator('.immersive-player.with-video').count() === 1); await page.click('button[aria-label="Artwork mode"]'); await wait(900); ok(await page.locator('.immersive-player.with-video').count() === 0); });
     await check('M', `${label}: closing the player never reopens it in focus`, async () => { await page.keyboard.press('i'); await wait(900); await page.keyboard.press('Escape'); await wait(400); await page.keyboard.press('Escape'); await wait(1000); ok(await page.locator('.immersive-player').count() === 0); await page.keyboard.press('l'); await wait(1300); ok(await page.locator('.focus-exit').count() === 0); });
     await check('M', `${label}: no runtime errors`, async () => ok(!errors.length, errors.join(' | ')));
     await context.close();
@@ -1312,6 +1349,114 @@ if (only === 'Q' || !only) {
     await check('Q', `${label}: every visible button answers a press`, async () => ok(results.every(result => !result.silent.length), results.map(result => result.silent.join(', ')).filter(Boolean).join(' / ')));
     await check('Q', `${label}: no button moves when pressed`, async () => ok(results.every(result => !result.jumpy.length), results.map(result => result.jumpy.join(', ')).filter(Boolean).join(' / ')));
     await check('Q', `${label}: no runtime errors in the audit`, async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
+// ── R: opening and closing audit — what appears or leaves without motion ──
+if (only === 'R') {
+  const install = () => {
+    const sig = node => { const style = getComputedStyle(node); const box = node.getBoundingClientRect(); return [style.opacity, style.transform, style.scale, style.translate, style.filter, Math.round(box.height), Math.round(box.width), Math.round(box.top), Math.round(box.left)].join('|'); };
+    const chain = node => { const list = []; for (let at = node, i = 0; at && at !== document.body && i < 4; at = at.parentElement, i++) list.push(at); return list; };
+    const label = node => { const name = node.getAttribute?.('aria-label') || node.textContent?.trim().slice(0, 30) || ''; return `${node.tagName.toLowerCase()}.${String(node.className || '').split(' ').filter(Boolean).slice(0, 2).join('.')} "${name}"`; };
+    const visible = node => { const box = node.getBoundingClientRect(); return box.width > 8 && box.height > 8 && box.bottom > 0 && box.top < innerHeight && getComputedStyle(node).visibility !== 'hidden'; };
+    window.__audit = { pops: [], vanishes: [], tracked: new Map() };
+    const tracked = window.__audit.tracked;
+    const observer = new MutationObserver(records => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node.nodeType !== 1 || node.closest('iframe, .yt-deck, .toast, svg') || [...tracked].some(([other, past]) => other !== node && performance.now() - past.added < 300 && other.contains?.(node))) continue;
+          const first = chain(node).map(sig);
+          const history = [];
+          history.added = performance.now();
+          tracked.set(node, history);
+          setTimeout(() => { if (!node.isConnected || !visible(node)) return; history.push(chain(node).map(sig).join('#')); }, 20);
+          setTimeout(() => { if (!node.isConnected || !visible(node)) return; const later = chain(node).map(sig); if (later.join('#') === first.join('#') && history[0] === later.join('#')) window.__audit.pops.push(label(node)); }, 160);
+        }
+        for (const node of record.removedNodes) {
+          if (node.nodeType !== 1 || !tracked.has(node)) continue;
+          const history = tracked.get(node); tracked.delete(node);
+          const recent = history.filter(([time]) => typeof time === 'number' && performance.now() - time < 420).map(([, value]) => value);
+          if (recent.length >= 3 && new Set(recent).size === 1 && history.visible) window.__audit.vanishes.push(label(node));
+        }
+      }
+    });
+    // Init scripts run before <body> exists: observe once the document is parsed.
+    const observe = () => observer.observe(document.body, { childList: true, subtree: true });
+    if (document.body) observe(); else document.addEventListener('DOMContentLoaded', observe, { once: true });
+    // Every 40 ms, remember how each tracked element looks, to judge its exit.
+    setInterval(() => { for (const [node, history] of tracked) { if (!node.isConnected) continue; const shown = visible(node); history.visible = shown; if (!shown) continue; history.push([performance.now(), chain(node).map(sig).join('#')]); if (history.length > 14) history.splice(1, history.length - 14); } }, 40);
+  };
+  for (const [label, viewport] of [['desktop', { width: 1440, height: 900 }], ['phone', { width: 390, height: 844 }]]) {
+    const { context, page, errors } = await newSession(browser, { viewport });
+    await page.addInitScript(install);
+    await page.goto(BASE); await wait(2500);
+    const step = async (name, act, settle = 1100) => { await act().catch(error => console.log(`AUDIT-STEP-FAIL ${name}: ${error.message.split('\n')[0]}`)); await wait(settle); };
+    await step('search', () => goSearch(page));
+    await step('type', () => searchFor(page, 'band'));
+    await step('play', () => page.click('.top-result-play'), 1800);
+    await step('open player', async () => { if (!await page.locator('.immersive-player').count()) await page.click('.dock-track'); });
+    await step('lyrics', () => page.keyboard.press('l'));
+    await step('queue', () => page.locator('button:has-text("Queue") >> visible=true').first().click());
+    await step('close queue', () => page.keyboard.press('Escape'));
+    await step('settings', () => page.click('button[aria-label="Player settings"]'));
+    await step('audio sheet', () => page.locator('.sheet button:has-text("Audio") >> visible=true').first().click());
+    await step('back', () => page.locator('button[aria-label="Back to preferences"]').first().click());
+    await step('close settings', () => page.keyboard.press('Escape'));
+    await step('dj sheet', () => page.locator('button[aria-label="DJ transition settings"] >> visible=true').first().click());
+    await step('close dj', () => page.keyboard.press('Escape'));
+    await step('focus', () => page.keyboard.press('i'));
+    await step('unfocus', () => page.keyboard.press('Escape'));
+    await step('next song', () => page.keyboard.press('Shift+ArrowRight'), 2200);
+    await step('close player', () => page.keyboard.press('Escape'));
+    await step('library', () => goPage(page, 'Your library', 'Library'));
+    await step('home', () => goPage(page, 'Listen now', 'Listen'), 1800);
+    const found = await page.evaluate(() => ({ pops: [...new Set(window.__audit.pops)], vanishes: [...new Set(window.__audit.vanishes)] }));
+    console.log(`AUDIT-R ${label} pops in (${found.pops.length}):\n  ${found.pops.join('\n  ')}\nAUDIT-R ${label} vanishes (${found.vanishes.length}):\n  ${found.vanishes.join('\n  ')}`);
+    await check('R', `${label}: no runtime errors in the transition audit`, async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
+// Cards that arrive after their section has revealed still appear (phones load the
+// recommendations late, often after the shelf has scrolled into view).
+if (!only || only === 'S') {
+  for (const [label, viewport] of [['phone', { width: 390, height: 844 }], ['desktop', { width: 1440, height: 900 }]]) {
+    const { context, page, errors } = await newSession(browser, { viewport });
+    await page.goto(BASE); await wait(1500);
+    await page.mouse.wheel(0, 900); await wait(3200);
+    await check('S', `${label}: every card in view has revealed`, async () => {
+      const hidden = await page.evaluate(() => [...document.querySelectorAll('.album-card, .video-card, .mood-card')].filter(node => { const box = node.getBoundingClientRect(); return box.bottom > 0 && box.top < innerHeight - 120 && box.width > 0 && Number(getComputedStyle(node).opacity) < .99; }).map(node => node.textContent.trim().slice(0, 24)));
+      ok(!hidden.length, hidden.join(', '));
+    });
+    await check('S', `${label}: no runtime errors`, async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
+// On demand: a screenshot tour of the main screens at phone sizes, for visual review.
+if (only === 'V') {
+  const dir = process.env.SHOTS || 'shots'; await mkdir(dir, { recursive: true });
+  for (const [label, viewport] of [['phone', { width: 390, height: 844 }], ['small', { width: 360, height: 740 }], ['landscape', { width: 844, height: 390 }]]) {
+    const { context, page, errors } = await newSession(browser, { viewport });
+    const shot = async name => { await wait(1300); await page.screenshot({ path: `${dir}/v-${label}-${name}.png` }); };
+    const step = async (name, act) => { try { await act(); await shot(name); } catch (error) { console.log(`TOUR-FAIL ${label} ${name}: ${error.message.split('\n')[0]}`); } };
+    await page.goto(BASE); await wait(2500); await shot('home');
+    await page.mouse.wheel(0, 900); await shot('home-scrolled'); await wait(2500); await shot('home-scrolled-late');
+    console.log('TOUR-CARDS', label, JSON.stringify(await page.evaluate(() => [...document.querySelectorAll('.album-card, .video-card')].slice(0, 4).map(node => { const box = node.getBoundingClientRect(); return [Math.round(box.top), Math.round(box.height), getComputedStyle(node).opacity, getComputedStyle(node.closest('section') || node).opacity]; }))));
+    await step('search', async () => { await goSearch(page); await searchFor(page, 'band'); });
+    await step('player', async () => { await page.click('.top-result-play'); await wait(1500); if (!await page.locator('.immersive-player').count()) await page.click('.dock-track'); });
+    await step('lyrics', () => page.keyboard.press('l'));
+    await step('queue', () => page.locator('button:has-text("Queue") >> visible=true').first().click());
+    await page.keyboard.press('Escape'); await wait(600);
+    await step('settings', () => page.click('button[aria-label="Player settings"]'));
+    await page.keyboard.press('Escape'); await wait(600);
+    await step('dj', () => page.locator('button[aria-label="DJ transition settings"] >> visible=true').first().click());
+    await page.keyboard.press('Escape'); await wait(600);
+    await page.keyboard.press('Escape'); await wait(900);
+    await step('dock', async () => {});
+    await step('library', () => goPage(page, 'Your library', 'Library'));
+    if (errors.length) console.log(`TOUR-ERRORS ${label}: ${errors.join(' | ')}`);
     await context.close();
   }
 }

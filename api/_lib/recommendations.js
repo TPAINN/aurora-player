@@ -81,6 +81,26 @@ export async function preferAvailableLyrics(tracks, { fetcher = fetch } = {}) {
 }
 
 const SOURCE_WEIGHT = { radio: 1.2, related: 1, own: .4 };
+
+// How well a candidate shares the seed's vibe, from catalogue facts only:
+// language (the strongest), genre family, era (album year) and popularity tier
+// (Deezer rank), with a nudge for songs whose lyrics exist. Unknowns add nothing.
+export function vibeScore(track, seed = {}) {
+  let score = SOURCE_WEIGHT[track.source] ?? 0;
+  if (seed.lang && track.language === seed.lang) score += 3;
+  if (track.genreMatch === 'exact') score += 2;
+  else if (track.genreMatch === 'compatible') score += 1;
+  if (track.lyricsAvailable) score += .5;
+  if (seed.year > 0 && track.year > 0) {
+    const gap = Math.abs(seed.year - track.year);
+    score += gap <= 3 ? 1.5 : gap <= 7 ? 1 : gap <= 15 ? 0 : -1.5;
+  }
+  if (seed.rank > 0 && track.rank > 0) {
+    const tier = Math.abs(Math.log10(track.rank / seed.rank));
+    score += tier < .3 ? 1 : tier < .6 ? .5 : tier > 1.2 ? -.5 : 0;
+  }
+  return score;
+}
 const EVALUATED = 14;
 
 // Pick by score while keeping variety: two songs per artist, no back-to-back repeats when avoidable.
@@ -125,18 +145,21 @@ export function catalogueLanguage(titles) {
 export async function fetchRecommendations(current, { fetcher = fetch, signal = AbortSignal.timeout(8000), lang = null, genre = null, limit = 10 } = {}) {
   const deezer = async path => readJson(new URL(path, 'https://api.deezer.com'), AbortSignal.any([signal, AbortSignal.timeout(2200)]), fetcher);
   const optional = promise => promise.catch(error => { if (signal.aborted) throw error; return null; });
-  const convert = (item, reason, source) => ({ id: `deezer:${item.id}`, title: item.title, artist: item.artist?.name, artistId: item.artist?.id, album: item.album?.title || '', albumId: item.album?.id, artwork: safeImage(item.album?.cover_xl || item.album?.cover_big), duration: Number(item.duration), recommendationReason: reason, source });
+  const convert = (item, reason, source) => ({ id: `deezer:${item.id}`, title: item.title, artist: item.artist?.name, artistId: item.artist?.id, album: item.album?.title || '', albumId: item.album?.id, artwork: safeImage(item.album?.cover_xl || item.album?.cover_big), duration: Number(item.duration), rank: Number(item.rank) || 0, recommendationReason: reason, source });
   const tracksOf = (value, reason, source) => (value?.data || []).filter(item => Number.isSafeInteger(item.id)).map(item => convert(item, reason, source));
-  const genresOf = async id => {
+  // One album lookup gives both the genre families and the release year (the era).
+  const albumOf = async id => {
     if (!Number.isSafeInteger(id) || id <= 0) return null;
     if (albumFamilies.has(id)) return albumFamilies.get(id);
     const album = await optional(deezer(`/album/${id}`));
     if (!album) return null;
-    return remember(albumFamilies, id, new Set((album.genres?.data || []).map(item => genreFamily(item.name)).filter(Boolean)), 2000);
+    const year = Number(String(album.release_date || '').slice(0, 4));
+    return remember(albumFamilies, id, { families: new Set((album.genres?.data || []).map(item => genreFamily(item.name)).filter(Boolean)), year: year > 1900 ? year : 0 }, 2000);
   };
   // A title in a non-Latin script is decisive; Latin titles are ambiguous until lyrics say otherwise.
   let seedLang = lang || detectLanguage(`${current.title} ${current.album || ''}`)?.lang || null;
   const seedFamilies = new Set([genreFamily(genre)].filter(Boolean));
+  let seedYear = 0, seedRank = 0;
   let pool = [];
   const credits = artistCredits(current.artist);
   const searchNames = credits.slice(0, 3);
@@ -162,10 +185,12 @@ export async function fetchRecommendations(current, { fetcher = fetch, signal = 
         optional(deezer(`/artist/${artist.id}/top?limit=10`)),
         optional(deezer(`/artist/${artist.id}/related?limit=6`)),
         optional(deezer(`/artist/${artist.id}/radio?limit=25`)),
-        genresOf(seed?.album?.id),
+        albumOf(seed?.album?.id),
         seedLang ? null : lyricProfile(current, fetcher, signal),
       ]);
-      seedGenres?.forEach(family => seedFamilies.add(family));
+      seedGenres?.families.forEach(family => seedFamilies.add(family));
+      seedYear = seedGenres?.year || 0;
+      seedRank = Number(seed?.rank) || 0;
       seedLang ||= seedLyrics?.lang || null;
       // No lyrics to read (instrumental-leaning dance music, for one): the artist's
       // own titles, read together, still say which language they sing in.
@@ -185,16 +210,16 @@ export async function fetchRecommendations(current, { fetcher = fetch, signal = 
 
   const unique = selectRecommendations(pool, current, Infinity);
   const evaluated = await Promise.all(unique.slice(0, EVALUATED).map(async (track, index) => {
-    const [profile, families] = await Promise.all([lyricProfile(track, fetcher, signal), seedFamilies.size ? genresOf(track.albumId) : null]);
+    const [profile, album] = await Promise.all([lyricProfile(track, fetcher, signal), albumOf(track.albumId)]);
     const language = profile?.lang || detectLanguage(`${track.title} ${track.album}`)?.lang || detectTitleLanguage(track.title)?.lang || null;
-    return { ...track, index, language, families, lyricsAvailable: profile?.available };
+    return { ...track, index, language, families: album?.families || null, year: album?.year || 0, lyricsAvailable: profile?.available };
   }));
   const coherent = evaluated.flatMap(track => {
     if (seedLang && track.language && track.language !== seedLang) return [];
     const known = seedFamilies.size && track.families?.size;
     const exactGenre = known && [...track.families].some(family => seedFamilies.has(family));
     if (known && !exactGenre && ![...track.families].some(family => [...seedFamilies].some(seedFamily => compatibleFamilies(seedFamily, family)))) return [];
-    const score = SOURCE_WEIGHT[track.source] + (seedLang && track.language === seedLang ? 3 : 0) + (known ? (exactGenre ? 2 : 1) : 0) + (track.lyricsAvailable ? .5 : 0);
+    const score = vibeScore({ ...track, genreMatch: known ? (exactGenre ? 'exact' : 'compatible') : null }, { lang: seedLang, year: seedYear, rank: seedRank });
     return [{ ...track, score }];
   }).sort((a, b) => b.score - a.score || a.index - b.index);
   // Unchecked candidates are only safe when there is no language to protect.

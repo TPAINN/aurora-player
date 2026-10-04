@@ -97,3 +97,29 @@ export const blendSwap = {
   animate: { opacity: 1, scale: 1, filter: 'blur(0px)', transition: { duration: 2.6, ease: EASE } },
   exit: { opacity: 0, scale: 0.98, filter: 'blur(12px)', transition: { duration: 2.2, ease: EASE_IN_OUT } },
 };
+
+// ── Opening and closing, one vocabulary ─────────────────────────────────────
+// Something that adds a line or a section unfolds: its height grows while it
+// fades in, so what sits below glides aside instead of jumping. It folds away the
+// same way, a little quicker.
+export const unfold = {
+  initial: { opacity: 0, height: 0 },
+  animate: { opacity: 1, height: 'auto', transition: { height: { duration: 0.45, ease: EASE }, opacity: { duration: 0.35, delay: 0.08, ease: EASE } } },
+  exit: { opacity: 0, height: 0, transition: { height: { duration: 0.34, ease: EASE_IN_OUT }, opacity: { duration: 0.18, ease: EASE_EXIT } } },
+};
+
+// A small control arrives with a soft pop (scale and a clearing blur) and leaves
+// by shrinking back; exits are quicker than entrances.
+export const pop = {
+  initial: { opacity: 0, scale: 0.85, filter: 'blur(2px)' },
+  animate: { opacity: 1, scale: 1, filter: 'blur(0px)', transition: { duration: 0.32, ease: EASE } },
+  exit: { opacity: 0, scale: 0.9, filter: 'blur(1px)', transition: { duration: 0.18, ease: EASE_EXIT } },
+};
+
+// One glyph becomes another in place (a track number becomes the playing
+// equalizer): the old one shrinks out upward while the new one grows in.
+export const glyphSwap = {
+  initial: { opacity: 0, scale: 0.6, y: 4 },
+  animate: { opacity: 1, scale: 1, y: 0, transition: { duration: 0.28, ease: EASE } },
+  exit: { opacity: 0, scale: 0.6, y: -4, transition: { duration: 0.16, ease: EASE_EXIT } },
+};
