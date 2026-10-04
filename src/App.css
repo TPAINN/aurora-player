@@ -1031,7 +1031,9 @@ input[type="range"]::-moz-range-thumb {
   position: relative;
   isolation: isolate;
   min-height: calc(100dvh - 125px);
-  overflow: hidden;
+  /* Clip, never hidden: a hidden box can still be scrolled into the backdrop's
+     overscan when a lyric line takes focus, shifting the whole player. */
+  overflow: clip;
   display: flex;
   flex-direction: column;
   background: #151719;
@@ -1830,7 +1832,7 @@ input[type="range"]::-moz-range-thumb {
   .immersive-player {
     min-height: 100dvh;
     height: 100dvh;
-    overflow: hidden;
+    overflow: clip;
   }
   .player-art-background {
     inset: 0;
@@ -4653,4 +4655,44 @@ html.scroll-locked {
 html,
 body {
   overflow-x: clip;
+}
+
+/* Best-part beat pulse: a faint light swell from the centre on the song's tempo. */
+.beat-pulse {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  overflow: hidden;
+}
+.beat-pulse-wave {
+  position: absolute;
+  /* Only the glow's own footprint is composited, never the full screen. */
+  left: 22%;
+  right: 22%;
+  top: 14%;
+  bottom: 26%;
+  background: radial-gradient(closest-side, #e9fff418 0%, #c8f5e00a 55%, transparent 100%);
+  opacity: 0;
+  will-change: transform, opacity;
+  animation: beat-pulse var(--pulse-period, 1s) cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
+}
+@keyframes beat-pulse {
+  0% {
+    opacity: 0.25;
+    transform: scale(0.94);
+  }
+  14% {
+    opacity: 1;
+    transform: scale(0.99);
+  }
+  100% {
+    opacity: 0.25;
+    transform: scale(1.07);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .beat-pulse {
+    display: none;
+  }
 }

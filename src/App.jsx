@@ -46,6 +46,7 @@ import {
 } from "lucide-react";
 import { usePlayer } from "./hooks/usePlayer";
 import { useStore } from "./hooks/useStore";
+import { pulsePeriod, pulsePhase } from "./lib/pulse";
 import { useNavigation } from "./hooks/useNavigation";
 import { getCollection, getFeaturedTracks, getMoodTracks, getSimilarTracks, searchCatalog } from "./lib/catalog";
 import { MOODS } from "../shared/moods.js";
@@ -635,6 +636,9 @@ function ArtBackdrop({ player }) {
   const peaks = usePeaks(player);
   const offset = player.lyricsOffset || 0;
   const peak = useStore(player.clock, (value) => peaks.length > 0 && isPeakAt(peaks, value + offset));
+  const peakIndex = useStore(player.clock, (value) => peaks.findIndex((range) => value + offset >= range.start && value + offset < range.end));
+  const period = pulsePeriod(player.bpm);
+  const reduce = useReducedMotion();
   const artwork = player.track?.artwork;
   const blend = player.changeKind === "blend";
   // Every artwork sits at the same perceived brightness: bright covers are eased
@@ -667,7 +671,51 @@ function ArtBackdrop({ player }) {
         </AnimatePresence>
       </div>
       <div className={`player-veil ${peak ? "is-peak" : ""}`} />
+      <AnimatePresence>
+        {peakIndex >= 0 && period && player.playing && !reduce && (
+          <BeatPulse key={`${player.track?.id}:${peakIndex}`} player={player} anchor={peaks[peakIndex].start} period={period} />
+        )}
+      </AnimatePresence>
     </>
+  );
+}
+
+// Through a peak the backdrop swells softly on the beat: one, two or four beats a
+// wave, phase-locked to the peak's first sung word. Opacity and scale only, so it
+// stays on the compositor. Realigned only when the playhead jumps (a seek).
+function BeatPulse({ player, anchor, period }) {
+  const wave = useRef(null);
+  const offset = player.lyricsOffset || 0;
+  useEffect(() => {
+    const element = wave.current;
+    if (!element) return undefined;
+    let origin = null;
+    const align = () => {
+      const phase = pulsePhase(player.clock.get() + offset, anchor, period);
+      const now = performance.now() / 1000;
+      if (origin !== null) {
+        const drift = Math.abs(pulsePhase(now - origin, 0, period) - phase);
+        if (Math.min(drift, period - drift) < 0.12) return;
+      }
+      origin = now - phase;
+      element.style.animation = "none";
+      void element.offsetWidth;
+      element.style.animation = "";
+      element.style.animationDelay = `${-phase}s`;
+    };
+    align();
+    return player.clock.subscribe(align);
+  }, [player.clock, offset, anchor, period]);
+  return (
+    <Motion.div
+      className="beat-pulse"
+      aria-hidden="true"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1, transition: { duration: 2.4, ease: EASE } }}
+      exit={{ opacity: 0, transition: { duration: 1.6, ease: EASE_IN_OUT } }}
+    >
+      <div ref={wave} className="beat-pulse-wave" style={{ "--pulse-period": `${period}s` }} />
+    </Motion.div>
   );
 }
 
