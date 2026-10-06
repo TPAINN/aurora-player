@@ -59,8 +59,13 @@ function fakeYouTube() {
     }
     rebase() { this.base = this.t; this.since = performance.now(); }
     set(state) { if (this.state === 1) this.t = Math.min(this.dur, this.exactTime()); this.rebase(); this.state = state; this.o.events.onStateChange?.({ target: this, data: state }); }
-    loadVideoById(id, start = 0) { if (JSON.parse(localStorage.getItem('refused') || '[]').includes(id)) { this.vid = id; log('refused', id); setTimeout(() => this.o.events.onError?.({ target: this, data: 150 }), 120); return; } this.vid = id; this.t = start; this.rebase(); this.dur = Number(JSON.parse(localStorage.getItem('durations') || '{}')[id] || 60); log('load', id, this.muted, start); this.set(3); setTimeout(() => this.set(1), 250); }
-    playVideo() { log('play', this.vid, this.muted); setTimeout(() => this.set(1), 150); }
+    loadVideoById(id, start = 0) { if (JSON.parse(localStorage.getItem('refused') || '[]').includes(id)) { this.vid = id; log('refused', id); setTimeout(() => this.o.events.onError?.({ target: this, data: 150 }), 120); return; } this.vid = id; this.t = start; this.rebase(); this.dur = Number(JSON.parse(localStorage.getItem('durations') || '{}')[id] || 60); log('load', id, this.muted, start); this.set(3);
+      // Strict autoplay (iPhone, Safari): a load never starts on its own. Stall: the
+      // embed keeps buffering. In both, only a press (playVideo inside a tap) plays.
+      if (localStorage.getItem('stall-load') === id) return;
+      if (localStorage.getItem('strict-autoplay')) { setTimeout(() => this.set(-1), 250); return; }
+      setTimeout(() => this.set(1), 250); }
+    playVideo() { const tap = ['click', 'pointerup', 'touchend', 'keydown'].includes(window.event?.type); log('play', this.vid, this.muted, tap); if (localStorage.getItem('strict-autoplay') && !tap) return; setTimeout(() => this.set(1), 150); }
     pauseVideo() { log('pause', this.vid); this.set(2); }
     stopVideo() { log('stop', this.vid); this.set(5); } seekTo(t) { log('seek', this.vid, Math.round(t * 10) / 10); this.t = t; this.rebase(); }
     // Ground truth for timing checks: the stepped clock plus the time since its step.
@@ -86,7 +91,7 @@ const categories = term => ({
   playlists: [{ id: 'PLroads', title: 'Road trip', owner: 'Aurora fan', count: 2, artwork: 'https://img.test/c/pl.jpg' }],
   top: /^band of night$/i.test(term.trim()) ? { kind: 'artist', id: 7 } : /slowed|mashup/i.test(term) ? { kind: 'video', id: 'VVVVVVVVVV1' } : { kind: 'song', id: 1 },
 });
-async function newSession(browser, { viewport = { width: 1440, height: 900 }, prefs = {}, reducedMotion = 'no-preference', searchDelay = 120, failSearch = () => false, recommendations = [], welcome = false, longIntro = false, incomingBpm = 124, unplayable = [], replays = null, tempoLog = null, alignment = null, editGap = 0, lyricLog = null, nightDriveBpm = 120, sungBeat = false } = {}) {
+async function newSession(browser, { viewport = { width: 1440, height: 900 }, prefs = {}, reducedMotion = 'no-preference', searchDelay = 120, failSearch = () => false, recommendations = [], welcome = false, longIntro = false, incomingBpm = 124, unplayable = [], replays = null, tempoLog = null, alignment = null, editGap = 0, lyricLog = null, nightDriveBpm = 120, sungBeat = false, flakyResolve = 0 } = {}) {
   const context = await browser.newContext({ viewport, reducedMotion, hasTouch: viewport.width < 700 });
   await context.addInitScript(values => {
     if (!sessionStorage.getItem('seeded')) { for (const [key, value] of Object.entries(values)) localStorage.setItem(key, value); sessionStorage.setItem('seeded', '1'); }
@@ -119,8 +124,11 @@ async function newSession(browser, { viewport = { width: 1440, height: 900 }, pr
       : catalogue.slice(0, 3).map(item => ({ id: String(item.trackId), title: item.trackName, artist: item.artistName, album: item.collectionName, artwork: item.artworkUrl100.replace('100x100bb', '600x600bb'), duration: 60 }));
     return route.fulfill({ json: { title: type === 'artist' ? 'Band Of Night' : type === 'album' ? 'Roads' : '', subtitle: 'Stub', artwork: 'https://img.test/a/600x600bb.jpg', tracks } });
   });
+  let resolveFailures = flakyResolve;
   await page.route('**/api/video/search?*', route => {
     const title = new URL(route.request().url()).searchParams.get('title');
+    // A cold or busy server: the first lookups fail, as a 503 and as a dropped connection.
+    if (resolveFailures > 0) { resolveFailures--; return resolveFailures % 2 ? route.fulfill({ status: 503, json: { error: 'busy' } }) : route.abort('connectionreset'); }
     if (unplayable.includes(title)) return route.fulfill({ json: { videoId: null, candidates: [] } });
     const videoId = { 'Night Drive': 'AAAAAAAAAAA', 'Morning Light': 'BBBBBBBBBBB', 'Slow Tide': 'CCCCCCCCCCC' }[title] || 'DDDDDDDDDDD';
     return route.fulfill({ json: { videoId, channel: title === 'Night Drive' ? 'Band - Topic' : 'Band Uploads', title, ...(editGap && title === 'Morning Light' ? { duration: 60 + editGap } : {}), candidates: [{ videoId }, { videoId: 'EEEEEEEEEEE' }] } });
@@ -1505,6 +1513,44 @@ if (only === 'T') {
     await lyrics(); await film('close');
     await context.close();
   }
+}
+
+// Pressing Play always plays. Strict autoplay (as on iPhone and Safari) refuses any
+// start that is not inside a tap; a stalled embed keeps buffering. Either way the
+// listener is told, and the next press of Play starts the song.
+if (!only || only === 'Y') {
+  for (const [label, prefs, viewport] of [['strict autoplay, desktop', { 'strict-autoplay': '1' }, { width: 1440, height: 900 }], ['strict autoplay, phone', { 'strict-autoplay': '1' }, { width: 390, height: 844 }], ['a stalled embed', { 'stall-load': 'AAAAAAAAAAA' }, { width: 1440, height: 900 }]]) {
+    const { context, page, errors } = await newSession(browser, { viewport, prefs });
+    await page.goto(BASE); await wait(1500);
+    await goSearch(page); await searchFor(page, 'band');
+    await page.click('.top-result-play'); await wait(6500);
+    const playing = () => page.evaluate(() => (window.__ytPlayers || []).some(p => p.state === 1 && p.vid === 'AAAAAAAAAAA'));
+    await check('Y', `${label}: a refused start is announced and the play button asks for a tap`, async () => {
+      ok(!(await playing()), 'played without a tap');
+      const ring = await page.locator('.play-button.needs-tap >> visible=true').count();
+      const toast = await page.locator('.toast').textContent().catch(() => '');
+      if (label === 'a stalled embed') ok(true); else ok(ring >= 1 && /press play/i.test(toast || ''), `ring ${ring}, toast "${toast}"`);
+    });
+    await check('Y', `${label}: one press of Play starts the song`, async () => {
+      // A stalled embed may already have been recovered by the watchdog's nudge.
+      if (!(label === 'a stalled embed' && await playing())) { await page.locator('.play-button >> visible=true').first().click(); await wait(900); }
+      ok(await playing(), JSON.stringify(await page.evaluate(() => (window.__ytPlayers || []).map(p => [p.vid, p.state]))) + JSON.stringify(await page.evaluate(() => window.__events.slice(-12))));
+      ok(await page.locator('.play-button.needs-tap').count() === 0, 'ring lingers');
+    });
+    await check('Y', `${label}: no runtime errors`, async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+  // A busy server and a dropped connection on the song lookup: Play still plays.
+  const { context, page, errors } = await newSession(browser, { flakyResolve: 2 });
+  await page.goto(BASE); await wait(1500);
+  await goSearch(page); await searchFor(page, 'band');
+  await page.click('.top-result-play'); await wait(5000);
+  await check('Y', 'a failed song lookup is retried and the song plays, with no error shown', async () => {
+    ok(await page.evaluate(() => (window.__ytPlayers || []).some(p => p.state === 1 && p.vid === 'AAAAAAAAAAA')), 'not playing');
+    ok(await page.locator('.error-toast').count() === 0, 'an error was shown');
+  });
+  await check('Y', 'no runtime errors after a failed lookup', async () => ok(!errors.filter(text => !/503|connection/i.test(text)).length, errors.join(' | ')));
+  await context.close();
 }
 
 // On demand: a screenshot tour of the main screens at phone sizes, for visual review.

@@ -5345,3 +5345,34 @@ body {
     transition: none;
   }
 }
+
+/* The browser asked for a tap before music can start: the play button breathes a
+   soft mint ring until it is pressed (the ring fades in, and out once playing). */
+.play-button {
+  position: relative;
+}
+.play-button::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  border: 2px solid var(--accent, #9ee6c4);
+  opacity: 0;
+  scale: 0.9;
+  pointer-events: none;
+  transition: opacity 0.4s var(--ease-soft), scale 0.4s var(--ease-soft);
+}
+.play-button.needs-tap::after {
+  opacity: 1;
+  scale: 1;
+  animation: tap-breathe 1.6s var(--ease-soft) 0.4s infinite;
+}
+@keyframes tap-breathe {
+  0%, 100% { scale: 1; opacity: 0.9; }
+  50% { scale: 1.12; opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .play-button.needs-tap::after {
+    animation: none;
+  }
+}

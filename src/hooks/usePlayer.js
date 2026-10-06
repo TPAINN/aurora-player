@@ -3,6 +3,7 @@ import { createPlayhead, heardTime } from '../lib/playhead';
 import { clearOffset, readOffset, saveOffset, versionGap } from '../lib/lyric-offsets';
 import { songKey } from '../../shared/titles.js';
 import { buildApiUrl } from '../lib/api';
+import { fetchWithRetry } from '../lib/fetch-retry';
 import { getSimilarTracks, getTrackAnalysis, getTrackTempo } from '../lib/catalog';
 import { pickSeed, recordListening, tasteFilter } from '../lib/listening';
 import { MAX_BLEND, MIN_BLEND, ONLINE_MAX_BLEND, swapTime, adaptiveBlend, analyzeLocalTempo, beatAlignedEntry, blendCurve, vocalSpans, chooseEntry, equalPower, chooseBend, glideRate, gridRate, nudgePlan, phaseOffset, planOnlineCue, planOnlineEntry, planTransition, quantizeRate, recoverRate, smoothstep } from '../lib/dj';
@@ -95,6 +96,8 @@ const RUSH_WAIT = 5000;
 // on the other deck while A plays on, so the change never goes through silence.
 const HANDOFF_LEAD = 5;
 const START_TIMEOUT = 3000;
+// How long a freshly loaded song may sit unstarted before the watchdog acts.
+const START_WATCH = 2500;
 // Blend lengths offered: 5–10 s, the range a DJ would ride two songs together.
 const BLENDS = ['auto', 8, 16, 32];
 const readBlend = value => (value === 'auto' ? 'auto' : BLENDS.includes(Number(value)) ? Number(value) : 'auto');
@@ -195,6 +198,9 @@ export function usePlayer() {
   const resolving = useRef(new Map());
   const autoSkips = useRef(0);
   const [notice, setNotice] = useState('');
+  // The browser refused to start playback on its own (autoplay rules, mostly on
+  // iPhone and Safari): the next press of Play starts it, and the UI says so.
+  const [needsTap, setNeedsTap] = useState(false);
   // Notices (a song skipped) show for a few seconds, then clear themselves.
   useEffect(() => {
     if (!notice) return;
@@ -253,7 +259,9 @@ export function usePlayer() {
     // playback request waiting on the same lookup down with it, and the song never
     // started. Callers drop results they no longer need.
     const request = (async () => {
-      const response = await fetch(buildApiUrl('/api/video/search', { artist: selected.artist, title: selected.title, duration: selected.duration, variant: selected.variant }));
+      // Retried through a dropped connection, a hang or a busy server, so one bad
+      // moment on the network never leaves Play doing nothing.
+      const response = await fetchWithRetry(buildApiUrl('/api/video/search', { artist: selected.artist, title: selected.title, duration: selected.duration, variant: selected.variant }));
       if (!response.ok) throw new Error('The music source could not connect. Please retry.');
       const data = await response.json();
       if (!data.videoId) { markUnplayable(selected); return { videoId: null }; }
@@ -451,7 +459,7 @@ export function usePlayer() {
             if (event.target !== player.current || source.current !== 'youtube' || !activeVideo.current || event.target.getVideoData?.().video_id !== activeVideo.current) return;
             // Backgrounded, some browsers pause the embed on their own: playback the
             // listener did not stop resumes (at most every few seconds, never fighting them).
-            if (event.data === 1) intendsToPlay.current = true;
+            if (event.data === 1) { intendsToPlay.current = true; setNeedsTap(false); }
             if (event.data === 2 && document.hidden && intendsToPlay.current && performance.now() - backgroundResume.current > 3000) {
               backgroundResume.current = performance.now();
               setTimeout(() => { if (document.hidden && intendsToPlay.current && player.current === event.target) event.target.playVideo(); }, 60);
@@ -536,6 +544,7 @@ export function usePlayer() {
     flushListening();
     cancelMix();
     if (rush.current) { clearTimeout(rush.current.timer); rush.current = null; }
+    intendsToPlay.current = true; setNeedsTap(false);
     attemptedMix.current = '';
     waitingForRadio.current = false;
     recommendationRequest.current?.abort();
@@ -576,7 +585,11 @@ export function usePlayer() {
         audio.current.src = selected.localUrl;
         const graph = ensureAudioGraph();
         audio.current.volume = graph ? 1 : current.current.volume / 100;
-        await audio.current.play();
+        await audio.current.play().catch(err => {
+          // Refused without a fresh tap: wait for one instead of failing.
+          if (err?.name !== 'NotAllowedError') throw err;
+          setNeedsTap(true); setNotice('Press play to start. Your browser needs a tap before music can play.');
+        });
       } else {
         const { videoId, source } = await resolveSource(selected);
         if (mounted.current && token === generation.current) setSourceInfo(source || { kind: 'youtube', official: false });
@@ -631,6 +644,20 @@ export function usePlayer() {
         } else instance.setVolume(current.current.volume);
         instance.loadVideoById(videoId);
         if (handoff.current?.incoming === instance) runHandoff();
+        // Start watchdog: some browsers (iPhone, Safari, strict autoplay settings)
+        // load the song but refuse to start it without a fresh tap, and an embed can
+        // also stall. Nudge it once; if it still has not started, say so and let the
+        // next press of Play start it (a press calls playVideo inside the tap).
+        const watch = (nudged, waits) => setTimeout(() => {
+          if (!mounted.current || token !== generation.current || player.current !== instance || !intendsToPlay.current) return;
+          const state = instance.getPlayerState?.();
+          if (state === 1) return;
+          if (state === 3 && waits < 2) { watch(nudged, waits + 1); return; }
+          if (!nudged) { instance.playVideo?.(); watch(true, waits); return; }
+          setNeedsTap(true); setLoading(false);
+          setNotice('Press play to start. Your browser needs a tap before music can play.');
+        }, START_WATCH);
+        watch(false, 0);
       }
     } catch (err) {
       if (mounted.current && token === generation.current && err.name !== 'AbortError') { setError(err instanceof TypeError ? 'Could not reach the music service. Check your connection and retry.' : err.message || 'Playback failed.'); setPlaying(false); }
@@ -728,6 +755,7 @@ export function usePlayer() {
     clock.set(seconds);
   }, [cancelMix, clock]);
   const togglePlay = useCallback(async () => {
+    setNeedsTap(false);
     finishHandoff();
     cancelMix();
     attemptedMix.current = '';
@@ -1472,8 +1500,8 @@ export function usePlayer() {
   const bpm = songInsight?.bpm ?? null;
   // One stable object: it changes only when something in it does, so memoized
   // components that take `player` skip renders caused by unrelated app state.
-  return useMemo(() => ({ bpm, songInsight, loudness, setLoudness, warm, notice, unavailable, changeKind, direction, transitionFx, setTransitionFx, blendLength, setBlendLength, sourceInfo, surround, setSurround, audioOutput, track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, lyricsTiming, setLyricsOffset, autoLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime }), [
-    bpm, songInsight, loudness, setLoudness, warm, notice, unavailable, changeKind, direction, transitionFx, setTransitionFx, blendLength, setBlendLength, sourceInfo, surround, setSurround, audioOutput, track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, lyricsTiming, setLyricsOffset, autoLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime,
+  return useMemo(() => ({ needsTap, bpm, songInsight, loudness, setLoudness, warm, notice, unavailable, changeKind, direction, transitionFx, setTransitionFx, blendLength, setBlendLength, sourceInfo, surround, setSurround, audioOutput, track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, lyricsTiming, setLyricsOffset, autoLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime }), [
+    needsTap, bpm, songInsight, loudness, setLoudness, warm, notice, unavailable, changeKind, direction, transitionFx, setTransitionFx, blendLength, setBlendLength, sourceInfo, surround, setSurround, audioOutput, track, playing, loading, error, clock, mixProgress, duration, volume, queue, queueIndex, shuffle, repeat, lyrics, lyricsLoading, loadTrack, togglePlay, seek, setVolume, next, previous, setShuffle, setRepeat, setQueue, addToQueue, playNext, lyricsOffset, lyricsTiming, setLyricsOffset, autoLyricsOffset, loadLocalFile, loadLocalFiles, djEnabled, setDjEnabled, djState, djWindow, liveDjChanges, setLiveDjChanges, autoplay, setAutoplay, recommendationsLoading, recommendationError, getPlaybackTime,
   ]);
 }
 export default usePlayer;
