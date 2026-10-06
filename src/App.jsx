@@ -233,8 +233,10 @@ function PlayButton({ player, large = false }) {
   const button = (
     <IconButton
       label={player.playing ? "Pause" : "Play"}
-      className={`play-button ${large ? "large" : ""}`}
-      disabled={!player.track || player.loading}
+      // Never disabled while loading: an embed stuck buffering (a refused autoplay)
+      // must still yield to a press, which starts it inside the tap.
+      className={`play-button ${large ? "large" : ""} ${player.needsTap ? "needs-tap" : ""}`}
+      disabled={!player.track}
       onClick={player.togglePlay}
     >
       <span className="play-glyph">
