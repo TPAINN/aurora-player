@@ -76,3 +76,26 @@ test('with tempo but no phase only the length is counted in bars from the real s
 test('an unknown or implausible grid leaves ranges untouched', () => {
   for (const grid of [null, {}, { period: 0 }, { period: NaN }, { period: 3 }]) assert.deepEqual(snapToGrid({ start: 10, end: 20 }, grid), { start: 10, end: 20 });
 });
+
+test('every peak carries how strong it is: light to strong, from the evidence', async () => {
+  // Most replayed: the final chorus far more than the first.
+  const replays = Array.from({ length: 100 }, (_, i) => ({ start: i * 2, end: i * 2 + 2, score: i >= 30 && i < 40 ? 0.62 : i >= 80 && i < 90 ? 1 : 0.1 }));
+  const lyricPeaks = [{ start: 60, end: 80 }, { start: 160, end: 180 }];
+  const { peaks, intensity } = bestMoments({ lyricPeaks, replays, duration: 200 });
+  const first = peaks.find(peak => peak.start >= 55 && peak.start < 85), last = peaks.find(peak => peak.start >= 155);
+  assert.ok(first && last, JSON.stringify(peaks));
+  assert.ok(first.strength > 0 && first.strength < last.strength && last.strength <= 1, `${first.strength} → ${last.strength}`);
+  // Moment by moment: the curve rises and falls with the evidence inside a peak.
+  assert.ok(typeof intensity === 'function');
+  assert.ok(intensity(170) > intensity(70) && intensity(5) < intensity(70), `${intensity(5)} ${intensity(70)} ${intensity(170)}`);
+});
+
+test('with lyrics alone, refrains build toward the last and the best is the strongest', async () => {
+  const lyricPeaks = [{ start: 40, end: 60 }, { start: 100, end: 124 }, { start: 170, end: 190 }];
+  const { peaks, best, intensity } = bestMoments({ lyricPeaks, duration: 210 });
+  assert.equal(intensity, null, 'no audio evidence: no moment-by-moment curve');
+  assert.ok(peaks.every(peak => peak.strength >= 0.55 && peak.strength <= 1));
+  assert.ok(peaks[0].strength < peaks[2].strength, 'later refrains are bigger');
+  const top = peaks.find(peak => peak.start === best.start);
+  assert.equal(top.strength, 1);
+});
