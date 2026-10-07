@@ -1,6 +1,6 @@
 # Live interaction tests
 
-`scripts/live-tests.mjs` drives the real app in Chromium. The catalogue, lyrics and tempo APIs are stubbed (some deliberately slow or failing), and a simulated YouTube player records loads, plays, pauses, seeks, volumes and playback rates. Group G decodes real generated WAV audio. 382 checks in nineteen groups (plus six run on demand: P, a frame-timing profile; R, an opening/closing audit; V, a screenshot tour; T, T2 and T3, frame-by-frame films of the lyrics toggle, a DJ blend and the welcome):
+`scripts/live-tests.mjs` drives the real app in Chromium. The catalogue, lyrics and tempo APIs are stubbed (some deliberately slow or failing), and a simulated YouTube player records loads, plays, pauses, seeks, volumes and playback rates. Group G decodes real generated WAV audio. 401 checks in twenty-one groups (plus six run on demand: P, a frame-timing profile; R, an opening/closing audit; V, a screenshot tour; T, T2 and T3, frame-by-frame films of the lyrics toggle, a DJ blend and the welcome):
 
 | Group | Covers | Checks |
 | --- | --- | --- |
@@ -20,15 +20,21 @@
 | N | Best parts from the music: the analysis asks for the playing video, Best part jumps to the most-replayed section, the backdrop and timeline light it, the peak lasts whole bars at 120 BPM, replays from a different-length upload are ignored | 8 |
 | O | Lyric timing that adapts to the upload: caption-matched timing applies by itself and is named; the line on screen follows it; settings name the source; a nudge by hand wins and Auto hands back; another edit asks for lyrics timed for its own length and the footer says so otherwise | 8 |
 | Q | Interaction audit on desktop and phone (home, search, player, settings): every visible button answers a press and none moves while pressed | 6 |
-| S | Scroll reveal on desktop and phone: cards that arrive after their section came into view still reveal | 4 |
+| S | Scroll reveal on desktop and phone: cards that arrive after their section came into view still reveal | 6 |
 | W | A song with no catalogue tempo pulses on the beat measured from its word-timed vocal; with no beat evidence, no pulse | 4 |
+| X | Smooth wheel scrolling on desktop: it joins after first paint, glides over several frames, stays put while a sheet locks the page, leaves the player at the top, and stays native with reduced motion | 7 |
 | Y | Play always starts: a browser that refuses play outside a tap shows a tap prompt and the next press plays; a stalled load is nudged; a failed lookup is retried; Play is never disabled while loading | 11 |
+| Z | The whole background breathes on the beat: barely outside a best part, deeper inside it, cresting on the beat (median ≤ 25 ms), on the video too; Video keeps the cover and focus and carries over to the next song; pausing settles it; the playing deck stays full-size; reduced motion keeps it still | 10 |
 
-Result on the production build (`npm run preview`): **370 / 371 passed**; the one miss is C's held-note frame rate under software rendering (24.7–29 fps against 30 across runs), which varies without a GPU. The hand-over now renders as a React transition, so the long-task check at the blend also passes in development mode.
+Result on the production build (`npm run preview`), every group run one after another: **401 / 401 passed**. Frame-rate checks run under software rendering without a GPU and can vary between runs. The hand-over now renders as a React transition, so the long-task check at the blend also passes in development mode.
 
 A separate responsive sweep drives home, search, album, player and lyrics at 13 viewports (320×568 to 2560×1440, including landscape phones). It fails on any element that spills off-screen, then checks that the player never runs under the dock.
 
 ## Defects the suite found and fixed
+
+Round nine:
+- The first version of the beat breath restarted every frame after a seek: a new animation's clock only starts with its first frame, which read as drift. It is now pinned to the page timeline from the start.
+- Refrains began at the pre-chorus, because every repeated line counted; a song opening on its chorus never lit it.
 
 Round eight:
 - During a DJ blend the backdrop dipped dark, the lyrics panel went empty and the title garbled mid-morph (filmed in T2): leaving elements kept their non-blend exit. They now leave with the same blend as the arriving song.

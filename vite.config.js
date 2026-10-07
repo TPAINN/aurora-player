@@ -29,6 +29,8 @@ export default defineConfig({
           groups: [
             { name: "react", test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/ },
             { name: "motion", test: /node_modules[\\/](framer-motion|motion-dom|motion-utils)[\\/]/ },
+            // Lenis loads after first paint, in its own chunk.
+            { name: "lenis", test: /node_modules[\\/]lenis[\\/]/ },
             { name: "vendor", test: /node_modules[\\/]/ },
           ],
         },

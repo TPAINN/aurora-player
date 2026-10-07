@@ -99,3 +99,12 @@ test('with lyrics alone, refrains build toward the last and the best is the stro
   const top = peaks.find(peak => peak.start === best.start);
   assert.equal(top.strength, 1);
 });
+
+test('an instrumental drop starts where the audio actually rises, to a tenth of a second', () => {
+  // Device audio measured every 0.1 s: a drop lands at 120.3 s and lasts to 150 s.
+  const levels = Array.from({ length: 2000 }, (_, i) => (i >= 1203 && i < 1500 ? 0.5 : 0.12));
+  const { peaks, best } = bestMoments({ energy: { hop: 0.1, levels }, duration: 200 });
+  assert.ok(best, JSON.stringify(peaks));
+  near(best.start, 120.3, 0.11);
+  assert.ok(best.end >= 149.5 && best.end <= 151, JSON.stringify(best));
+});
