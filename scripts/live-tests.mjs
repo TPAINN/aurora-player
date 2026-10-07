@@ -1555,6 +1555,31 @@ if (!only || only === 'Y') {
   await context.close();
 }
 
+// On demand: film a DJ blend hand-over (cover, name, lyrics, backdrop), for review.
+if (only === 'T2') {
+  const dir = process.env.SHOTS || 'shots'; await mkdir(dir, { recursive: true });
+  for (const [label, viewport] of [['desktop', { width: 1280, height: 800 }], ['phone', { width: 390, height: 844 }]]) {
+    const session = await newSession(browser, { viewport, prefs: { 'aurora-dj': 'true' } });
+    const { context, page } = session;
+    await page.goto(BASE); await wait(500); await startQueue(page);
+    if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(1000); }
+    await page.keyboard.press('l'); await wait(8500);
+    await setSeek(page, 31); await wait(2600);
+    for (let i = 0; i < 35; i++) { await page.screenshot({ path: `${dir}/b-${label}-${String(i).padStart(2, '0')}.png` }); await wait(250); }
+    console.log('T2', label, await page.evaluate(() => document.querySelector('.dock-track strong')?.textContent));
+    await context.close();
+  }
+}
+
+// On demand: film the welcome opening from the first frame, for review.
+if (only === 'T3') {
+  const dir = process.env.SHOTS || 'shots'; await mkdir(dir, { recursive: true });
+  const { context, page } = await newSession(browser, { viewport: { width: 1280, height: 800 }, welcome: true });
+  await page.goto(BASE, { waitUntil: 'commit' });
+  for (let i = 0; i < 35; i++) { await page.screenshot({ path: `${dir}/w-${String(i).padStart(2, '0')}.png` }); await wait(70); }
+  await context.close();
+}
+
 // On demand: a screenshot tour of the main screens at phone sizes, for visual review.
 if (only === 'V') {
   const dir = process.env.SHOTS || 'shots'; await mkdir(dir, { recursive: true });

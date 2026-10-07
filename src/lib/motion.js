@@ -92,10 +92,12 @@ export const MAGNET_SPRING = { stiffness: 260, damping: 18, mass: 0.6 };
 
 // A DJ blend hands over as a slow dissolve that matches the music: the new cover
 // sharpens out of a soft blur with a gentle settle, the old one melts away.
+// Even (ease-in-out) curves, not front-loaded: the cover changes across the
+// blend as the music does, instead of mostly in its first half-second.
 export const blendSwap = {
   initial: { opacity: 0, scale: 1.06, filter: 'blur(16px)' },
-  animate: { opacity: 1, scale: 1, filter: 'blur(0px)', transition: { duration: 2.6, ease: EASE } },
-  exit: { opacity: 0, scale: 0.98, filter: 'blur(12px)', transition: { duration: 2.2, ease: EASE_IN_OUT } },
+  animate: { opacity: 1, scale: 1, filter: 'blur(0px)', transition: { duration: 3, ease: EASE_IN_OUT } },
+  exit: { opacity: 0, scale: 0.98, filter: 'blur(12px)', transition: { duration: 2.8, ease: EASE_IN_OUT } },
 };
 
 // ── Opening and closing, one vocabulary ─────────────────────────────────────
@@ -122,4 +124,38 @@ export const glyphSwap = {
   initial: { opacity: 0, scale: 0.6, y: 4 },
   animate: { opacity: 1, scale: 1, y: 0, transition: { duration: 0.28, ease: EASE } },
   exit: { opacity: 0, scale: 0.6, y: -4, transition: { duration: 0.16, ease: EASE_EXIT } },
+};
+
+// One cover change, whatever kind it is, chosen by the presence's `custom` value
+// ({ direction, blend }): the leaving cover reads the same value as the arriving
+// one, so a DJ blend never pairs a slow dissolve with a quick slide.
+export const coverChange = {
+  initial: ({ direction, blend } = {}) => (blend ? blendSwap.initial : direction ? coverSwap.initial(direction) : crossfade.initial),
+  animate: ({ direction, blend } = {}) => (blend ? blendSwap.animate : direction ? coverSwap.animate : crossfade.animate),
+  exit: ({ direction, blend } = {}) => (blend ? blendSwap.exit : direction ? coverSwap.exit(direction) : crossfade.exit),
+};
+
+// The backdrop behind the player: the new artwork fades in over the old one, and
+// the old stays fully lit underneath until it is covered, so a change never dips
+// through dark. A DJ blend takes its time; a skip is quicker.
+export const backdropChange = {
+  initial: { opacity: 0, zIndex: 1 },
+  animate: (blend = false) => ({ opacity: 1, zIndex: 1, transition: blend ? { duration: 3.6, ease: EASE_IN_OUT } : { duration: 1.4, ease: EASE } }),
+  exit: (blend = false) => ({ opacity: 0, zIndex: 0, transition: { duration: 0.6, delay: blend ? 3.4 : 1.2, ease: EASE_IN_OUT } }),
+};
+
+// Lyrics hand over to the next song's: a skip swaps them briskly; a DJ blend lets
+// the old words drift up and out while the new ones rise in after a beat.
+export const lyricsChange = {
+  initial: { opacity: 0, y: 22 },
+  animate: (blend = false) => ({ opacity: 1, y: 0, transition: { duration: blend ? 1.6 : 0.8, ease: EASE, delay: blend ? 0.5 : 0.1 } }),
+  exit: (blend = false) => ({ opacity: 0, y: -16, transition: { duration: blend ? 1.1 : 0.35, ease: EASE_IN_OUT } }),
+};
+
+// The song's name on a DJ blend: a soft blurred crossfade (a letter-by-letter
+// morph between two titles passes through garbled half-words mid-blend).
+export const nameBlend = {
+  initial: { opacity: 0, filter: 'blur(6px)', y: 6 },
+  animate: { opacity: 1, filter: 'blur(0px)', y: 0, transition: { duration: 1.2, ease: EASE, delay: 0.25 } },
+  exit: { opacity: 0, filter: 'blur(6px)', y: -4, transition: { duration: 0.7, ease: EASE_IN_OUT } },
 };
