@@ -4990,10 +4990,11 @@ body {
     align-items: center;
     padding-top: 14px;
   }
-  .is-focus .mobile-player-info > :not(h1, p, .focus-thumb) {
+  .is-focus .mobile-player-info > :not(h1, p, .focus-thumb, .name-swap) {
     display: none;
   }
   .is-focus .mobile-player-info > h1,
+  .is-focus .mobile-player-info > .name-swap,
   .is-focus .mobile-player-info > p {
     grid-column: 2;
     margin: 0;
@@ -5464,4 +5465,13 @@ body {
   .player-art-boost.is-peak {
     scale: none;
   }
+}
+
+/* The song's name sits in one presence, so a DJ blend can crossfade it. */
+.name-swap {
+  position: relative;
+  display: block;
+}
+.name-swap-item {
+  display: block;
 }

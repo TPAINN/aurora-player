@@ -19,7 +19,14 @@
     <link rel="preconnect" href="https://is1-ssl.mzstatic.com" />
     <link rel="dns-prefetch" href="https://e-cdns-images.dzcdn.net" />
     <link rel="dns-prefetch" href="https://cdn-images.dzcdn.net" />
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;650;700;750;800&display=swap" />
+    <!-- The font never blocks the first paint: text shows at once in a fallback and
+         swaps to Manrope when it arrives (a blocking stylesheet held the whole page
+         until a third-party request finished). -->
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;650;700;750;800&display=swap" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;650;700;750;800&display=swap" media="print" onload="this.media='all'" />
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;650;700;750;800&display=swap" /></noscript>
+    <!-- The very first paint is already the app's colour, never a white flash. -->
+    <style>html, body { background: #151717; color-scheme: dark; }</style>
 
     <!-- iOS full-screen feel -->
     <meta name="apple-mobile-web-app-capable" content="yes" />

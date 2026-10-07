@@ -19,6 +19,22 @@ export default defineConfig({
   resolve: {
     alias: { "@shared": fileURLToPath(new URL("./shared", import.meta.url)) },
   },
+  // Libraries that rarely change get their own long-lived files: after a deploy a
+  // returning listener downloads only the app's own code again (the service worker
+  // keeps the rest), and the browser fetches the pieces in parallel.
+  build: {
+    rolldownOptions: {
+      output: {
+        advancedChunks: {
+          groups: [
+            { name: "react", test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/ },
+            { name: "motion", test: /node_modules[\\/](framer-motion|motion-dom|motion-utils)[\\/]/ },
+            { name: "vendor", test: /node_modules[\\/]/ },
+          ],
+        },
+      },
+    },
+  },
 });
 
 function installApi(server) {
