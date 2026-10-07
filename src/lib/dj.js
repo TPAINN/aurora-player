@@ -269,6 +269,9 @@ export async function analyzeLocalTempo(file, context) {
   return analyzeSamples(buffer.getChannelData(0), buffer.sampleRate);
 }
 
+// Loudness across the whole song, every tenth of a second: fine enough that a
+// drop's best part starts when it lands, not on the nearest whole second.
+const ENERGY_HOP = .1;
 export function analyzeSamples(data, sampleRate) {
   const length = Math.min(data.length, sampleRate * 24);
   const introTempo = estimateTempo(data.subarray(0, length), sampleRate);
@@ -277,7 +280,7 @@ export function analyzeSamples(data, sampleRate) {
   const intro = introTempo && { ...introTempo, grid: { origin: introTempo.phase, period: 60 / introTempo.bpm } };
   const outro = outroTempo && { ...outroTempo, grid: { origin: windowStart + outroTempo.phase, period: 60 / outroTempo.bpm } };
   const mixStart = findMixPoint(data, sampleRate, TARGET_OVERLAP, outro?.grid);
-  return { introStart: findIntroStart(data, sampleRate), mixStart, intro, outro, duration: data.length / sampleRate, levels: loudness(data, sampleRate, 0, 35), energy: { hop: 1, levels: loudness(data, sampleRate, 0, data.length / sampleRate, 1) }, exitLevel: average(loudness(data, sampleRate, mixStart, TARGET_OVERLAP)) };
+  return { introStart: findIntroStart(data, sampleRate), mixStart, intro, outro, duration: data.length / sampleRate, levels: loudness(data, sampleRate, 0, 35), energy: { hop: ENERGY_HOP, levels: loudness(data, sampleRate, 0, data.length / sampleRate, ENERGY_HOP) }, exitLevel: average(loudness(data, sampleRate, mixStart, TARGET_OVERLAP)) };
 }
 
 // The exit a DJ would pick in the final 30 seconds: where the song's last
