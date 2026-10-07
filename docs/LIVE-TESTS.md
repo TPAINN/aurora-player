@@ -1,6 +1,6 @@
 # Live interaction tests
 
-`scripts/live-tests.mjs` drives the real app in Chromium. The catalogue, lyrics and tempo APIs are stubbed (some deliberately slow or failing), and a simulated YouTube player records loads, plays, pauses, seeks, volumes and playback rates. Group G decodes real generated WAV audio. 371 checks in eighteen groups (plus four run on demand: P, a frame-timing profile; R, an opening/closing audit; V, a phone screenshot tour; T, a frame-by-frame film of the lyrics toggle):
+`scripts/live-tests.mjs` drives the real app in Chromium. The catalogue, lyrics and tempo APIs are stubbed (some deliberately slow or failing), and a simulated YouTube player records loads, plays, pauses, seeks, volumes and playback rates. Group G decodes real generated WAV audio. 382 checks in nineteen groups (plus six run on demand: P, a frame-timing profile; R, an opening/closing audit; V, a screenshot tour; T, T2 and T3, frame-by-frame films of the lyrics toggle, a DJ blend and the welcome):
 
 | Group | Covers | Checks |
 | --- | --- | --- |
@@ -22,12 +22,19 @@
 | Q | Interaction audit on desktop and phone (home, search, player, settings): every visible button answers a press and none moves while pressed | 6 |
 | S | Scroll reveal on desktop and phone: cards that arrive after their section came into view still reveal | 4 |
 | W | A song with no catalogue tempo pulses on the beat measured from its word-timed vocal; with no beat evidence, no pulse | 4 |
+| Y | Play always starts: a browser that refuses play outside a tap shows a tap prompt and the next press plays; a stalled load is nudged; a failed lookup is retried; Play is never disabled while loading | 11 |
 
 Result on the production build (`npm run preview`): **370 / 371 passed**; the one miss is C's held-note frame rate under software rendering (24.7–29 fps against 30 across runs), which varies without a GPU. The hand-over now renders as a React transition, so the long-task check at the blend also passes in development mode.
 
 A separate responsive sweep drives home, search, album, player and lyrics at 13 viewports (320×568 to 2560×1440, including landscape phones). It fails on any element that spills off-screen, then checks that the player never runs under the dock.
 
 ## Defects the suite found and fixed
+
+Round eight:
+- During a DJ blend the backdrop dipped dark, the lyrics panel went empty and the title garbled mid-morph (filmed in T2): leaving elements kept their non-blend exit. They now leave with the same blend as the arriving song.
+
+Round seven:
+- On browsers that only allow play inside a tap, pressing Play could do nothing. A start watchdog nudges once, waits through buffering, then asks for a tap; lookups retry on network errors.
 
 Round six:
 - Lyrics on and off jumped: the cover snapped across before the lyrics faded in, and back after they faded out; on phones the name block jumped and blanked. Filmed frame by frame (group T), it is now one glide.
