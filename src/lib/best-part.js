@@ -32,7 +32,8 @@ function energyCurve(energy, length) {
   const db = Array.from({ length }, (_, s) => {
     const from = Math.floor(s / hop), to = Math.max(from + 1, Math.floor((s + 1) / hop));
     const slice = levels.slice(from, to);
-    return slice.length ? 20 * Math.log10(Math.max(1e-5, Math.max(...slice))) : NaN;
+    // The second's RMS: the power of its finer measurements, averaged.
+    return slice.length ? 10 * Math.log10(Math.max(1e-10, slice.reduce((sum, level) => sum + level * level, 0) / slice.length)) : NaN;
   });
   const low = percentile(db, 0.5), high = percentile(db, 0.95);
   if (!(high - low >= 3)) return null; // a flat song has no section that stands out
@@ -87,6 +88,28 @@ export function snapToGrid(range, grid) {
   return { start, end: start + Math.max(1, Math.ceil((range.end - start) / bar - 0.08)) * bar };
 }
 
+// Device audio is measured finely (every `hop` seconds): an instrumental peak
+// starts on the sharpest rise in level near where the per-second curve put it,
+// and ends on the sharpest fall, so a drop lights exactly when it lands. A
+// change under 3 dB is no edge; the range then stays as found.
+const EDGE_SEARCH = 2;
+const EDGE_DB = 3;
+function edge(levels, hop, around, direction) {
+  const db = index => 20 * Math.log10(Math.max(1e-5, levels[index] ?? 0));
+  const from = Math.max(1, Math.floor((around - EDGE_SEARCH) / hop)), to = Math.min(levels.length - 1, Math.ceil((around + EDGE_SEARCH) / hop));
+  let best = null, step = EDGE_DB;
+  for (let index = from; index <= to; index++) {
+    const change = direction * (db(index) - db(index - 1));
+    if (change >= step) { step = change; best = index; }
+  }
+  return best === null ? around : Math.round(best * hop * 1000) / 1000;
+}
+function refineEdges(range, energy) {
+  const { hop, levels } = energy || {};
+  if (!(hop > 0 && hop < 1) || !Array.isArray(levels) || !levels.length) return range;
+  return { ...range, start: edge(levels, hop, range.start, 1), end: edge(levels, hop, range.end, -1) };
+}
+
 const overlap = (a, b) => Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start));
 const longest = ranges => ranges.reduce((best, range) => (!best || range.end - range.start > best.end - best.start + 1e-9 ? range : best), null);
 
@@ -124,7 +147,7 @@ export function bestMoments({ lyricPeaks = [], replays, energy, grid, duration }
   };
   const sung = lyricPeaks.map(range => ({ start: range.start, end: range.end, score: meanOver(curve, range) })).filter(range => range.score >= KEEP);
   const instrumental = runs(curve)
-    .map(range => ({ ...range, score: meanOver(curve, range) }))
+    .map(range => ({ ...refineEdges(range, energy), score: meanOver(curve, range) }))
     .filter(range => !sung.some(peak => overlap(peak, range) >= 0.5 * (range.end - range.start)));
   const candidates = [...sung, ...instrumental];
   // Excitement first; length breaks near-ties up to about 20 s of music.

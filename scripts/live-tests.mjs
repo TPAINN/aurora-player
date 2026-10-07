@@ -1184,7 +1184,7 @@ if (!only || only === 'M') {
     await check('M', `${label}: lyrics keep following the song in focus`, async () => { await setSeek(page, 13.1); await wait(1500); ok((await page.textContent('.lyric-line.current')).length > 0); });
     await check('M', `${label}: Escape leaves focus but keeps the player open`, async () => { await page.keyboard.press('Escape'); await wait(900); ok(await page.locator('.immersive-player').count() === 1 && await page.locator('.focus-exit').count() === 0 && await visible(page, '.player-topbar')); });
     await check('M', `${label}: I toggles focus, and Exit focus brings everything back`, async () => { await page.keyboard.press('i'); await wait(1100); ok(await visible(page, '.focus-exit')); await page.click('.focus-exit'); await wait(1100); ok(await visible(page, '.player-topbar') && !(await page.locator('.focus-exit').count())); if (viewport.width > 760) ok(await visible(page, '.player-dock') && await visible(page, '.sidebar')); });
-    await check('M', `${label}: the video toggle stays reachable in focus and hands the stage to the video`, async () => { await page.keyboard.press('i'); await wait(1000); const toggle = page.locator('button[aria-label="Video mode"]'); ok(await toggle.isVisible() && await toggle.isEnabled()); await toggle.click(); await wait(1100); ok(await page.locator('.focus-exit').count() === 0 && await page.locator('.immersive-player.with-video').count() === 1); await page.click('button[aria-label="Artwork mode"]'); await wait(900); ok(await page.locator('.immersive-player.with-video').count() === 0); });
+    await check('M', `${label}: the video toggle stays reachable in focus and only swaps the background`, async () => { await page.keyboard.press('i'); await wait(1000); const toggle = page.locator('button[aria-label="Video mode"]'); ok(await toggle.isVisible() && await toggle.isEnabled()); await toggle.click(); await wait(1100); ok(await page.locator('.focus-exit').count() === 1 && await page.locator('.immersive-player.with-video').count() === 1, 'focus kept over the video'); await page.click('button[aria-label="Artwork mode"]'); await wait(900); ok(await page.locator('.immersive-player.with-video').count() === 0 && await page.locator('.focus-exit').count() === 1); await page.click('.focus-exit'); await wait(900); });
     await check('M', `${label}: closing the player never reopens it in focus`, async () => { await page.keyboard.press('i'); await wait(900); await page.keyboard.press('Escape'); await wait(400); await page.keyboard.press('Escape'); await wait(1000); ok(await page.locator('.immersive-player').count() === 0); await page.keyboard.press('l'); await wait(1300); ok(await page.locator('.focus-exit').count() === 0); });
     await check('M', `${label}: no runtime errors`, async () => ok(!errors.length, errors.join(' | ')));
     await context.close();
@@ -1473,6 +1473,136 @@ if (!only || only === 'W') {
       ok(Math.min(off, 0.5 - off) < 0.03, `origin ${wave.origin}`);
     });
     await check('W', `${label}: no runtime errors`, async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
+// The whole background breathes on the beat all song long: a hair of zoom and a
+// swell of the cover's light, deeper in a best part, locked to the beat, on the
+// artwork or the video alike, stopping with the music and never with reduced motion.
+if (!only || only === 'Z') {
+  const breathOf = selector => page => page.evaluate(sel => {
+    const node = document.querySelector(sel);
+    const animation = node?.getAnimations().find(a => a.effect?.getKeyframes().some(k => k.transform || k.opacity !== undefined) && a.playState === 'running');
+    if (!animation) return null;
+    const frames = animation.effect.getKeyframes();
+    const zoom = Math.max(...frames.map(k => Number(/scale\(([\d.]+)\)/.exec(k.transform || '')?.[1] || 1)));
+    const glow = Math.max(...frames.map(k => Number(k.opacity ?? 0)));
+    return { duration: animation.effect.getTiming().duration, zoom, glow };
+  }, selector);
+  const art = breathOf('.player-art-background'), light = breathOf('.beat-breath'), video = breathOf('.video-surface');
+  // The sung words sit on a 120 BPM grid, so the beat's phase is known all song long.
+  const { context, page, errors } = await newSession(browser, { sungBeat: true });
+  await page.goto(BASE); await wait(500);
+  await startQueue(page); await wait(1200);
+  if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(1000); }
+  await setSeek(page, 8); await wait(1600);
+  let calm;
+  await check('Z', 'outside a best part the whole background breathes on every beat, barely', async () => {
+    calm = await art(page); const glow = await light(page);
+    ok(calm && calm.duration === 500 && calm.zoom > 1.004 && calm.zoom <= 1.01, JSON.stringify(calm));
+    ok(glow && glow.duration === 500 && glow.glow > 0 && glow.glow <= 0.12, JSON.stringify(glow));
+  });
+  await check('Z', 'the zoom crests on the beat as the song plays (median ≤ 25 ms, worst ≤ 50 ms)', async () => {
+    const drifts = [];
+    for (let i = 0; i < 10; i++) {
+      const sample = await page.evaluate(() => { const node = document.querySelector('.player-art-background'); const animation = node?.getAnimations().find(a => a.playState === 'running' && a.effect?.getKeyframes().some(k => k.transform)); const tag = document.querySelector('.beat-breath'); const deck = (window.__ytPlayers || []).find(p => p.state === 1); return animation && deck && { origin: Number(tag.dataset.beatOrigin), period: Number(tag.dataset.period), at: Number(animation.currentTime) / 1000, time: deck.base + (document.timeline.currentTime - deck.since) / 1000 * deck.rate }; });
+      if (!sample) { drifts.push(999); break; }
+      const want = (((sample.time - sample.origin) % sample.period) + sample.period) % sample.period;
+      const have = ((sample.at % sample.period) + sample.period) % sample.period;
+      const drift = Math.abs(want - have); drifts.push(Math.round(Math.min(drift, sample.period - drift) * 1000));
+      await wait(270);
+    }
+    const sorted = [...drifts].sort((a, b) => a - b);
+    ok(sorted[Math.floor(sorted.length / 2)] <= 25 && sorted.at(-1) <= 50, `drift ms ${drifts.join(',')}`);
+  });
+  await check('Z', 'in a best part it opens up further, and stays smooth', async () => {
+    await setSeek(page, 26.6); await wait(2600);
+    const peak = await art(page);
+    ok(peak && calm && peak.zoom > calm.zoom && peak.zoom <= 1.025, JSON.stringify({ calm, peak }));
+    const rate = await page.evaluate(() => new Promise(resolve => { let frames = 0; const start = performance.now(); const tick = () => { frames++; if (performance.now() - start < 1500) requestAnimationFrame(tick); else resolve(frames / 1.5); }; requestAnimationFrame(tick); }));
+    ok(rate >= 30, `fps ${rate}`);
+  });
+  await check('Z', 'video is only the background: cover, lyrics focus and the breath all stay', async () => {
+    await setSeek(page, 8); await wait(800);
+    await page.keyboard.press('i'); await wait(1100);
+    ok(await page.locator('.focus-exit').count() === 1, 'focus on');
+    await page.click('button[aria-label="Video mode"]'); await wait(1600);
+    ok(await page.locator('.focus-exit').count() === 1, 'video mode left focus');
+    ok(await page.locator('.immersive-player.with-video').count() === 1, 'video mode');
+    const cover = await page.evaluate(() => { const node = document.querySelector('.now-playing-art'); const box = node?.getBoundingClientRect(); return node && { width: box.width, opacity: Number(getComputedStyle(node).opacity) }; });
+    ok(cover && cover.width > 80 && cover.opacity > 0.9, `cover ${JSON.stringify(cover)}`);
+    const moving = await video(page);
+    ok(moving && moving.duration === 500 && moving.zoom > 1.004, `video ${JSON.stringify(moving)}`);
+    await page.click('button[aria-label="Artwork mode"]'); await wait(900);
+    ok(await page.locator('.focus-exit').count() === 1, 'artwork mode left focus');
+    ok(await page.locator('.immersive-player.with-video').count() === 0);
+    await page.click('.focus-exit'); await wait(700);
+  });
+  await check('Z', 'video mode carries over to the next song', async () => {
+    await page.click('button[aria-label="Video mode"]'); await wait(700);
+    await page.click('.dock-transport button[aria-label="Next track"]'); await wait(2200);
+    ok(await page.locator('.immersive-player.with-video').count() === 1);
+    await page.click('button[aria-label="Artwork mode"]'); await wait(700);
+  });
+  await check('Z', 'pausing lets the breath settle and stop', async () => {
+    await page.click('.dock-transport button[aria-label="Pause"]'); await wait(1400);
+    ok(!(await art(page)) && !(await light(page)), 'still breathing while paused');
+    await page.click('.dock-transport button[aria-label="Play"]'); await wait(300);
+  });
+  // YouTube sizes its stream to the player (on iPhone the audio's bitrate rides
+  // with the video's), so the hidden deck keeps the full viewport, never a thumbnail.
+  await check('Z', 'the playing video deck is full-size even when artwork is shown', async () => {
+    const box = await page.evaluate(() => { const deck = document.querySelector('.yt-deck.is-active') || document.querySelector('.yt-deck'); const rect = deck?.getBoundingClientRect(); return rect && { width: rect.width, height: rect.height }; });
+    ok(box && box.width >= 1440 * 0.99 && box.height >= 900 * 0.99, JSON.stringify(box));
+  });
+  await check('Z', 'no runtime errors', async () => ok(!errors.length, errors.join(' | ')));
+  await context.close();
+  {
+    const { context, page, errors } = await newSession(browser, { reducedMotion: 'reduce', sungBeat: true });
+    await page.goto(BASE); await wait(500);
+    await startQueue(page); await wait(1200);
+    if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(1000); }
+    await setSeek(page, 8); await wait(1600);
+    await check('Z', 'with reduced motion nothing breathes', async () => ok(!(await art(page)) && !(await light(page))));
+    await check('Z', 'reduced motion: no runtime errors', async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+}
+
+// Smooth wheel scrolling (Lenis) on desktop: the page glides to where the wheel
+// sends it, stays put while a sheet locks the page, and is native with reduced motion.
+if (!only || only === 'X') {
+  {
+    const { context, page, errors } = await newSession(browser);
+    await page.goto(BASE); await wait(1800);
+    await check('X', 'smooth scrolling joins after the first paint', async () => ok(await page.evaluate(() => document.documentElement.classList.contains('lenis'))));
+    await check('X', 'a wheel turn glides over several frames and arrives', async () => {
+      await page.mouse.move(800, 500);
+      const trail = await page.evaluate(() => new Promise(resolve => { const seen = []; const start = performance.now(); const tick = () => { seen.push(window.scrollY); if (performance.now() - start < 1200) requestAnimationFrame(tick); else resolve(seen); }; requestAnimationFrame(tick); window.dispatchEvent(new WheelEvent('wheel', { deltaY: 400, bubbles: true, cancelable: true })); }));
+      const distinct = new Set(trail.map(value => Math.round(value))).size;
+      ok(trail.at(-1) > 250 && distinct >= 6, `${distinct} steps to ${Math.round(trail.at(-1))}`);
+    });
+    await check('X', 'a sheet locks the page: the wheel no longer moves it', async () => {
+      await page.evaluate(() => document.documentElement.classList.add('scroll-locked')); await wait(200);
+      const before = await page.evaluate(() => window.scrollY);
+      await page.evaluate(() => window.dispatchEvent(new WheelEvent('wheel', { deltaY: 400, bubbles: true, cancelable: true }))); await wait(700);
+      ok(Math.abs(await page.evaluate(() => window.scrollY) - before) < 1);
+      await page.evaluate(() => document.documentElement.classList.remove('scroll-locked')); await wait(200);
+    });
+    await check('X', 'opening the player still starts it at the top', async () => {
+      await startQueue(page); await wait(1500);
+      if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(1000); }
+      ok(await page.evaluate(() => window.scrollY) < 1);
+    });
+    await check('X', 'no runtime errors', async () => ok(!errors.length, errors.join(' | ')));
+    await context.close();
+  }
+  {
+    const { context, page, errors } = await newSession(browser, { reducedMotion: 'reduce' });
+    await page.goto(BASE); await wait(1800);
+    await check('X', 'with reduced motion scrolling stays native', async () => ok(!(await page.evaluate(() => document.documentElement.classList.contains('lenis')))));
+    await check('X', 'reduced motion: no runtime errors', async () => ok(!errors.length, errors.join(' | ')));
     await context.close();
   }
 }
