@@ -95,20 +95,33 @@ function merge(ranges) {
   const merged = [];
   for (const range of sorted) {
     const last = merged.at(-1);
-    if (last && range.start <= last.end) last.end = Math.max(last.end, range.end);
-    else merged.push({ start: range.start, end: range.end });
+    if (last && range.start <= last.end) { last.end = Math.max(last.end, range.end); last.strength = Math.max(last.strength ?? 0, range.strength ?? 0); }
+    else merged.push({ start: range.start, end: range.end, ...(range.strength !== undefined ? { strength: range.strength } : {}) });
   }
   return merged;
 }
 
 // The song's peaks (for the backdrop and timeline) and its single best part.
+// Each peak also says how strong it is (0.45 light … 1 strong), so the backdrop
+// lifts as much as the moment deserves; with audio evidence, intensity(t) follows
+// that evidence second by second inside a peak.
+//   · with replays or loudness: from the evidence itself, relative to the song's
+//     strongest moment;
+//   · with timed lyrics alone: refrains build toward the last one (a song's final
+//     chorus is usually its biggest), and the best part is the strongest.
 export function bestMoments({ lyricPeaks = [], replays, energy, grid, duration } = {}) {
   const curve = excitement({ replays, energy, duration });
-  const snap = range => snapToGrid({ start: range.start, end: range.end }, grid);
+  const snap = range => ({ ...snapToGrid({ start: range.start, end: range.end }, grid), ...(range.strength !== undefined ? { strength: range.strength } : {}) });
   if (!curve) {
     const best = longest(lyricPeaks);
-    return { peaks: merge(lyricPeaks.map(snap)), best: best && snap(best) };
+    const ordered = [...lyricPeaks].sort((a, b) => a.start - b.start);
+    const strengthOf = range => (range === best ? 1 : ordered.length > 1 ? 0.6 + (0.3 * ordered.indexOf(range)) / (ordered.length - 1) : 0.85);
+    return { peaks: merge(lyricPeaks.map(range => snap({ ...range, strength: strengthOf(range) }))), best: best && snap(best), intensity: null };
   }
+  const intensity = time => {
+    const at = Math.min(curve.length - 1, Math.max(0, time)), from = Math.floor(at), to = Math.min(curve.length - 1, from + 1);
+    return curve[from] + (curve[to] - curve[from]) * (at - from);
+  };
   const sung = lyricPeaks.map(range => ({ start: range.start, end: range.end, score: meanOver(curve, range) })).filter(range => range.score >= KEEP);
   const instrumental = runs(curve)
     .map(range => ({ ...range, score: meanOver(curve, range) }))
@@ -117,5 +130,7 @@ export function bestMoments({ lyricPeaks = [], replays, energy, grid, duration }
   // Excitement first; length breaks near-ties up to about 20 s of music.
   const rank = range => range.score * Math.sqrt(Math.min(1, (range.end - range.start) / 20));
   const best = candidates.reduce((top, range) => (!top || rank(range) > rank(top) ? range : top), null);
-  return { peaks: merge(candidates.map(snap)), best: best && snap(best) };
+  const strongest = Math.max(1e-6, ...candidates.map(range => range.score));
+  const strength = range => Math.round((0.45 + (0.55 * range.score) / strongest) * 100) / 100;
+  return { peaks: merge(candidates.map(range => snap({ ...range, strength: strength(range) }))), best: best && snap(best), intensity };
 }
