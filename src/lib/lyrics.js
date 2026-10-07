@@ -238,7 +238,6 @@ export function detectChorusRanges(lyrics) {
 
   for (let left = 0; left < filtered.length - 1; left++) {
     const base = filtered[left];
-    if (base.time < earlyBoundary) continue;
 
     for (let right = left + 1; right < filtered.length; right++) {
       const compare = filtered[right];
@@ -262,6 +261,9 @@ export function detectChorusRanges(lyrics) {
       }
 
       if (chainLength < 2 && firstScore < 0.9) continue;
+      // An opening line counts only as the start of a whole repeated section
+      // (a song that opens on its chorus), never as a stray repeated intro line.
+      if (base.time < earlyBoundary && chainLength < 3) continue;
 
       for (let offset = 0; offset < chainLength; offset++) {
         repeatedIndices.add(filtered[left + offset].index);
@@ -273,30 +275,59 @@ export function detectChorusRanges(lyrics) {
   if (!repeatedIndices.size) return [];
 
   const ordered = [...repeatedIndices].sort((a, b) => a - b);
-  const ranges = [];
-  let start = ordered[0];
-  let end = ordered[0];
-
-  for (let i = 1; i < ordered.length; i++) {
-    if (ordered[i] - end <= 2) {
-      end = ordered[i];
-      continue;
+  // In how many separate sections each repeated line is sung (repeats within
+  // a few seconds of each other are one section).
+  const sections = new Map();
+  for (const index of ordered) {
+    const text = normalizeLyricText(lyrics[index].text);
+    let count = 0;
+    let last = -Infinity;
+    for (const line of filtered) {
+      if (line.time - last < SAME_SECTION || compareLyricLines(text, line.text) < 0.76) continue;
+      count++;
+      last = line.time;
     }
-
-    ranges.push({
+    sections.set(index, count);
+  }
+  const groups = [];
+  for (const index of ordered) {
+    const group = groups.at(-1);
+    if (group && index - group.at(-1) <= 2) group.push(index);
+    else groups.push([index]);
+  }
+  const ranges = groups.map((group) => {
+    const kept = trimLeadIn(group, sections);
+    const start = kept[0];
+    const end = kept.at(-1);
+    return {
       start: Math.max(0, lyrics[start].time - 0.05),
       end: getLineEndTime(lyrics[end], lyrics[end + 1]) + 0.2,
-    });
-    start = ordered[i];
-    end = ordered[i];
-  }
-
-  ranges.push({
-    start: Math.max(0, lyrics[start].time - 0.05),
-    end: getLineEndTime(lyrics[end], lyrics[end + 1]) + 0.2,
+    };
   });
 
   return mergeRanges(ranges).filter((range) => range.end - range.start >= 8);
+}
+
+// Repeats closer than this belong to the same section.
+const SAME_SECTION = 8;
+// A chorus recurs more often than the pre-chorus leading into it: the group's
+// typical recurrence (its most common count) is the chorus, and leading lines
+// heard in fewer sections are the lead-in, so the refrain starts after them.
+// Only the lead-in is trimmed; a shortened last chorus keeps its tail.
+function trimLeadIn(group, sections) {
+  const counts = new Map();
+  for (const index of group) counts.set(sections.get(index), (counts.get(sections.get(index)) || 0) + 1);
+  let typical = 0;
+  let votes = 0;
+  for (const [count, seen] of counts) {
+    if (seen > votes || (seen === votes && count > typical)) {
+      typical = count;
+      votes = seen;
+    }
+  }
+  let first = 0;
+  while (first < group.length && sections.get(group[first]) < typical) first++;
+  return group.length - first >= 2 ? group.slice(first) : group;
 }
 
 /**

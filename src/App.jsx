@@ -51,7 +51,7 @@ import {
 } from "lucide-react";
 import { usePlayer } from "./hooks/usePlayer";
 import { useStore } from "./hooks/useStore";
-import { beatPhase, linePhase, lyricBeat, peakWindow, pulsePeriod, pulsePhase } from "./lib/pulse";
+import { atRest, beatPhase, BREATH_KEYS, breath, linePhase, lyricBeat, peakWindow, pulsePeriod, pulsePhase } from "./lib/pulse";
 import { useNavigation } from "./hooks/useNavigation";
 import { getCollection, getFeaturedTracks, getMoodTracks, getSimilarTracks, searchCatalog } from "./lib/catalog";
 import { MOODS } from "../shared/moods.js";
@@ -60,6 +60,7 @@ import { artworkLuma, extractColors } from "../shared/palette";
 import { requestedVariant } from "../shared/audio-variants.js";
 import { artworkAt, artworkSrcSet } from "./lib/artwork";
 import { qualityLabel } from "./lib/audio-format";
+import { jumpTo, startSmoothScroll } from "./lib/smooth-scroll";
 import { homeSeeds, onRepeat, recordLike, rotateForDay, tasteFilter, topArtists } from "./lib/listening";
 import { lineSpan, peakMoments, splitBackingVocals } from "./lib/lyrics";
 import { bestMoments } from "./lib/best-part";
@@ -807,11 +808,25 @@ function ArtBackdrop({ player }) {
     return () => { live = false; };
   }, [artwork, level]);
   const litUrl = lit.key === litKey ? lit.url : null;
+  const artRef = useRef(null);
+  const glowRef = useRef(null);
+  // The depth is the peak's own strength, fixed for the peak, so it never changes mid-section.
+  const depth = breath({ peak, strength: peakBase });
+  useBeatBreath(player, {
+    active: player.playing && !reduce && !!period,
+    // With no beat phase known, a best part still has one: its first sung word,
+    // as the peak's own pulse uses; elsewhere nothing moves.
+    origin: beat?.origin ?? glowRange?.start,
+    period,
+    zoom: depth.zoom,
+    glow: depth.glow,
+    offset,
+  }, artRef, glowRef);
   return (
     <>
       {/* The zoom follows the peak's own strength (fixed for the peak: rescaling a
           large blurred layer is costly); only the light layers follow it live. */}
-      <div className={`player-art-background ${peak ? "is-peak" : ""}`} style={{ "--art-exposure": level.toFixed(3), "--peak-base": peakBase, "--peak-strength": strength || 0 }}>
+      <div ref={artRef} className={`player-art-background ${peak ? "is-peak" : ""}`} style={{ "--art-exposure": level.toFixed(3), "--peak-base": peakBase, "--peak-strength": strength || 0 }}>
         <AnimatePresence initial={false} custom={blend}>
           {artwork && (
             <Motion.div
@@ -841,6 +856,7 @@ function ArtBackdrop({ player }) {
         }}
       />
       <div className={`player-veil ${peak ? "is-peak" : ""}`} style={{ "--peak-base": peakBase }} />
+      <div ref={glowRef} className="beat-breath" aria-hidden="true" data-period={period || undefined} data-beat-origin={beat?.origin ?? glowRange?.start} style={tint.artwork === artwork && tint.value ? { "--breath-tint": tint.value } : undefined} />
       <AnimatePresence>
         {peakIndex >= 0 && period && player.playing && !reduce && (
           <BeatPulse key={`${player.track?.id}:${peakIndex}`} player={player} anchor={peaks[peakIndex].start} beatOrigin={beat?.origin ?? peaks[peakIndex].start} period={period} strength={strength} tint={tint.artwork === artwork ? tint.value : null} />
@@ -848,6 +864,69 @@ function ArtBackdrop({ player }) {
       </AnimatePresence>
     </>
   );
+}
+
+// All song long the whole background breathes on the beat: it zooms in a hair and
+// back, and a soft light from the cover swells with it. The artwork or the video,
+// whichever is the background, both move. Web Animations on transform and opacity
+// only (compositor work); the playhead re-aligns them every frame, and they start,
+// stop and change depth only while the background is at rest between beats, so
+// nothing ever jumps. With no known beat (tempo and phase) nothing moves.
+// Off by more than this, the breath re-enters on the beat rather than jumping.
+const LOST_BEAT = 0.06;
+function useBeatBreath(player, wanted, art, glow) {
+  const want = useRef(wanted);
+  useEffect(() => { want.current = wanted; });
+  const { getPlaybackTime } = player;
+  useEffect(() => {
+    let running = null;
+    const stop = () => { running?.animations.forEach((animation) => animation.cancel()); running = null; };
+    // Pinned to the page's timeline (as of this frame) at the song's phase: it holds
+    // from the very first frame, with no start-up lag to read as drift.
+    const align = (animations, phase) => {
+      const now = document.timeline.currentTime;
+      for (const animation of animations) animation.startTime = now - phase * 1000;
+    };
+    const start = ({ period, zoom, glow: light }, phase) => {
+      const duration = period * 1000;
+      const keys = (frame) => BREATH_KEYS.map(({ offset, level, easing }) => ({ offset, ...(easing ? { easing } : {}), ...frame(level) }));
+      const scale = keys((level) => ({ transform: `scale(${(1 + zoom * level).toFixed(5)})` }));
+      const video = document.querySelector(".video-surface.is-visible");
+      const animations = [art.current, video]
+        .filter(Boolean)
+        .map((element) => element.animate(scale, { duration, iterations: Infinity }));
+      if (glow.current) animations.push(glow.current.animate(keys((level) => ({ opacity: (light * level).toFixed(3) })), { duration, iterations: Infinity }));
+      align(animations, phase);
+      running = { animations, period, zoom, light, video };
+    };
+    let frame = requestAnimationFrame(function breathe() {
+      frame = requestAnimationFrame(breathe);
+      const { active, origin, period, zoom, glow: light, offset } = want.current;
+      // Where the running breath is, by its own clock (it keeps time while paused).
+      const own = running && (((document.timeline.currentTime - Number(running.animations[0]?.startTime)) / 1000) % running.period || 0);
+      if (!active || !period || !Number.isFinite(origin)) {
+        if (running && atRest(own, running.period)) stop();
+        return;
+      }
+      const phase = pulsePhase(getPlaybackTime() + offset, origin, period);
+      if (!running) {
+        if (atRest(phase, period)) start(want.current, phase);
+        return;
+      }
+      const video = document.querySelector(".video-surface.is-visible");
+      const drift = Math.abs(phase - own) % period;
+      const off = Math.min(drift, period - drift);
+      // A new depth or tempo, a new background, or a jump in the song (a seek):
+      // the breath finishes its beat and rests, then starts again on the beat.
+      if (running.period !== period || running.zoom !== zoom || running.light !== light || running.video !== video || off > LOST_BEAT) {
+        if (atRest(own, running.period)) stop();
+        return;
+      }
+      // Small drift is trimmed in place (a shift too small to see).
+      if (off > 0.02) align(running.animations, phase);
+    });
+    return () => { cancelAnimationFrame(frame); stop(); };
+  }, [getPlaybackTime, art, glow]);
 }
 
 // Through a peak the backdrop breathes with the music: a glow that kicks on each
@@ -1493,6 +1572,8 @@ export default function App() {
     }
   });
   const reveal = useCallback(() => setRevealed(true), []);
+  // Smooth wheel scrolling joins once the app is on screen.
+  useEffect(() => { if (revealed) startSmoothScroll(); }, [revealed]);
   const [searchType, setSearchType] = useState("all");
   const [searchData, setSearchData] = useState(EMPTY_SEARCH);
   const results = searchData.songs;
@@ -1504,7 +1585,11 @@ export default function App() {
     readSaved("aurora-searches", (item) => typeof item === "string"),
   );
   const [showLyrics, setShowLyrics] = useState(false);
-  const [video, setVideo] = useState(false);
+  // The background: the artwork or the song's video. A remembered choice that
+  // only swaps what is behind the player; device audio has no video, so it
+  // shows its artwork.
+  const [videoChoice, setVideo] = useState(false);
+  const video = videoChoice && !player.track?.localUrl;
   // Lyrics focus: only the cover, the song's name and its lyrics stay on screen.
   const [focusMode, setFocusMode] = useState(false);
   const ambientVideo = motionArt && !video && immersive && !!player.track && !player.track.localUrl;
@@ -1616,17 +1701,17 @@ export default function App() {
   }, []);
   useEffect(() => {
     pageScroll.current = 0;
-    if (scrollY.current) window.scrollTo({ top: 0, behavior: "instant" });
+    if (scrollY.current) jumpTo(0);
   }, [page, collection]);
   useEffect(() => {
     if (immersive) {
       pageScroll.current = scrollY.current;
-      if (scrollY.current) window.scrollTo({ top: 0, behavior: "instant" });
+      if (scrollY.current) jumpTo(0);
       return undefined;
     }
     const back = pageScroll.current;
     if (!back) return undefined;
-    const frame = requestAnimationFrame(() => window.scrollTo({ top: back, behavior: "instant" }));
+    const frame = requestAnimationFrame(() => jumpTo(back));
     return () => cancelAnimationFrame(frame);
   }, [immersive]);
   // Home adapts to what this listener plays, finishes and likes (all on-device).
@@ -1780,7 +1865,6 @@ export default function App() {
       updated.filter((t) => !t.localUrl),
     );
     setImmersive(true);
-    setVideo(false);
   };
   const toggleFavorite = (track) => {
     if (!track) return;
@@ -1828,7 +1912,6 @@ export default function App() {
   const toggleFocus = () => {
     if (focused) return setFocusMode(false);
     setShowLyrics(true);
-    setVideo(false);
     setImmersive(true);
     setFocusMode(true);
   };
@@ -2965,11 +3048,9 @@ export default function App() {
                         active={video}
                         aria-pressed={video}
                         disabled={!!player.track?.localUrl}
-                        onClick={() => {
-                          // Focus is built around the cover; the video takes the whole stage.
-                          setFocusMode(false);
-                          setVideo(!video);
-                        }}
+                        // Only the background changes: the cover, lyrics, focus and every
+                        // best-part and beat effect carry on over the video.
+                        onClick={() => setVideo(!video)}
                       >
                         {video && <Motion.span layoutId="mode-pill" className="nav-pill" transition={PILL_SPRING} />}
                         <Video size={19} />
@@ -3652,7 +3733,6 @@ export default function App() {
               player.loadLocalFiles(files);
               setImmersive(true);
               setSheet(null);
-              setVideo(false);
             }
             e.target.value = "";
           }}
