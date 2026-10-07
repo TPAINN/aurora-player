@@ -75,3 +75,29 @@ test('the refrain never swallows the verse line after it', () => {
   assert.equal(isPeakAt(peaks, timedSong[16].time + 1), false);
   assert.equal(isPeakAt(peaks, timedSong[8].time + 1), false);
 });
+
+// Verse, pre-chorus, chorus ×2, a bridge, then the chorus twice more: the chorus
+// recurs more often than the pre-chorus that leads into it.
+const preChorus = ['and when the morning light is breaking through', 'i can feel it rising up inside of me'];
+const structured = [...verse(4), ...preChorus, ...chorus, ...verse(5), ...preChorus, ...chorus, ...verse(6).slice(0, 2), ...chorus, ...chorus]
+  .map((text, index) => ({ time: 8 + index * 4, text }));
+
+test('a refrain starts at the chorus, not at the pre-chorus that leads into it', () => {
+  const peaks = peakMoments(structured);
+  const first = structured.findIndex(line => line.text === chorus[0]);
+  const second = structured.findIndex((line, index) => index > first && line.text === chorus[0]);
+  for (const index of [first, second]) {
+    const peak = peaks.find(range => range.end > structured[index].time && range.start < structured[index].time + 8);
+    assert.ok(peak, `chorus at ${structured[index].time}: ${JSON.stringify(peaks)}`);
+    assert.ok(Math.abs(peak.start - structured[index].time) < 0.06, `starts ${peak.start}, chorus at ${structured[index].time}`);
+  }
+  // The pre-chorus itself is not lit.
+  assert.equal(isPeakAt(peaks, structured[first - 2].time + 1), false);
+});
+
+test('a song that opens with its chorus lights that opening chorus too', () => {
+  const lines = [...chorus, ...verse(7), ...chorus, ...verse(8), ...chorus].map((text, index) => ({ time: 2 + index * 4, text }));
+  const peaks = peakMoments(lines);
+  assert.equal(isPeakAt(peaks, lines[1].time + 1), true, JSON.stringify(peaks));
+  assert.equal(isPeakAt(peaks, lines[5].time + 1), false, 'verse');
+});

@@ -120,3 +120,26 @@ export function peakWindow(time, peaks, { lead = 0.25, close = 0.8 } = {}) {
   }
   return { index: -1, until: Math.round(until * 1e9) / 1e9 };
 }
+
+// The whole background breathes with the beat all song long: a slight zoom in and
+// back with a soft swell of light, never more than a hair's breadth, and opening
+// up in a best part as far as that moment's strength allows.
+const clampUnit = value => Math.min(1, Math.max(0, Number(value) || 0));
+export function breath({ peak = false, strength = 0 } = {}) {
+  const lift = peak ? clampUnit(strength) : 0;
+  return { zoom: Math.round((0.008 + 0.014 * lift) * 10000) / 10000, glow: Math.round((0.09 + 0.17 * lift) * 1000) / 1000 };
+}
+// One beat of breath, as a share of the full swing (`level`): a quick, eased-out
+// rise into the beat, a long smooth release, then a short rest at the
+// background's own size before the next beat.
+export const BREATH_KEYS = [
+  { offset: 0, level: 0, easing: 'cubic-bezier(0.22, 0.61, 0.36, 1)' },
+  { offset: 0.14, level: 1, easing: 'cubic-bezier(0.45, 0, 0.3, 1)' },
+  { offset: 0.9, level: 0, easing: 'linear' },
+  { offset: 1, level: 0 },
+];
+// The breath starts, stops or changes depth only during that rest, so the
+// background never jumps.
+export function atRest(phase, period) {
+  return phase >= BREATH_KEYS.at(-2).offset * period;
+}
