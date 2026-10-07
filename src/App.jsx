@@ -756,18 +756,23 @@ function ArtBackdrop({ player }) {
   // The glow opens about half a beat early, so its lift lands on the downbeat, and
   // starts closing just before the section ends, so it is gone as the section is.
   const lead = period ? Math.min(0.4, Math.max(0.15, period / 2)) : 0.25;
-  const glowIndex = usePeakWindow(player, peaks, offset, { lead, close: PEAK_CLOSE });
-  const peak = glowIndex >= 0;
+  const windowIndex = usePeakWindow(player, peaks, offset, { lead, close: PEAK_CLOSE });
+  // On a song change the window still names the old song's peak for one render,
+  // until its effect re-checks: a peak the new song does not have is no peak.
+  const glowRange = windowIndex >= 0 ? peaks[windowIndex] : undefined;
+  const glowIndex = glowRange ? windowIndex : -1;
+  const peak = !!glowRange;
+  const peakBase = glowRange ? glowRange.strength ?? 0.85 : 0;
   // The pulse joins once the opening zoom has mostly settled, so the two never
   // compete for frames; it leaves with the glow.
-  const settled = useStore(player.clock, (value) => peak && value + offset >= peaks[glowIndex].start + PULSE_DELAY);
+  const settled = useStore(player.clock, (value) => !!glowRange && value + offset >= glowRange.start + PULSE_DELAY);
   const peakIndex = settled ? glowIndex : -1;
   // How strong this moment is (0.45 light … 1 strong): from the evidence, and with
   // audio evidence it follows the music second by second (in 0.05 steps, eased by
   // the CSS transitions); with lyrics alone a peak swells gently toward its end.
   const strength = useStore(player.clock, (value) => {
-    if (!peak) return 0;
-    const range = peaks[glowIndex];
+    const range = glowRange;
+    if (!range) return 0;
     const base = range.strength ?? 0.85;
     const live = intensity ? 0.45 + 0.55 * intensity(value) : base * (0.88 + 0.12 * Math.min(1, Math.max(0, (value + offset - range.start) / Math.max(1, range.end - range.start))));
     return Math.round(Math.min(1, Math.max(0.45, intensity ? (base + live) / 2 : live)) * 20) / 20;
@@ -808,7 +813,7 @@ function ArtBackdrop({ player }) {
     <>
       {/* The zoom follows the peak's own strength (fixed for the peak: rescaling a
           large blurred layer is costly); only the light layers follow it live. */}
-      <div className={`player-art-background ${peak ? "is-peak" : ""}`} style={{ "--art-exposure": level.toFixed(3), "--peak-base": peak ? peaks[glowIndex].strength ?? 0.85 : 0, "--peak-strength": strength || 0 }}>
+      <div className={`player-art-background ${peak ? "is-peak" : ""}`} style={{ "--art-exposure": level.toFixed(3), "--peak-base": peakBase, "--peak-strength": strength || 0 }}>
         <AnimatePresence initial={false}>
           {artwork && (
             <Motion.div
@@ -831,11 +836,11 @@ function ArtBackdrop({ player }) {
           "--lit-soft": litUrl ? `url("${litUrl}")` : "none",
           "--lit-sharp": artwork ? `url("${artworkAt(artwork, 1000)}")` : "none",
           "--art-exposure": level.toFixed(3),
-          "--peak-base": peak ? peaks[glowIndex].strength ?? 0.85 : 0,
+          "--peak-base": peakBase,
           "--peak-strength": strength || 0,
         }}
       />
-      <div className={`player-veil ${peak ? "is-peak" : ""}`} style={{ "--peak-base": peak ? peaks[glowIndex].strength ?? 0.85 : 0 }} />
+      <div className={`player-veil ${peak ? "is-peak" : ""}`} style={{ "--peak-base": peakBase }} />
       <AnimatePresence>
         {peakIndex >= 0 && period && player.playing && !reduce && (
           <BeatPulse key={`${player.track?.id}:${peakIndex}`} player={player} anchor={peaks[peakIndex].start} beatOrigin={beat?.origin ?? peaks[peakIndex].start} period={period} strength={strength} tint={tint.artwork === artwork ? tint.value : null} />
