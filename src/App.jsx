@@ -73,13 +73,14 @@ import {
   EASE_IN_OUT,
   PILL_SPRING,
   SHEET_SPRING,
-  blendSwap,
-  coverSwap,
+  coverChange,
+  backdropChange,
+  lyricsChange,
+  nameBlend,
   textSwap,
   unfold,
   pop,
   glyphSwap,
-  crossfade,
   HEART_SPRING,
   MAGNET_SPRING,
   iconSwap,
@@ -143,14 +144,11 @@ function Cover({ track, className = "", eager = false }) {
 function FadingCover({ track, className = "", eager = false, size = 600, direction = null, blend = false }) {
   // A direction turns the crossfade into a travelling swap (the now-playing cover);
   // a DJ blend dissolves instead of sliding.
-  const motion = blend
-    ? { variants: blendSwap, initial: "initial", animate: "animate", exit: "exit" }
-    : direction
-      ? { variants: coverSwap, custom: direction, initial: "initial", animate: "animate", exit: "exit" }
-      : crossfade;
+  const change = { direction, blend };
+  const motion = { variants: coverChange, custom: change, initial: "initial", animate: "animate", exit: "exit" };
   return (
     <div className={`cover fading-cover ${className}`}>
-      <AnimatePresence initial={false} custom={direction}>
+      <AnimatePresence initial={false} custom={change}>
         {track?.artwork ? (
           <Motion.img
             key={track.artwork}
@@ -814,15 +812,17 @@ function ArtBackdrop({ player }) {
       {/* The zoom follows the peak's own strength (fixed for the peak: rescaling a
           large blurred layer is costly); only the light layers follow it live. */}
       <div className={`player-art-background ${peak ? "is-peak" : ""}`} style={{ "--art-exposure": level.toFixed(3), "--peak-base": peakBase, "--peak-strength": strength || 0 }}>
-        <AnimatePresence initial={false}>
+        <AnimatePresence initial={false} custom={blend}>
           {artwork && (
             <Motion.div
               key={artwork}
               className="art-bg-layer"
               style={{ backgroundImage: `url("${artworkAt(artwork, 1000)}")` }}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1, transition: { duration: blend ? 3 : 1.6, ease: EASE } }}
-              exit={{ opacity: 0, transition: { duration: blend ? 2.8 : 1.4, ease: EASE_IN_OUT } }}
+              variants={backdropChange}
+              custom={blend}
+              initial="initial"
+              animate="animate"
+              exit="exit"
             />
           )}
         </AnimatePresence>
@@ -1203,10 +1203,21 @@ function useMediaQuery(query) {
 // The playing song's name. Its letters morph between songs only where it is on
 // screen (each letter's move is a layout measurement, so the hidden layout's copy
 // stays plain); the artist line fades in, compositor only.
-function TrackName({ track, live }) {
+function TrackName({ track, live, blend = false }) {
   return (
     <>
-      {live ? <FluidText as="h1">{track.title}</FluidText> : <h1>{track.title}</h1>}
+      {live ? (
+        // One presence for the name: a skip keeps the same element, which morphs
+        // letter by letter; a DJ blend keys it by title, so the old name drifts out
+        // as the new one fades in (a morph mid-blend passes through half-words).
+        <span className="name-swap">
+          <AnimatePresence initial={false} mode="popLayout">
+            <Motion.span key={blend ? `blend:${track.title}` : "name"} className="name-swap-item" {...nameBlend}>
+              <FluidText as="h1">{track.title}</FluidText>
+            </Motion.span>
+          </AnimatePresence>
+        </span>
+      ) : <h1>{track.title}</h1>}
       <p key={track.artist} className="swap-in">{track.artist}</p>
     </>
   );
@@ -3014,7 +3025,7 @@ export default function App() {
                         element glides over from its place in the player (a shared layout). */}
                     {focused && !phoneLayout && (
                       <Motion.div layoutId="now-title" className="now-title focus-title" transition={{ layout: TITLE_GLIDE }}>
-                        <TrackName track={player.track} live />
+                        <TrackName track={player.track} live blend={player.changeKind === "blend"} />
                       </Motion.div>
                     )}
                   </SwipeCover>
@@ -3032,13 +3043,15 @@ export default function App() {
                         className="desktop-lyrics"
                       >
                         {/* Song changes crossfade the lyrics; a DJ blend hands over slower. */}
-                        <AnimatePresence initial={false} mode="popLayout">
+                        <AnimatePresence initial={false} mode="popLayout" custom={player.changeKind === "blend"}>
                           <Motion.div
                             key={player.track.id}
                             className="lyrics-handover"
-                            initial={{ opacity: 0, y: 22 }}
-                            animate={{ opacity: 1, y: 0, transition: { duration: player.changeKind === "blend" ? 1.6 : 0.8, ease: EASE, delay: player.changeKind === "blend" ? 0.5 : 0.1 } }}
-                            exit={{ opacity: 0, y: -16, transition: { duration: player.changeKind === "blend" ? 1.1 : 0.35, ease: EASE_IN_OUT } }}
+                            variants={lyricsChange}
+                            custom={player.changeKind === "blend"}
+                            initial="initial"
+                            animate="animate"
+                            exit="exit"
                           >
                             <Lyrics player={player} />
                           </Motion.div>
@@ -3064,7 +3077,7 @@ export default function App() {
                       </Motion.span>
                     )}
                     </AnimatePresence>
-                    <TrackName track={player.track} live={phoneLayout} />
+                    <TrackName track={player.track} live={phoneLayout} blend={player.changeKind === "blend"} />
                     <div className="meta-chips">
                       <QualityChip player={player} onClick={() => setSheet("audio")} />
                       <BestPartChip player={player} />
@@ -3111,7 +3124,7 @@ export default function App() {
                   <div>
                     {!(focused && !phoneLayout) && (
                       <Motion.div layoutId="now-title" className="now-title" transition={{ layout: TITLE_GLIDE }}>
-                        <TrackName track={player.track} live={!phoneLayout} />
+                        <TrackName track={player.track} live={!phoneLayout} blend={player.changeKind === "blend"} />
                       </Motion.div>
                     )}
                     <div className="meta-chips">
