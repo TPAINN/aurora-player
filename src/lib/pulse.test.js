@@ -122,3 +122,17 @@ test('a measured pulse lands on beats, never off-beats, and a drifting take gets
   assert.equal(lyricBeat(phrased({ bpm: 100, keep: [0.75, 0.45], drift: 0.02 })), null, 'a 2 % drifting live take');
   assert.equal(lyricBeat(phrased({ bpm: 100, keep: [0.75, 0.45], drift: 0.06, jitter: 0.08 })), null, 'rubato');
 });
+
+test('the best-part glow opens just ahead of the section and closes as it ends', async () => {
+  const { peakWindow } = await import('./pulse.js');
+  const peaks = [{ start: 20, end: 40 }, { start: 90, end: 110 }];
+  const options = { lead: 0.3, close: 0.9 };
+  assert.deepEqual(peakWindow(19.5, peaks, options), { index: -1, until: 0.2 }, 'opens one lead early');
+  assert.equal(peakWindow(19.75, peaks, options).index, 0);
+  assert.ok(Math.abs(peakWindow(30, peaks, options).until - 9.1) < 1e-9, 'closes 0.9 s before the end');
+  assert.equal(peakWindow(39.2, peaks, options).index, -1, 'already closing as the section ends');
+  assert.ok(Math.abs(peakWindow(50, peaks, options).until - 39.7) < 1e-9, 'next opening');
+  assert.deepEqual(peakWindow(120, peaks, options), { index: -1, until: Infinity });
+  // A peak shorter than its own lead and close still shows, for at least a moment.
+  assert.equal(peakWindow(60.2, [{ start: 60, end: 61 }], options).index, 0);
+});

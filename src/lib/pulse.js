@@ -102,3 +102,21 @@ export function lyricBeat(words) {
   origin %= best;
   return { period: Math.round(best * 100000) / 100000, origin: Math.round(origin * 1000) / 1000, strength: Math.round(top * 100) / 100 };
 }
+
+// When the best-part glow is on, and how long until it next changes (so the
+// player can flip it on time, not on the next coarse clock tick). It opens a
+// little ahead of the section (`lead`, about half a beat), so the lift lands on
+// the downbeat, and starts closing a little before the end (`close`), so the
+// fade finishes as the section does instead of lingering into the next one. A
+// peak too short for both still shows for at least half its length.
+export function peakWindow(time, peaks, { lead = 0.25, close = 0.8 } = {}) {
+  let until = Infinity;
+  for (let index = 0; index < peaks.length; index++) {
+    const { start, end } = peaks[index];
+    const open = start - lead;
+    const shut = Math.max(start + (end - start) / 2, end - close);
+    if (time >= open && time < shut) return { index, until: shut - time };
+    if (open > time) until = Math.min(until, open - time);
+  }
+  return { index: -1, until: Math.round(until * 1e9) / 1e9 };
+}

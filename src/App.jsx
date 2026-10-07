@@ -51,7 +51,7 @@ import {
 } from "lucide-react";
 import { usePlayer } from "./hooks/usePlayer";
 import { useStore } from "./hooks/useStore";
-import { beatPhase, linePhase, lyricBeat, pulsePeriod, pulsePhase } from "./lib/pulse";
+import { beatPhase, linePhase, lyricBeat, peakWindow, pulsePeriod, pulsePhase } from "./lib/pulse";
 import { useNavigation } from "./hooks/useNavigation";
 import { getCollection, getFeaturedTracks, getMoodTracks, getSimilarTracks, searchCatalog } from "./lib/catalog";
 import { MOODS } from "../shared/moods.js";
@@ -61,7 +61,7 @@ import { requestedVariant } from "../shared/audio-variants.js";
 import { artworkAt, artworkSrcSet } from "./lib/artwork";
 import { qualityLabel } from "./lib/audio-format";
 import { homeSeeds, onRepeat, recordLike, rotateForDay, tasteFilter, topArtists } from "./lib/listening";
-import { isPeakAt, lineSpan, peakMoments, splitBackingVocals } from "./lib/lyrics";
+import { lineSpan, peakMoments, splitBackingVocals } from "./lib/lyrics";
 import { bestMoments } from "./lib/best-part";
 import { litArtwork } from "./lib/lit-artwork";
 import Welcome from "./components/Welcome";
@@ -673,17 +673,17 @@ function useMoments(player) {
       const measured = lyricBeat(words);
       if (measured) grid = { period: measured.period, origin: measured.origin, source: "lyrics" };
     }
-    const { peaks, best } = bestMoments({
+    const { peaks, best, intensity } = bestMoments({
       lyricPeaks: lyricPeaks.map((range) => ({ start: range.start - offset, end: range.end - offset })),
       replays,
       energy: insight?.energy,
       grid,
       duration,
     });
-    const toLyricTime = (range) => range && { start: range.start + offset, end: range.end + offset };
+    const toLyricTime = (range) => range && { ...range, start: range.start + offset, end: range.end + offset };
     // The beat grid in lyric time, for the pulse (null when its phase is unknown).
     const beat = Number.isFinite(grid?.origin) ? { period: grid.period, origin: grid.origin + offset } : null;
-    return { peaks: peaks.map(toLyricTime), best: toLyricTime(best), beat };
+    return { peaks: peaks.map(toLyricTime), best: toLyricTime(best), beat, intensity };
   }, [lines, insight, offset, duration]);
 }
 function usePeaks(player) {
@@ -717,6 +717,8 @@ function BestPartChip({ player }) {
 }
 
 const PULSE_DELAY = 1.6;
+// Seconds before a peak's end that its glow starts to close (its fade is ~1.8 s).
+const PEAK_CLOSE = 0.9;
 // Showing or hiding lyrics is one movement: the cover and the song's name glide to
 // their new places on the same curve and duration as the lyrics emerge beside them
 // (or fold away), so the layout never jumps and the two never feel separate.
@@ -724,29 +726,69 @@ const LYRICS_GLIDE = { duration: 0.8, ease: EASE };
 // The song's name gliding between the player and its place under the cover in focus.
 const TITLE_GLIDE = { type: "spring", stiffness: 140, damping: 22, mass: 0.9 };
 
+// Which peak the glow is in, flipped on time: re-checked on every clock tick, and
+// near a boundary a timer lands the flip exactly (the clock ticks only 4× a second).
+function usePeakWindow(player, peaks, offset, options) {
+  const [index, setIndex] = useState(-1);
+  const { lead, close } = options;
+  useEffect(() => {
+    let timer = 0;
+    const update = () => {
+      clearTimeout(timer);
+      const { index: now, until } = peakWindow(player.getPlaybackTime() + offset, peaks, { lead, close });
+      setIndex(now);
+      if (until < 1.2) timer = setTimeout(update, Math.max(16, until * 1000 + 10));
+    };
+    update();
+    const stop = player.clock.subscribe(update);
+    return () => { clearTimeout(timer); stop(); };
+  }, [player, peaks, offset, lead, close]);
+  return index;
+}
+
 // The artwork backdrop opens up (a slow zoom and lift) through the song's peaks:
 // its refrain and long held notes, read from genuinely timed lyrics only.
 function ArtBackdrop({ player }) {
-  const { peaks, beat } = useMoments(player);
+  const { peaks, beat, intensity } = useMoments(player);
   const offset = player.lyricsOffset || 0;
-  const peak = useStore(player.clock, (value) => peaks.length > 0 && isPeakAt(peaks, value + offset));
-  // The pulse joins once the opening zoom has mostly settled, so the two never
-  // compete for frames; the zoom marks the moment the peak hits.
-  const peakIndex = useStore(player.clock, (value) => peaks.findIndex((range) => value + offset >= range.start + PULSE_DELAY && value + offset < range.end));
   // The catalogue or measured tempo; failing that, the beat the sung words show.
   const period = pulsePeriod(player.bpm) || (beat ? pulsePeriod(60 / beat.period) : null);
+  // The glow opens about half a beat early, so its lift lands on the downbeat, and
+  // starts closing just before the section ends, so it is gone as the section is.
+  const lead = period ? Math.min(0.4, Math.max(0.15, period / 2)) : 0.25;
+  const glowIndex = usePeakWindow(player, peaks, offset, { lead, close: PEAK_CLOSE });
+  const peak = glowIndex >= 0;
+  // The pulse joins once the opening zoom has mostly settled, so the two never
+  // compete for frames; it leaves with the glow.
+  const settled = useStore(player.clock, (value) => peak && value + offset >= peaks[glowIndex].start + PULSE_DELAY);
+  const peakIndex = settled ? glowIndex : -1;
+  // How strong this moment is (0.45 light … 1 strong): from the evidence, and with
+  // audio evidence it follows the music second by second (in 0.05 steps, eased by
+  // the CSS transitions); with lyrics alone a peak swells gently toward its end.
+  const strength = useStore(player.clock, (value) => {
+    if (!peak) return 0;
+    const range = peaks[glowIndex];
+    const base = range.strength ?? 0.85;
+    const live = intensity ? 0.45 + 0.55 * intensity(value) : base * (0.88 + 0.12 * Math.min(1, Math.max(0, (value + offset - range.start) / Math.max(1, range.end - range.start))));
+    return Math.round(Math.min(1, Math.max(0.45, intensity ? (base + live) / 2 : live)) * 20) / 20;
+  });
   const reduce = useReducedMotion();
   const artwork = player.track?.artwork;
   const blend = player.changeKind === "blend";
   // Every artwork sits at the same perceived brightness: bright covers are eased
   // down and dark ones lifted, from the cover's measured mean luminance.
   const [exposure, setExposure] = useState({ artwork: null, value: 1 });
+  // The pulse is light from the cover itself: its dominant colour, lifted halfway
+  // to white, so a kick reads as the artwork glowing rather than a white flash.
+  const [tint, setTint] = useState({ artwork: null, value: null });
   useEffect(() => {
     if (!artwork) return undefined;
     let live = true;
-    extractColors(artwork).then(() => {
+    extractColors(artwork).then((colors) => {
       const light = artworkLuma(artwork);
       if (live && light !== null) setExposure({ artwork, value: Math.min(1.45, Math.max(0.72, 0.36 / Math.max(light, 0.05))) });
+      const rgb = String(colors?.[0] || "").split(",").map(Number);
+      if (live && rgb.length === 3 && rgb.every(Number.isFinite)) setTint({ artwork, value: rgb.map((channel) => Math.round(channel + (255 - channel) * 0.55)).join(" ") });
     });
     return () => { live = false; };
   }, [artwork]);
@@ -764,7 +806,9 @@ function ArtBackdrop({ player }) {
   const litUrl = lit.key === litKey ? lit.url : null;
   return (
     <>
-      <div className={`player-art-background ${peak ? "is-peak" : ""}`} style={{ "--art-exposure": level.toFixed(3) }}>
+      {/* The zoom follows the peak's own strength (fixed for the peak: rescaling a
+          large blurred layer is costly); only the light layers follow it live. */}
+      <div className={`player-art-background ${peak ? "is-peak" : ""}`} style={{ "--art-exposure": level.toFixed(3), "--peak-base": peak ? peaks[glowIndex].strength ?? 0.85 : 0, "--peak-strength": strength || 0 }}>
         <AnimatePresence initial={false}>
           {artwork && (
             <Motion.div
@@ -787,12 +831,14 @@ function ArtBackdrop({ player }) {
           "--lit-soft": litUrl ? `url("${litUrl}")` : "none",
           "--lit-sharp": artwork ? `url("${artworkAt(artwork, 1000)}")` : "none",
           "--art-exposure": level.toFixed(3),
+          "--peak-base": peak ? peaks[glowIndex].strength ?? 0.85 : 0,
+          "--peak-strength": strength || 0,
         }}
       />
-      <div className={`player-veil ${peak ? "is-peak" : ""}`} />
+      <div className={`player-veil ${peak ? "is-peak" : ""}`} style={{ "--peak-base": peak ? peaks[glowIndex].strength ?? 0.85 : 0 }} />
       <AnimatePresence>
         {peakIndex >= 0 && period && player.playing && !reduce && (
-          <BeatPulse key={`${player.track?.id}:${peakIndex}`} player={player} anchor={peaks[peakIndex].start} beatOrigin={beat?.origin ?? peaks[peakIndex].start} period={period} />
+          <BeatPulse key={`${player.track?.id}:${peakIndex}`} player={player} anchor={peaks[peakIndex].start} beatOrigin={beat?.origin ?? peaks[peakIndex].start} period={period} strength={strength} tint={tint.artwork === artwork ? tint.value : null} />
         )}
       </AnimatePresence>
     </>
@@ -806,7 +852,7 @@ function ArtBackdrop({ player }) {
 // corrected by setting
 // the running animation's time, so a correction never restarts it. Opacity and
 // scale only, so it stays on the compositor.
-function BeatPulse({ player, anchor, beatOrigin, period }) {
+function BeatPulse({ player, anchor, beatOrigin, period, strength = 0.8, tint = null }) {
   const wave = useRef(null);
   const ring = useRef(null);
   const offset = player.lyricsOffset || 0;
@@ -834,6 +880,11 @@ function BeatPulse({ player, anchor, beatOrigin, period }) {
     <Motion.div
       className="beat-pulse"
       aria-hidden="true"
+      // How strong the moment is sets how bright the light is, from a faint shimmer
+      // in a light passage to a full kick in the song's peak. It is baked into the
+      // light's own colour (a repaint only when it changes): an opacity below 1 here
+      // would cost an offscreen pass every frame.
+      style={{ "--pulse-gain": (0.28 + 0.72 * strength).toFixed(2), ...(tint ? { "--pulse-tint": tint } : {}) }}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1, transition: { duration: 2.4, ease: EASE } }}
       exit={{ opacity: 0, transition: { duration: 1.6, ease: EASE_IN_OUT } }}
