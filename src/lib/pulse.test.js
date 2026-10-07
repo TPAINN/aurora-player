@@ -136,3 +136,25 @@ test('the best-part glow opens just ahead of the section and closes as it ends',
   // A peak shorter than its own lead and close still shows, for at least a moment.
   assert.equal(peakWindow(60.2, [{ start: 60, end: 61 }], options).index, 0);
 });
+
+test('the whole background breathes gently on every beat, and more in a best part', async () => {
+  const { breath } = await import('./pulse.js');
+  const calm = breath({ peak: false, strength: 1 });
+  const light = breath({ peak: true, strength: 0.45 });
+  const strong = breath({ peak: true, strength: 1 });
+  assert.ok(calm.zoom > 0 && calm.zoom <= 0.01, JSON.stringify(calm));
+  assert.ok(calm.zoom < light.zoom && light.zoom < strong.zoom && strong.zoom <= 0.025, JSON.stringify({ light, strong }));
+  assert.ok(calm.glow > 0 && calm.glow < light.glow && light.glow < strong.glow && strong.glow <= 0.3);
+  assert.deepEqual(breath({ peak: true, strength: 7 }), strong, 'strength is clamped');
+});
+
+test('the breath only starts or stops while the background is at rest, so it never jumps', async () => {
+  const { atRest, BREATH_KEYS } = await import('./pulse.js');
+  const rest = BREATH_KEYS.at(-2).offset;
+  assert.equal(atRest(0.25, 0.5), false, 'mid-beat');
+  assert.equal(atRest(0.5 * 0.1, 0.5), false, 'on the attack');
+  assert.equal(atRest(0.5 * (rest + 0.01), 0.5), true, 'after the release');
+  // Every key from the rest point on is the background's own size.
+  assert.ok(BREATH_KEYS.filter(key => key.offset >= rest).every(key => key.level === 0));
+  assert.equal(BREATH_KEYS[0].level, 0);
+});

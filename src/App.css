@@ -1196,9 +1196,6 @@ input[type="range"]::-moz-range-thumb {
   margin-left: 65px;
   width: min(28vw, 320px);
 }
-.with-video .now-playing-art {
-  opacity: 0;
-}
 .mobile-player-info {
   display: none;
 }
@@ -2255,17 +2252,6 @@ input[type="range"]::-moz-range-thumb {
 }
 .has-video .player-art-background {
   opacity: 0;
-}
-.has-video .now-playing-art {
-  display: none;
-}
-.has-video .desktop-lyrics {
-  width: min(100%, 760px);
-}
-.has-video .immersive-track-meta {
-  width: auto;
-  max-width: 760px;
-  margin-inline: auto;
 }
 .dj-pill {
   display: inline-flex;
@@ -4408,15 +4394,6 @@ html.scroll-locked {
       width 0.8s var(--ease-soft),
       margin 0.8s var(--ease-soft);
   }
-  .has-video .now-playing-art {
-    display: block;
-    width: 0;
-    margin-inline: 0;
-    opacity: 0;
-    scale: 0.9;
-    filter: blur(10px);
-    pointer-events: none;
-  }
 }
 @media (prefers-reduced-motion: reduce) {
   .video-surface,
@@ -5474,4 +5451,35 @@ body {
 }
 .name-swap-item {
   display: block;
+}
+/* The beat's breath of light: the cover's own colour swelling softly from the
+   centre on every beat (its opacity is animated; at rest it is invisible). */
+.beat-breath {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(ellipse 70% 60% at 50% 45%, rgb(var(--breath-tint, 236 255 246) / 0.32), rgb(var(--breath-tint, 236 255 246) / 0.08) 55%, transparent 80%);
+}
+@media (prefers-reduced-motion: reduce) {
+  .beat-breath {
+    display: none;
+  }
+}
+/* Lenis smooth wheel scrolling (see lib/smooth-scroll.js). */
+html.lenis,
+html.lenis body {
+  height: auto;
+}
+.lenis:not(.lenis-autoToggle).lenis-stopped {
+  overflow: clip;
+}
+.lenis [data-lenis-prevent] {
+  overscroll-behavior: contain;
+}
+.lenis.lenis-autoToggle {
+  transition-property: overflow;
+  transition-duration: 1ms;
+  transition-behavior: allow-discrete;
 }
