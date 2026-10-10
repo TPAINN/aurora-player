@@ -79,6 +79,12 @@ function createStore(initial) {
     subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); },
   };
 }
+// A song changed by hand: the playing one steps back to this share of its level
+// (over DUCK_MS) while the next loads, then the two cross in SWAP_MS.
+const DUCK_LEVEL = .25;
+const DUCK_MS = 300;
+const SWAP_MS = 500;
+const duckLevel = (duck, now) => duck ? 1 - (1 - DUCK_LEVEL) * smoothstep(Math.min(1, (now - duck.at) / DUCK_MS)) : 1;
 // Buffer the next song well ahead so the blend never waits on the network.
 const PRIME_LEAD = 90;
 // YouTube needs a few hundred milliseconds to become audible after playVideo().
@@ -507,18 +513,34 @@ export function usePlayer() {
     return lyricsRequest;
   }, [fetchLyrics]);
 
-  // A hand-made song change: the outgoing deck plays on at full level until the
-  // incoming one sounds, then they cross in 0.9 s (equal power) and the outgoing
-  // stops. A deck that never starts is given up after 8 s so nothing plays on.
+  // A hand-made song change answers the press at once: the outgoing deck steps
+  // back to a quarter of its level within 0.3 s and keeps sounding there (never
+  // silence) while the new song loads; once the new one sounds they cross in
+  // 0.5 s (equal power) and the outgoing stops. Two songs are never heard at full
+  // level together. A deck that never starts is given up after 8 s.
   const handoff = useRef(null);
+  const ducking = useRef(null);
+  const stopDuck = useCallback(() => { clearInterval(ducking.current?.timer); ducking.current = null; }, []);
+  const startDuck = useCallback(deck => {
+    if (ducking.current?.deck === deck) return; // skipping again: it is already stepping back
+    stopDuck();
+    const duck = { deck, at: performance.now() };
+    duck.timer = setInterval(() => {
+      const level = duckLevel(duck, performance.now());
+      deck.setVolume?.(Math.round(current.current.volume * level));
+      if (level <= DUCK_LEVEL) clearInterval(duck.timer);
+    }, 30);
+    ducking.current = duck;
+  }, [stopDuck]);
   const finishHandoff = useCallback(() => {
     const active = handoff.current;
+    stopDuck();
     if (!active) return;
     handoff.current = null;
     clearInterval(active.timer);
     active.outgoing?.pauseVideo?.(); active.outgoing?.mute?.();
     if (player.current === active.incoming) active.incoming.setVolume?.(current.current.volume);
-  }, []);
+  }, [stopDuck]);
   const runHandoff = useCallback(() => {
     const active = handoff.current;
     if (!active) return;
@@ -526,17 +548,22 @@ export function usePlayer() {
       if (handoff.current !== active) { clearInterval(active.timer); return; }
       const now = performance.now();
       if (!active.started) {
-        if (active.incoming.getPlayerState?.() === 1) { active.started = now; showDeck(active.index); }
+        if (active.incoming.getPlayerState?.() === 1) {
+          active.started = now; showDeck(active.index);
+          // The cross starts from wherever the step back has reached.
+          active.from = ducking.current?.deck === active.outgoing ? duckLevel(ducking.current, now) : 1;
+          stopDuck();
+        }
         else if (now - active.requested > 8000) finishHandoff();
         return;
       }
-      const progress = Math.min(1, (now - active.started) / 900);
+      const progress = Math.min(1, (now - active.started) / SWAP_MS);
       const volume = current.current.volume;
-      active.outgoing.setVolume?.(Math.round(volume * Math.cos(progress * Math.PI / 2)));
+      active.outgoing.setVolume?.(Math.round(volume * active.from * Math.cos(progress * Math.PI / 2)));
       active.incoming.setVolume?.(Math.round(volume * Math.sin(progress * Math.PI / 2)));
       if (progress >= 1) finishHandoff();
     }, 40);
-  }, [finishHandoff]);
+  }, [finishHandoff, stopDuck]);
   const loadTrack = useCallback(async (selected, list, fadeIn = false, auto = false) => {
     if (!selected) return;
     // A song chosen by hand (or retried) gets a fresh chance to resolve.
@@ -567,6 +594,7 @@ export function usePlayer() {
     const outgoing = !selected.localUrl && (carried || (source.current === 'youtube' && player.current?.getPlayerState?.() === 1 ? player.current : null));
     audio.current?.pause();
     if (!outgoing) player.current?.stopVideo?.();
+    else startDuck(outgoing);
     source.current = selected.localUrl ? 'local' : 'youtube';
     current.current.track = selected;
     const nextQueue = list?.length ? list : current.current.queue.some(item => item.id === selected.id) ? current.current.queue : [...current.current.queue, selected];
@@ -660,9 +688,13 @@ export function usePlayer() {
         watch(false, 0);
       }
     } catch (err) {
-      if (mounted.current && token === generation.current && err.name !== 'AbortError') { setError(err instanceof TypeError ? 'Could not reach the music service. Check your connection and retry.' : err.message || 'Playback failed.'); setPlaying(false); }
+      if (mounted.current && token === generation.current && err.name !== 'AbortError') {
+        setError(err instanceof TypeError ? 'Could not reach the music service. Check your connection and retry.' : err.message || 'Playback failed.'); setPlaying(false);
+        // The change failed: the song stepping back for it stops too, so nothing plays on under the error.
+        if (ducking.current && !handoff.current) { ducking.current.deck.pauseVideo?.(); stopDuck(); }
+      }
     } finally { if (mounted.current && token === generation.current) setLoading(false); }
-  }, [ensurePlayer, cancelMix, ensureAudioGraph, flushListening, showLyricsFor, fetchLyrics, announce, clock, resolveSource, markUnplayable, upcoming, finishHandoff, runHandoff]);
+  }, [ensurePlayer, cancelMix, ensureAudioGraph, flushListening, showLyricsFor, fetchLyrics, announce, clock, resolveSource, markUnplayable, upcoming, finishHandoff, runHandoff, startDuck, stopDuck]);
   useEffect(() => { actions.current.load = loadTrack; }, [loadTrack]);
   const activeError = useCallback(() => {
     const selected = current.current.track;

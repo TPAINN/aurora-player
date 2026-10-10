@@ -716,6 +716,9 @@ function BestPartChip({ player }) {
 }
 
 const PULSE_DELAY = 1.6;
+// A held word's lift arrives with the word (a hair early, as light leads sound)
+// and starts to ease off just before the singer lets go.
+const HELD_WINDOW = { lead: 0.06, close: 0.2 };
 // Seconds before a peak's end that its glow starts to close (its fade is ~1.8 s).
 const PEAK_CLOSE = 0.9;
 // Showing or hiding lyrics is one movement: the cover and the song's name glide to
@@ -765,6 +768,12 @@ function ArtBackdrop({ player }) {
   // The pulse joins once the opening zoom has mostly settled, so the two never
   // compete for frames; it leaves with the glow.
   const settled = useStore(player.clock, (value) => !!glowRange && value + offset >= glowRange.start + PULSE_DELAY);
+  // A word held long inside the best part (word-timed lyrics only): the background
+  // lifts a touch more for exactly as long as the singer holds it.
+  const lines = player.lyrics?.sync === "word" ? player.lyrics.lines : null;
+  const held = useMemo(() => (lines || []).flatMap((line) => (line.words || []).filter((word) => word.end - word.start >= HELD_WORD).map((word) => ({ start: word.start, end: word.end }))), [lines]);
+  const heldIndex = usePeakWindow(player, held, offset, HELD_WINDOW);
+  const holding = !!glowRange && heldIndex >= 0 && held[heldIndex]?.start < glowRange.end && held[heldIndex]?.end > glowRange.start;
   const peakIndex = settled ? glowIndex : -1;
   // How strong this moment is (0.45 light … 1 strong): from the evidence, and with
   // audio evidence it follows the music second by second (in 0.05 steps, eased by
@@ -856,6 +865,7 @@ function ArtBackdrop({ player }) {
         }}
       />
       <div className={`player-veil ${peak ? "is-peak" : ""}`} style={{ "--peak-base": peakBase }} />
+      <div className={`held-glow ${holding ? "is-on" : ""}`} aria-hidden="true" style={{ "--peak-base": peakBase, ...(tint.artwork === artwork && tint.value ? { "--breath-tint": tint.value } : {}) }} />
       <div ref={glowRef} className="beat-breath" aria-hidden="true" data-period={period || undefined} data-beat-origin={beat?.origin ?? glowRange?.start} style={tint.artwork === artwork && tint.value ? { "--breath-tint": tint.value } : undefined} />
       <AnimatePresence>
         {peakIndex >= 0 && period && player.playing && !reduce && (

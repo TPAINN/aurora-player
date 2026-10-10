@@ -1009,6 +1009,13 @@ if (!only || only === 'K') {
   const silencedA = rows.find(row => (row[1] === 'stop' || row[1] === 'pause') && row[2] === 'AAAAAAAAAAA');
   await check('K', 'the new song is playing', async () => ok((await title(page)).startsWith('Morning Light') && startB, JSON.stringify(rows.slice(0, 8))));
   await check('K', 'a manual change never cuts the playing song before the new one sounds', async () => ok(!silencedA || silencedA[0] > startB[0] + 250, JSON.stringify(rows.slice(0, 10))));
+  await check('K', 'the press is answered at once: the playing song steps back within 0.4 s', async () => { const first = vols.find(v => v[1] === 'AAAAAAAAAAA' && v[2] <= 20); ok(first && first[0] - mark <= 450, JSON.stringify(vols.slice(0, 8))); });
+  await check('K', 'two songs are never loud together, and the cross is quick', async () => {
+    const level = {}; let both = 0;
+    for (const [, deck, volume] of vols) { level[deck] = volume; if ((level.AAAAAAAAAAA ?? 0) > 34 && (level.BBBBBBBBBBB ?? 0) > 34) both++; }
+    const firstB = vols.find(v => v[1] === 'BBBBBBBBBBB' && v[2] > 0)?.[0], lastA = vols.findLast(v => v[1] === 'AAAAAAAAAAA' && v[2] > 0)?.[0];
+    ok(!both && firstB && lastA && lastA - firstB <= 700, `both loud ${both}× · cross ${Math.round(lastA - firstB)} ms`);
+  });
   await check('K', 'the old song fades out under the new one', async () => { const a = vols.filter(v => v[1] === 'AAAAAAAAAAA' && v[2] > 0 && v[2] < 75); const b = vols.filter(v => v[1] === 'BBBBBBBBBBB' && v[2] > 0 && v[2] < 75); ok(a.length >= 3 && b.length >= 3, `A:${a.length} B:${b.length}`); });
   await check('K', 'the old song is stopped once the fade completes', async () => ok(silencedA, 'old deck still running'));
   await check('K', 'no runtime errors on a gapless change', async () => ok(!errors.length, errors.join(' | ')));
@@ -1523,6 +1530,16 @@ if (!only || only === 'Z') {
     const rate = await page.evaluate(() => new Promise(resolve => { let frames = 0; const start = performance.now(); const tick = () => { frames++; if (performance.now() - start < 1500) requestAnimationFrame(tick); else resolve(frames / 1.5); }; requestAnimationFrame(tick); }));
     ok(rate >= 30, `fps ${rate}`);
   });
+  await check('Z', 'a word held in the best part lifts the background a touch more, exactly while it is held', async () => {
+    // "drive," is held from 26.5 s to 28.4 s inside the peak; "night" (28.4–28.9 s) is not.
+    await setSeek(page, 26.0); await wait(400);
+    const before = await page.evaluate(() => document.querySelector('.held-glow')?.classList.contains('is-on'));
+    await wait(1100);
+    const during = await page.evaluate(() => document.querySelector('.held-glow')?.classList.contains('is-on'));
+    await wait(1900);
+    const after = await page.evaluate(() => document.querySelector('.held-glow')?.classList.contains('is-on'));
+    ok(before === false && during === true && after === false, JSON.stringify({ before, during, after }));
+  });
   await check('Z', 'video is only the background: cover, lyrics focus and the breath all stay', async () => {
     await setSeek(page, 8); await wait(800);
     await page.keyboard.press('i'); await wait(1100);
@@ -1631,6 +1648,62 @@ if (!only || only === 'S') {
 }
 
 // On demand: film the lyrics toggle (open and close) frame by frame, for review.
+// On demand: the held word "drive," in the peak, close up, for glow clipping.
+if (only === 'T4') {
+  const dir = process.env.SHOTS || 'shots'; await mkdir(dir, { recursive: true });
+  for (const [label, viewport] of [['desktop', { width: 1440, height: 900 }], ['phone', { width: 390, height: 844 }]]) {
+    const { context, page } = await newSession(browser, { viewport });
+    await page.goto(BASE); await wait(500);
+    await startQueue(page); await wait(1200);
+    if (!await page.locator('.immersive-player').count()) { await page.click('.dock-track'); await wait(1000); }
+    if (!await page.locator('.immersive-player.with-lyrics').count()) { await page.keyboard.press('l'); await wait(1400); }
+    // A grey cover shows any boxed glow plainly.
+    await page.addStyleTag({ content: '.art-bg-layer, .player-art-boost { background-image: none !important; background-color: #8a8d8c !important; } .immersive-player { background: #7d807f !important; }' });
+    await setSeek(page, 26.2); await wait(1300);
+    for (const [name, delay] of [['a', 0], ['b', 500]]) {
+      await wait(delay);
+      const box = await page.evaluate(() => { const node = document.querySelector('.lyric-line.current'); const r = node?.getBoundingClientRect(); return r && { x: Math.max(0, r.x - 40), y: Math.max(0, r.y - 60), width: Math.min(window.innerWidth - Math.max(0, r.x - 40), r.width + 80), height: r.height + 120 }; });
+      if (box) await page.screenshot({ path: `${dir}/held-${label}-${name}.png`, clip: box });
+    }
+    await context.close();
+  }
+}
+// On demand: long tasks while navigating, opening the player and pressing buttons.
+if (only === 'P2') {
+  const { context, page } = await newSession(browser);
+  await page.goto(BASE); await wait(1500);
+  await startQueue(page); await wait(1500);
+  const steps = [
+    ['close player', () => page.keyboard.press('Escape')],
+    ['search', () => page.click('nav[aria-label="Main navigation"] button:has-text("Search")')],
+    ['library', () => page.click('nav[aria-label="Main navigation"] button:has-text("Your library")')],
+    ['home', () => page.click('nav[aria-label="Main navigation"] button:has-text("Listen now")')],
+    ['open player', () => page.click('.dock-track')],
+    ['lyrics', () => page.keyboard.press('l')],
+    ['next', () => page.click('.dock-transport button[aria-label="Next track"]')],
+    ['previous', () => page.click('.dock-transport button[aria-label="Previous track"]')],
+    ['settings', () => page.click('button[aria-label="Player settings"]')],
+    ['close settings', () => page.keyboard.press('Escape')],
+    ['focus', () => page.keyboard.press('i')],
+    ['video', () => page.click('button[aria-label="Video mode"]')],
+  ];
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 200 });
+  for (const [name, act] of steps) {
+    await page.evaluate(() => { window.__longtasks.length = 0; });
+    if (process.env.PROFILE === name) await cdp.send('Profiler.start');
+    await act(); await wait(1600);
+    if (process.env.PROFILE === name) {
+      const { profile } = await cdp.send('Profiler.stop');
+      const self = new Map(); const dt = profile.timeDeltas; const byId = new Map(profile.nodes.map(n => [n.id, n]));
+      profile.samples.forEach((id, i) => { const n = byId.get(id); const key = `${n.callFrame.functionName || '(anon)'} ${n.callFrame.url.split('/').pop()}:${n.callFrame.lineNumber}`; self.set(key, (self.get(key) || 0) + (dt[i] || 0) / 1000); });
+      console.log([...self].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([k, v]) => `${v.toFixed(1).padStart(7)} ms  ${k}`).join('\n'));
+    }
+    const tasks = await page.evaluate(() => [...window.__longtasks]);
+    console.log(`${name.padEnd(16)} long tasks: ${tasks.length ? tasks.join(', ') + ' ms' : 'none'}`);
+  }
+  await context.close();
+}
 if (only === 'T') {
   const dir = process.env.SHOTS || 'shots'; await mkdir(dir, { recursive: true });
   for (const [label, viewport] of [['desktop', { width: 1440, height: 900 }], ['phone', { width: 390, height: 844 }]]) {
