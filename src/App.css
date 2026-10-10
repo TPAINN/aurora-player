@@ -4749,9 +4749,9 @@ body {
 .beat-pulse-wave {
   background: radial-gradient(
     closest-side,
-    rgb(var(--pulse-tint, 236 255 246) / calc(0.3 * var(--pulse-gain, 0.85))) 0%,
-    rgb(var(--pulse-tint, 236 255 246) / calc(0.16 * var(--pulse-gain, 0.85))) 36%,
-    rgb(var(--pulse-tint, 236 255 246) / calc(0.05 * var(--pulse-gain, 0.85))) 68%,
+    rgb(var(--pulse-tint, 236 255 246) / calc(0.2 * var(--pulse-gain, 0.85))) 0%,
+    rgb(var(--pulse-tint, 236 255 246) / calc(0.11 * var(--pulse-gain, 0.85))) 36%,
+    rgb(var(--pulse-tint, 236 255 246) / calc(0.035 * var(--pulse-gain, 0.85))) 68%,
     transparent 100%
   );
   animation: beat-kick var(--pulse-period, 0.5s) linear infinite;
@@ -4765,13 +4765,13 @@ body {
    read clearly while the light itself stays gentle. */
 @keyframes beat-kick {
   0% {
-    opacity: 0.35;
-    transform: scale(1.012);
+    opacity: 0.18;
+    transform: scale(1.003);
     animation-timing-function: cubic-bezier(0.3, 0, 0.6, 1);
   }
   6% {
     opacity: 1;
-    transform: scale(1.04);
+    transform: scale(1.025);
     animation-timing-function: cubic-bezier(0.12, 0.7, 0.3, 1);
   }
   45% {
@@ -4780,7 +4780,7 @@ body {
   }
   100% {
     opacity: 0;
-    transform: scale(0.985);
+    transform: scale(1);
   }
 }
 @keyframes beat-ring {
@@ -5482,4 +5482,82 @@ html.lenis body {
   transition-property: overflow;
   transition-duration: 1ms;
   transition-behavior: allow-discrete;
+}
+
+/* ── Lyric glow without edges, and a breath of zoom on the sung word ─────────
+   A word's glow is drawn inside its own box, and some engines (Safari, GPU
+   compositing) clip a layer to that box while it animates, which shows as a
+   faint rectangle with hard edges. Each word now carries invisible room on every
+   side (padding taken back by an equal negative margin, so nothing moves), the
+   fill's sweep is measured on the text alone (mask-origin: content-box), and the
+   glows are softer and short enough to fade out well inside that room. The word
+   being sung grows a hair (3 %) and settles back once sung. */
+.lyric-word {
+  padding: 0.5em 0.4em;
+  margin: -0.5em -0.4em;
+  transform-origin: 50% 62%;
+  transition:
+    transform 0.7s var(--ease-soft),
+    text-shadow 1.2s var(--ease-soft);
+}
+.lyric-word > .word-fill {
+  padding: inherit;
+  -webkit-mask-origin: content-box;
+  mask-origin: content-box;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+.lyric-word.singing {
+  transform: scale(1.03);
+}
+.lyric-word.held.singing {
+  transform: scale(1.045);
+  transition:
+    transform 1.6s var(--ease-soft),
+    text-shadow 1.2s var(--ease-soft);
+}
+.lyric-line.current .lyric-word.sung > span:first-child {
+  text-shadow: 0 0 10px #ffffff24;
+}
+.lyric-word.singing > span:first-child {
+  text-shadow:
+    0 0 10px #ffffff3d,
+    0 0 18px #c3ebcf1f;
+}
+.lyric-word.held.singing > span:first-child {
+  text-shadow:
+    0 0 12px #ffffff52,
+    0 0 20px #c3ebcf2e;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lyric-word.singing,
+  .lyric-word.held.singing {
+    transform: none;
+  }
+}
+/* A held word in a best part: the whole background lifts a touch more, softly,
+   for as long as the note is held (opacity only, a long soft fade out). */
+/* Only the glow's own footprint is composited (as with the beat kick), and its
+   gradient is gone well before that footprint's edge, so it shows no border. */
+.held-glow {
+  position: absolute;
+  left: 14%;
+  right: 14%;
+  top: 8%;
+  bottom: 20%;
+  z-index: -2;
+  pointer-events: none;
+  opacity: 0;
+  will-change: opacity;
+  background: radial-gradient(closest-side, rgb(var(--breath-tint, 236 255 246) / 0.2), rgb(var(--breath-tint, 236 255 246) / 0.07) 55%, transparent 100%);
+  transition: opacity 1.5s cubic-bezier(0.45, 0, 0.35, 1);
+}
+.held-glow.is-on {
+  opacity: calc(0.5 + 0.5 * var(--peak-base, 0.85));
+  transition: opacity 0.55s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .held-glow {
+    transition-duration: 0.2s;
+  }
 }
