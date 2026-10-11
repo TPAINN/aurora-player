@@ -1,15 +1,42 @@
-# Aurora Player
+<div align="center">
 
-A music-first React PWA with an artwork-led player, responsive discovery, local favorites, a queue, and synchronized lyrics. No account is required. The former marketing site redirects straight into the app.
+<img src="docs/banner.svg" alt="Aurora Player — artwork-led music PWA with word-by-word synced lyrics and beat-reactive visuals" width="100%">
 
-## Run
+<br>
+
+[![Live demo](https://img.shields.io/badge/%E2%96%B6_live_demo-aurora--player--tpainn.vercel.app-5eead4?style=for-the-badge&labelColor=06141a)](https://aurora-player-tpainn.vercel.app)
+
+![React 19](https://img.shields.io/badge/React_19-06141a?style=flat-square&logo=react&logoColor=5eead4)
+![Vite](https://img.shields.io/badge/Vite-06141a?style=flat-square&logo=vite&logoColor=a78bfa)
+![PWA](https://img.shields.io/badge/PWA-installable-06141a?style=flat-square&logo=pwa&logoColor=5eead4)
+![No account](https://img.shields.io/badge/account-not_needed-06141a?style=flat-square&labelColor=06141a&color=5eead4)
+![License](https://img.shields.io/badge/license-MIT-06141a?style=flat-square&labelColor=06141a&color=a78bfa)
+
+**A music player where the artwork leads, the lyrics move word by word, and the room breathes on the beat.**
+
+</div>
+
+<br>
+
+![Aurora Player screenshot](docs/screenshot.jpg)
+
+## Why it feels different
+
+| | |
+|---|---|
+| **Karaoke-grade lyrics** | Seven lyric sources race each other. Genuine word timing wins, then line timing, then plain text. Timing is never faked, and you can nudge it by hand in 0.1 s steps. |
+| **Beat-reactive visuals** | Refrains, held notes and replayed sections light up the artwork. When tempo is known, the whole background breathes on the beat. |
+| **A real DJ blend** | Beat-aligned crossfades with tempo matching, bass swap and echo tail on local files. Pitch is preserved. |
+| **Everything in one search** | Songs and albums from iTunes, artists from Deezer, videos and playlists from YouTube, with a top result that follows intent. |
+| **Your files, untouched** | Device audio plays through a direct path at its real format (FLAC 24-bit/96 kHz and up). Nothing is uploaded. |
+| **No account, no ads of its own** | Favorites, history and recommendations live in local storage. |
+
+## Quick start
 
 ```sh
 npm ci
-npm run dev -- --port 5187
+npm run dev -- --port 5187   # app + the same /api handlers used on Vercel
 ```
-
-Vite serves the same `/api/video/search` and `/api/lyrics/structured` handlers used on Vercel. The separate `server/` folder is a legacy optional backend; it is not required for the web app.
 
 ```sh
 npm run lint
@@ -18,29 +45,31 @@ npm run build
 npm run preview -- --port 5188
 ```
 
-## Listening
+## Keyboard
 
-Search has All, Songs, Videos, Albums, Artists and Playlists: songs and albums from iTunes, artists from Deezer, and videos and playlists from YouTube (remixes, slowed and sped-up edits, mashups, live sets), with a top result that follows intent. Online playback uses the YouTube IFrame player; availability, advertisements and audio quality are controlled by that source. Aurora adds no application advertisements. Device audio plays directly with the browser's supported codecs. Aurora reads each file's real format (for example FLAC 24-bit/96 kHz) and, outside DJ blends, plays it through a direct path with no effects; multichannel files go to every available speaker. Lossless and Dolby Atmos streaming require licensed services, so Aurora does not claim them for online songs. Favorites and history stay in local storage; local audio files are never uploaded.
+`Space` play/pause · `←` `→` seek 5 s · `Shift+←` `Shift+→` previous/next · `L` lyrics · `F` favorite · `M` mute · `I` lyrics focus · `/` or `Ctrl+K` search · `Esc` step back
 
-Lyrics race BetterLyrics (plus its QQ source), Bini Lyrics, LyricsPlus, LRCLib exact and fuzzy search, KuGou (word-timed KRC) and NetEase Cloud Music, with SimpMusic available when a YouTube ID resolves; titles decorated with “feat.” or remaster notes are retried in their plain form. Genuine word timing is preferred, followed by line timing and plain text. Timing is never fabricated. Lyrics are timed for one edit of a song, so when the upload that plays is another edit (a music video's intro, a radio or extended cut) they are requested for that upload's length; without timing for it, the catalogue timing stays and the lyrics footer says so. The playing video's own captions (official lyric captions or speech recognition) are matched phrase by phrase against the lyrics, and a consistent offset (at least six phrases from three lines agreeing within 0.4 s) re-times the lyrics automatically; anything less changes nothing. A timing set by hand (0.1 s steps) always wins and is remembered per song; Auto hands it back. Backing vocals in parentheses keep filling after the next line starts, and held notes glow as they fill. The word being sung grows a hair (3 %, a little more for a held note) and settles back; every word carries invisible room for its glow, so no engine clips the glow into a box. In a best part, a word held long lifts the whole background a touch more for exactly as long as it is held. Best parts come from real evidence only: refrains and held notes in timed lyrics, YouTube's “Most replayed” markers for the exact video playing (used only when that upload is as long as the song), and, for device audio, loudness measured across the whole song. Refrains start at the chorus itself: lines that recur in fewer sections than the chorus (a pre-chorus leading in) are not part of it, and a song that opens on its chorus lights that opening chorus too. When audio evidence exists it decides which refrains count and adds replayed or loud instrumental sections (for device audio, measured every 0.1 s, a drop starts on its sharpest rise in level); a known tempo then starts each peak on the beat (measured grid for device audio) and lets it last whole bars. Through those peaks the artwork backdrop zooms and lifts (a pre-lit, richer copy of the cover fades in while the vignette deepens), and when the song's tempo is known (measured for device audio, catalogue BPM online) a light kicks on every beat, with a soft ring once a bar on phones. The beat grid comes from the measured grid or, online, from where the timed words (or, for line-timed lyrics, the line starts) land; when the catalogue has no tempo, word-timed vocals still show it (a strict lock is required, so drifting or free-timed takes get no pulse), and the pulse follows the smooth playhead frame by frame without restarting; with no tempo evidence there is no pulse. All song long, whenever the beat (tempo and phase) is known, the whole background breathes on it: the artwork or the video zooms in a hair and back with a soft swell of the cover's light, deeper in a best part, starting and stopping only between beats so it never jumps; with reduced motion it stays still. Showing lyrics is one movement: the cover and the song's name glide aside as the lyrics emerge from behind the cover, and fold back the same way. Lyrics focus (the Focus button or I) glides the cover and the song's name (under the cover) to the left and grows the lyrics at the centre; the player's controls stay at hand but step back, smaller, dimmer and without colour, and the Focus button becomes Exit focus. Artwork and Video only switch the background: the cover, the song's name, the lyrics, focus and every best-part and beat effect stay as they are, and the choice carries over to the next song (device audio has no video, so it shows its artwork). Escape brings everything back. Provider outages and missing lyrics do not stop audio.
+## Stack
 
-## Design and motion
+| Layer | Tech |
+|---|---|
+| UI | React 19, Vite, Framer Motion / Motion, Lenis smooth scroll, Calligraph |
+| Data | iTunes, Deezer, YouTube IFrame + Innertube, 7 lyric providers |
+| API | Vercel serverless handlers (`api/`), optional legacy `server/` |
+| Delivery | Installable PWA with an offline application shell |
 
-One responsive visual system connects discovery, search, library, queue and the full-screen player. Motion handles carousel springs and view transitions. Sections below the fold reveal as they scroll into view with their cards cascading in; the home headline rises word by word out of a soft blur; a soft mint spotlight follows the pointer across cards and the hero; hovering a card lets its neighbours recede; the big play buttons are magnetic; play and pause morph; a like pops the heart with a ring; Next and Previous slide the cover in the direction of travel; the player's cover tilts toward the pointer under a soft sheen. Everything that appears or leaves has both an entrance and an exit: lines and sections unfold and fold, small controls pop, glyphs swap in place, and shared elements glide between their places. Only transform and opacity animate, and every effect stands down for reduced motion or touch input where it does not apply. [Calligraph](https://calligraph.raphaelsalaja.com/) animates changing track titles. [Tegaki](https://github.com/gkurt/tegaki) generated the welcome handwriting SVG at build time; its generator is not included in the runtime bundle. Reduced-motion preferences are respected.
+## Deploy
 
-[BitChord](https://github.com/kushagrasinghx/BitChord) informed the lyrics-provider research. Aurora's JavaScript adapters and renderer were independently implemented; no GPL implementation was copied. Music, cover art and lyrics remain the property of their respective rights holders.
+The repository root is the Vercel Vite app (`npm run build`, output `dist`). `web/` holds the redirect for the former landing deployment. Opt-in diagnostics: open `/?audit=1` and read `#aurora-audit` (stays in the page, never sent anywhere).
 
-## Deployment
+## Docs
 
-The repository root is the Vercel Vite application (`npm run build`, output `dist`). `web/` only holds the redirect for the former `aurora-player-tpainn.vercel.app` landing deployment. Both projects follow the production branch.
+[Feature deep dive](docs/FEATURES.md) · [Architecture](docs/ARCHITECTURE.md) · [DJ transitions](docs/DJ-TRANSITION.md) · [Live tests](docs/LIVE-TESTS.md) · [Performance audit](docs/PERFORMANCE-AUDIT.md) · [Design](DESIGN.md) · [Product scope](PRODUCT.md)
 
-The installable PWA caches its visited application shell and assets. Online catalogue, YouTube and lyric requests still require connectivity; it does not download music for offline use.
+## Credits & legal
 
-For opt-in diagnostics open `/?audit=1` and inspect the `#aurora-audit` output. Measurements stay in the page and are never sent elsewhere. See [performance audit](docs/PERFORMANCE-AUDIT.md), [design](DESIGN.md), and [product scope](PRODUCT.md).
+[BitChord](https://github.com/kushagrasinghx/BitChord) informed the lyrics-provider research; Aurora's adapters and renderer are independent implementations and no GPL code was copied. Music, cover art and lyrics remain the property of their rights holders. Streaming availability and audio quality are controlled by the source.
 
-## License
+MIT for Aurora source; third-party packages keep their own licenses.
 
-MIT for Aurora source; third-party packages retain their own licenses.
-
-DJ mode matches tempos before a beat-aligned blend (5–10 s): for close tempos one song carries the change, chosen by where the voices are (song A is left as it is and song B enters at A's tempo when B opens instrumental, or A moves into B's tempo when A ends instrumental, or each moves half the way when both sing), wider gaps (up to 16 %) meet in the middle, and song B eases back to its own tempo afterwards. A Next pressed by hand (Live DJ changes) keeps song A at full level while song B buffers, then blends for 5 s; a second press changes at once. The blend is a real blend, not a fade-out then fade-in: song B comes up early under song A, both ride together at full presence through the middle (the combined level held within about 1 dB), and only then does song A leave. Like a DJ riding the tempo fader, each glide lasts at least four bars (about 8 s at 120 BPM, up to 12 s for bigger changes) in even steps that land exactly on the target. Pitch is preserved, and no song is stretched more than 8 %. Local audio adds a warm bass swap (song B's lows swell in as A's leave), a gentle hollow filter sweep and an echo tail. Online playback overlaps two YouTube decks with a DJ-style curve; because YouTube's audio can't be filtered, a quiet synthesized deep sweep (a low swell with a sub drop) plays over the blend (can be turned off). Tempo changes only when catalogue BPM is known and the player confirms the rate. With DJ off, online songs still hand over seamlessly, and a change by hand answers at once: the playing song steps back to a quarter of its level within 0.3 s (never silence), and once the new song sounds the two cross in 0.5 s, so two songs are never heard loud together. Altered uploads (8D, slowed, sped up, nightcore…) are only chosen when the song or your search asks for them. Back and swipe gestures close the top layer first and never leave the app by accident. The queue tops itself up in small batches based on what you finish, skip and like, and the home screen (spotlight, Made for you, Because you listened, Daily rotation) follows your own listening, likes and recent plays. On desktop the page scrolls smoothly under a mouse wheel or trackpad (Lenis, loaded after first paint); touch keeps native scrolling, sheets lock it, and reduced motion keeps it native. Keyboard: Space, ← → (5 s, also while the timeline has focus), Shift+← → (previous/next), L, M, F, /. Swipe the cover sideways to change song and down to close the player; swipe a queue row left to remove it. Home has English mood chips (Sad, Chill, Workout, Sleep, Energize, Romance, Feel good, Party, Commute, Focus) that re-shape the suggestions; choosing the same mood again restores the defaults. See [DJ transition details](docs/DJ-TRANSITION.md) and the [live interaction tests](docs/LIVE-TESTS.md). Radio stays in the seed's language and a compatible genre, and leans toward the seed's era and popularity. Search runs through the same-origin `/api/search` endpoint, and `/api/tempo` returns catalogue BPM. Recommendations and listening preferences remain account-free.
-
+<div align="center"><sub>Built by <a href="https://github.com/TPAINN">Apostolos Peiniris</a></sub></div>
