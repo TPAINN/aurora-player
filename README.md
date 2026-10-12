@@ -2,9 +2,9 @@
 
 A music player for the browser. Artwork-led interface, search across several catalogs, synchronized lyrics with word-level timing, a queue and local favorites. No account needed.
 
-[Live app](https://aurora-player-tpainn.vercel.app) | [Feature reference](docs/FEATURES.md)
+[Live app](https://aurora-player-seven.vercel.app) | [Feature reference](docs/FEATURES.md)
 
-![Aurora Player](docs/screenshot.jpg)
+![Aurora Player](docs/screenshot.png)
 
 ## Features
 
