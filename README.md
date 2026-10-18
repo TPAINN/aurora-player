@@ -48,7 +48,7 @@ React 19, Vite, Motion, Lenis, Calligraph. API handlers in `api/` run as Vercel 
 
 ## Documentation
 
-[Architecture](docs/ARCHITECTURE.md) | [DJ transitions](docs/DJ-TRANSITION.md) | [Live tests](docs/LIVE-TESTS.md) | [Performance audit](docs/PERFORMANCE-AUDIT.md) | [Design](DESIGN.md) | [Product scope](PRODUCT.md)
+[Architecture](docs/ARCHITECTURE.md) | [DJ transitions](docs/DJ-TRANSITION.md) | [Live tests](docs/LIVE-TESTS.md) | [Performance audit](docs/PERFORMANCE-AUDIT.md)
 
 ## Credits
 
