@@ -655,10 +655,10 @@ app.get('/api/stream', async (req: Request, res: Response) => {
 
     // Copy status + relevant headers
     res.status(upstream.status);
-    res.setHeader('Content-Type', upstream.headers['content-type'] || audioInfo.contentType);
+    res.setHeader('Content-Type', String(upstream.headers['content-type'] || audioInfo.contentType));
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Cache-Control', 'no-store'); // don't let Express cache partial responses
-    if (upstream.headers['content-length']) res.setHeader('Content-Length', upstream.headers['content-length']);
+    if (upstream.headers['content-length']) res.setHeader('Content-Length', String(upstream.headers['content-length']));
     if (upstream.headers['content-range']) res.setHeader('Content-Range', upstream.headers['content-range']);
 
     // Pipe stream; abort upstream if client disconnects
